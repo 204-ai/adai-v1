@@ -23,6 +23,7 @@ import { approvedClaimsFor } from "../claim/store.js";
 import { SHOWCASE, type Showcase, type ShowcaseWork } from "./showcase.js";
 import { notesByTriple, publicNotesFor, type RelationNote } from "../claim/notes.js";
 import { tripleKey } from "../utils/claims.js";
+import { edgeLabel } from "../utils/edge-labels.js";
 
 export interface EntityNode {
   id: string;
@@ -50,7 +51,6 @@ export interface EntityRender {
 const DERIVED_BY = "embedding-multimodal-v1";
 const WORKS_TYPES = new Set(["practitioner", "collective", "concept", "scene"]);
 const CONCEPT_WORKS_CAP = 24;
-const REL_ORDER = ["practitioner", "collective", "concept", "institution", "platform", "project", "scene", "publication", "classification_regime"];
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const isHttp = (u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u);
@@ -68,7 +68,8 @@ export function nodePath(n: { type: string; slug: string }): string {
   return `/${encodeURIComponent(n.type)}/${encodeURIComponent(n.slug)}`;
 }
 
-export const CONTRIB_LINK = `<a class="ev-contrib-link" href="/contribute" title="how to contribute to A(DAI)">contribute ↗</a>`;
+// The page's one invitation (issue #57): empty sections are not rendered at all.
+export const CONTRIB_LINK = `<a class="ev-contrib-link" href="/contribute" title="how to contribute to A(DAI)">add to this record ↗</a>`;
 
 interface Peer {
   id: string;
@@ -196,22 +197,12 @@ function heroNode(db: DatabaseSync, node: EntityNode, meta: any, showcase: Showc
   return w ? { peer: w, drop: "" } : null;
 }
 
-function hero(h: { peer: Peer; drop: string } | null, showcase: Showcase | null): string {
-  if (h?.peer.image) {
-    return `
+function hero(h: { peer: Peer; drop: string } | null): string {
+  if (!h?.peer.image) return "";
+  return `
       <figure class="ev-hero ev-hero--image">
         <img src="${esc(h.peer.image)}" alt="${esc(h.peer.name)}" crossorigin="anonymous">
         <figcaption class="ev-hero-cap"><span class="ev-mono-tag">img.hero · ${esc(h.peer.name)}</span>${h.drop ? `<br><span class="ev-mono-dim">drop: ${esc(h.drop)}</span>` : ""}</figcaption>
-      </figure>`;
-  }
-  const fallback = showcase?.hero?.fallback_copy || "img.hero / signature work";
-  const sub = showcase ? esc("awaiting linkage — image fields not yet populated for this work") : `${CONTRIB_LINK} — sense, then link`;
-  return `
-      <figure class="ev-hero ev-hero--empty" data-hatch="1">
-        <figcaption class="ev-hero-cap">
-          <span class="ev-mono-tag">${esc(fallback)}</span><br>
-          <span class="ev-mono-dim">drop: ${sub}</span>
-        </figcaption>
       </figure>`;
 }
 
@@ -299,7 +290,7 @@ function practiceSections(meta: any): string {
 interface WorkItem extends ShowcaseWork { peer: Peer | null }
 
 /** A maker's works (CREATED_BY), a concept's works (EMBODIES), else showcase / legacy key works. */
-function gatherWorks(db: DatabaseSync, node: EntityNode, meta: any, showcase: Showcase | null, edges: LiveEdge[]): { works: WorkItem[]; source: "graph" | "showcase" | "none" } {
+function gatherWorks(db: DatabaseSync, node: EntityNode, meta: any, showcase: Showcase | null, edges: LiveEdge[]): { works: WorkItem[]; source: "graph" | "showcase" | "none"; total: number } {
   const conceptLike = node.type === "concept" || node.type === "scene";
   const want = conceptLike ? "EMBODIES" : "CREATED_BY";
   const seen = new Set<string>();
@@ -309,34 +300,31 @@ function gatherWorks(db: DatabaseSync, node: EntityNode, meta: any, showcase: Sh
     seen.add(e.other.id);
     graphWorks.push({ slug: e.other.slug, title: e.other.name, year: e.other.year ?? undefined, graph_id: e.other.id, peer: e.other });
   }
-  if (conceptLike && graphWorks.length > CONCEPT_WORKS_CAP) graphWorks = graphWorks.slice(0, CONCEPT_WORKS_CAP);
+  const graphTotal = graphWorks.length;
+  if (conceptLike && graphWorks.length > CONCEPT_WORKS_CAP) {
+    // Imaged works first when a concept has more than the panel shows.
+    graphWorks = [...graphWorks.filter((w) => w.peer?.image), ...graphWorks.filter((w) => !w.peer?.image)].slice(0, CONCEPT_WORKS_CAP);
+  }
   // Imaged graph works win over hand-curated stubs; showcase prose still renders.
-  if (graphWorks.some((w) => w.peer?.image)) return { works: graphWorks, source: "graph" };
+  if (graphWorks.some((w) => w.peer?.image)) return { works: graphWorks, source: "graph", total: graphTotal };
   if (showcase?.works?.length) {
-    return { works: showcase.works.map((w) => ({ ...w, peer: w.graph_id ? nodeById(db, w.graph_id) : null })), source: "showcase" };
+    return { works: showcase.works.map((w) => ({ ...w, peer: w.graph_id ? nodeById(db, w.graph_id) : null })), source: "showcase", total: showcase.works.length };
   }
   const profile = meta.full_profile ?? meta;
   if (!graphWorks.length && Array.isArray(profile?.key_works?.works) && profile.key_works.works.length) {
     return {
       works: profile.key_works.works.map((w: any) => ({ title: String(w.title ?? ""), year: w.year != null ? String(w.year) : undefined, blurb: typeof w.description === "string" ? w.description : undefined, peer: null })),
       source: "showcase",
+      total: profile.key_works.works.length,
     };
   }
-  return { works: graphWorks, source: graphWorks.length ? "graph" : "none" };
+  return { works: graphWorks, source: graphWorks.length ? "graph" : "none", total: graphTotal };
 }
 
 function worksSection(node: EntityNode, gathered: ReturnType<typeof gatherWorks>): string {
   if (!WORKS_TYPES.has(node.type)) return "";
-  const { works, source } = gathered;
-  if (!works.length) {
-    const conceptLike = node.type === "concept" || node.type === "scene";
-    const msg = conceptLike ? `no works have linked this ${esc(node.type)} yet` : `no works have been linked to this ${esc(node.type)} yet`;
-    return `
-      <section class="ev-section">
-        <h2 class="ev-h2">// works <span class="ev-h2-count">/00</span></h2>
-        <p class="ev-empty">${msg} — <em>${CONTRIB_LINK}</em></p>
-      </section>`;
-  }
+  const { works, source, total } = gathered;
+  if (!works.length) return "";
   const items = works.map((w, i) => {
     const url = w.peer?.image ?? null;
     const slug = w.slug || (w.title || "").toLowerCase().replace(/\s+/g, "-").slice(0, 64);
@@ -347,7 +335,7 @@ function worksSection(node: EntityNode, gathered: ReturnType<typeof gatherWorks>
     const yearTag = w.year ? `<span class="ev-work-year">[${esc(w.year)}]</span>` : "";
     const mediumLine = w.medium || w.method
       ? `<p class="ev-work-medium">${esc(w.medium || "")} ${w.method ? `· <span class="ev-work-method">method: ${esc(w.method)}</span>` : ""}</p>`
-      : `<p class="ev-work-medium ev-mono-dim">medium · method · year — <em>awaiting ${CONTRIB_LINK}</em></p>`;
+      : "";
     const blurb = w.blurb ? `<p class="ev-work-blurb">// ${esc(w.blurb)}</p>` : "";
     const titleHtml = w.peer
       ? `<a href="${nodePath(w.peer)}" data-node-id="${esc(w.peer.id)}">${esc(w.title)}</a>`
@@ -365,8 +353,9 @@ function worksSection(node: EntityNode, gathered: ReturnType<typeof gatherWorks>
   const sourceTag = source === "graph" ? '<span class="ev-h2-source">· from graph (awaiting editorial enrichment)</span>' : "";
   return `
       <section class="ev-section">
-        <h2 class="ev-h2">// works <span class="ev-h2-count">/${pad(works.length)}</span>${sourceTag}</h2>
-        <div class="ev-works">${items}</div>
+        <h2 class="ev-h2">// works <span class="ev-h2-count">/${pad(total)}</span>${sourceTag}</h2>
+        <div class="ev-works">${items}</div>${total > works.length ? `
+        <p class="ev-empty">${total - works.length} more — <a href="/field?node=${encodeURIComponent(node.id)}">see them in the field</a></p>` : ""}
       </section>`;
 }
 
@@ -390,48 +379,127 @@ function relRow(p: { id: string; type: string; slug: string; name: string }, tag
           </a>${notesHtml(notes)}</li>`;
 }
 
-/** Neighbours grouped by node type; artworks have their own section. */
-function relationsSection(edges: LiveEdge[], showcase: Showcase | null, notes: Map<string, RelationNote[]>): string {
-  const seen = new Map<string, { peer: Peer; types: string[]; notes: RelationNote[] }>();
-  for (const e of edges) {
-    if (e.edge_type === "CLASSIFIED_BY") continue;
-    const s = seen.get(e.other.id) ?? { peer: e.other, types: [], notes: [] };
-    s.types.push(e.edge_type);
-    s.notes.push(...(notes.get(tripleKey(e)) ?? []));
-    seen.set(e.other.id, s);
+// ---------- relations, read off the graph (issue #57) ----------
+// Every live curated edge touching the node, grouped by relation type and
+// direction, plus the relations one step behind its works and shows. Only
+// groups with something in them render, so a relation type added tomorrow
+// shows up here without a template change (it falls back to its edge label).
+
+const SYMMETRIC = new Set(["COLLABORATES_WITH"]);
+
+const GROUP_HEAD: Record<string, string> = {
+  "via:HELD_BY": "in collections",
+  "via:EXHIBITED_AT": "works exhibited at",
+  "via:PRESENTED_BY": "shows presented by",
+  "via:CURATED_BY": "shows curated by",
+  "CREATED_BY:out": "created by", "CREATED_BY:in": "works",
+  "HELD_BY:out": "held by", "HELD_BY:in": "works held",
+  "EXHIBITED_AT:out": "exhibited at", "EXHIBITED_AT:in": "works exhibited here",
+  "PARTICIPATED_IN:out": "shows", "PARTICIPATED_IN:in": "participants",
+  "PRESENTED_BY:out": "presented by", "PRESENTED_BY:in": "shows presented",
+  "CURATED_BY:out": "curated by", "CURATED_BY:in": "shows curated",
+  "REPRESENTS:out": "represents", "REPRESENTS:in": "represented by",
+  "COLLABORATES_WITH": "collaborates with",
+  "BELONGS_TO:out": "belongs to", "BELONGS_TO:in": "members",
+  "INFLUENCES:out": "influences", "INFLUENCES:in": "influenced by",
+  "RESPONDS_TO:out": "responds to", "RESPONDS_TO:in": "responded to by",
+  "PRACTICES:out": "practices", "PRACTICES:in": "practised by",
+  "EMBODIES:out": "embodies", "EMBODIES:in": "embodied by",
+  "USES_TECHNIQUE:out": "techniques", "USES_TECHNIQUE:in": "used in",
+};
+
+const GROUP_ORDER = [
+  "via:HELD_BY", "via:EXHIBITED_AT", "PARTICIPATED_IN:out", "via:PRESENTED_BY", "via:CURATED_BY", "REPRESENTS:in",
+  "CREATED_BY:out", "HELD_BY:out", "EXHIBITED_AT:out", "HELD_BY:in", "EXHIBITED_AT:in",
+  "PRESENTED_BY:out", "CURATED_BY:out", "PARTICIPATED_IN:in", "PRESENTED_BY:in", "CURATED_BY:in", "REPRESENTS:out",
+  "COLLABORATES_WITH", "BELONGS_TO:out", "BELONGS_TO:in", "INFLUENCES:in", "INFLUENCES:out", "RESPONDS_TO:out", "RESPONDS_TO:in",
+  "PRACTICES:out", "EMBODIES:out", "USES_TECHNIQUE:out", "PRACTICES:in", "EMBODIES:in", "USES_TECHNIQUE:in", "CREATED_BY:in",
+];
+
+const GROUP_ROW_CAP = 100;
+
+interface GroupItem { peer: Peer; qualifier: string; notes: RelationNote[] }
+interface Group { key: string; head: string; items: GroupItem[] }
+
+export function groupHead(key: string): string {
+  if (GROUP_HEAD[key]) return GROUP_HEAD[key];
+  const [type, dir] = key.split(":");
+  return dir === "in" ? `${edgeLabel(type)} (from)` : edgeLabel(type);
+}
+
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+/** Relations one step behind the node's works and shows: "in collections: X · 2 works". */
+function twoHop(db: DatabaseSync, node: EntityNode): Map<string, GroupItem[]> {
+  const out = new Map<string, GroupItem[]>();
+  const add = (key: string, rows: any[], noun: string) => {
+    if (!rows.length) return;
+    out.set(key, rows.map((r) => ({ peer: { id: r.id, type: r.type, name: r.name, slug: r.slug, image: null, year: null }, qualifier: plural(r.n, noun), notes: [] })));
+  };
+  const notDerived = (a: string) => `(${a}.created_by IS NULL OR ${a}.created_by != '${DERIVED_BY}')`;
+  if (node.type === "practitioner" || node.type === "collective") {
+    const viaWorks = db.prepare(
+      `SELECT x.edge_type AS via, n.id, n.type, n.name, n.slug, COUNT(DISTINCT x.source_id) AS n
+         FROM edges c
+         JOIN nodes w ON w.id = c.source_id AND w.type = 'artwork' AND ${notRetired("w")}
+         JOIN edges x ON x.source_id = c.source_id AND x.valid_until IS NULL AND x.edge_type IN ('HELD_BY', 'EXHIBITED_AT') AND ${notDerived("x")}
+         JOIN nodes n ON n.id = x.target_id AND ${notRetired("n")}
+        WHERE c.target_id = ? AND c.edge_type = 'CREATED_BY' AND c.valid_until IS NULL AND ${notDerived("c")}
+        GROUP BY x.edge_type, n.id
+        ORDER BY n DESC, n.name`
+    ).all(node.id) as any[];
+    add("via:HELD_BY", viaWorks.filter((r) => r.via === "HELD_BY"), "work");
+    add("via:EXHIBITED_AT", viaWorks.filter((r) => r.via === "EXHIBITED_AT"), "work");
   }
-  const buckets = new Map<string, Array<{ peer: Peer; types: string[]; notes: RelationNote[] }>>();
-  for (const s of seen.values()) {
-    if (s.peer.type === "artwork") continue;
-    const list = buckets.get(s.peer.type) ?? [];
-    list.push(s);
-    buckets.set(s.peer.type, list);
+  if (node.type === "practitioner" || node.type === "collective" || node.type === "institution") {
+    const viaShows = db.prepare(
+      `SELECT x.edge_type AS via, n.id, n.type, n.name, n.slug, COUNT(DISTINCT p.target_id) AS n
+         FROM edges p
+         JOIN nodes s ON s.id = p.target_id AND ${notRetired("s")}
+         JOIN edges x ON x.source_id = p.target_id AND x.valid_until IS NULL AND x.edge_type IN ('PRESENTED_BY', 'CURATED_BY') AND ${notDerived("x")}
+         JOIN nodes n ON n.id = x.target_id AND n.id != p.source_id AND ${notRetired("n")}
+        WHERE p.source_id = ? AND p.edge_type = 'PARTICIPATED_IN' AND p.valid_until IS NULL AND ${notDerived("p")}
+        GROUP BY x.edge_type, n.id
+        ORDER BY n DESC, n.name`
+    ).all(node.id) as any[];
+    add("via:PRESENTED_BY", viaShows.filter((r) => r.via === "PRESENTED_BY"), "show");
+    add("via:CURATED_BY", viaShows.filter((r) => r.via === "CURATED_BY"), "show");
   }
-  const total = seen.size;
-  if (!total) {
-    return `
-      <section class="ev-section">
-        <h2 class="ev-h2">// relations <span class="ev-h2-count">/00 ·n=00</span></h2>
-        <p class="ev-empty">no relations linked yet — <em>${CONTRIB_LINK}</em></p>
-      </section>`;
-  }
+  return out;
+}
+
+function relationGroups(db: DatabaseSync, node: EntityNode, edges: LiveEdge[], showcase: Showcase | null, notes: Map<string, RelationNote[]>, worksFromGraph: boolean): Group[] {
   const qualifiers = showcase?.relation_qualifiers ?? {};
-  const order = [...REL_ORDER, ...[...buckets.keys()].filter((t) => !REL_ORDER.includes(t)).sort()];
-  const groups = order.filter((t) => buckets.has(t)).map((t) => {
-    const items = buckets.get(t)!;
-    const rows = items.map(({ peer, types, notes: n }) =>
-      relRow(peer, t, esc(peer.name), qualifiers[peer.id] || types.map((x) => x.toLowerCase().replace(/_/g, " ")).join(" · "), n)
-    ).join("");
-    return `
-        <div class="ev-rel-group">
-          <h3 class="ev-rel-h3">[${esc(t)}] <span class="ev-h3-count">/${pad(items.length)}</span></h3>
-          <ul class="ev-rel-list">${rows}</ul>
-        </div>`;
-  }).join("");
+  const byKey = new Map<string, Map<string, GroupItem>>();
+  for (const e of edges) {
+    // Lenses are listed on the regime's own record, not on every node they saw.
+    if (e.edge_type === "CLASSIFIED_BY") continue;
+    // A maker's / concept's works have their own section (with images).
+    if (worksFromGraph && e.other.type === "artwork" && e.dir === "in" && (e.edge_type === "CREATED_BY" || e.edge_type === "EMBODIES") && WORKS_TYPES.has(node.type)) continue;
+    const key = SYMMETRIC.has(e.edge_type) ? e.edge_type : `${e.edge_type}:${e.dir}`;
+    const group = byKey.get(key) ?? new Map<string, GroupItem>();
+    const item = group.get(e.other.id) ?? { peer: e.other, qualifier: qualifiers[e.other.id] ?? e.other.year ?? "", notes: [] };
+    item.notes.push(...(notes.get(tripleKey(e)) ?? []));
+    group.set(e.other.id, item);
+    byKey.set(key, group);
+  }
+  const groups: Group[] = [];
+  for (const [key, items] of twoHop(db, node)) groups.push({ key, head: groupHead(key), items });
+  for (const [key, items] of byKey) groups.push({ key, head: groupHead(key), items: [...items.values()] });
+  const rank = (k: string) => {
+    const i = GROUP_ORDER.indexOf(k);
+    return i < 0 ? GROUP_ORDER.length : i;
+  };
+  return groups.sort((a, b) => rank(a.key) - rank(b.key) || a.head.localeCompare(b.head));
+}
+
+function groupSection(g: Group): string {
+  const rows = g.items.slice(0, GROUP_ROW_CAP).map((it) => relRow(it.peer, it.peer.type, esc(it.peer.name), it.qualifier, it.notes)).join("");
+  const more = g.items.length > GROUP_ROW_CAP ? `<li class="ev-list-row ev-mono-dim">and ${g.items.length - GROUP_ROW_CAP} more</li>` : "";
   return `
-      <section class="ev-section">
-        <h2 class="ev-h2">// relations <span class="ev-h2-count">/${pad(total)} ·n=${pad(total)}</span></h2>
-        ${groups}
+      <section class="ev-section" data-group="${esc(g.key)}">
+        <h2 class="ev-h2">// ${esc(g.head)} <span class="ev-h2-count">/${pad(g.items.length)}</span></h2>
+        <ul class="ev-rel-list">${rows}${more}</ul>
       </section>`;
 }
 
@@ -439,13 +507,7 @@ function relationsSection(edges: LiveEdge[], showcase: Showcase | null, notes: M
 function rosterSection(db: DatabaseSync, node: EntityNode): string {
   if (node.type !== "institution" && node.type !== "platform") return "";
   const roster = rosterFor(db, node.id);
-  if (!roster.length) {
-    return `
-      <section class="ev-section">
-        <h2 class="ev-h2">// artists <span class="ev-h2-count">/00</span></h2>
-        <p class="ev-empty">no artists linked through its shows or works yet</p>
-      </section>`;
-  }
+  if (!roster.length) return "";
   const rows = roster.slice(0, 300).map((a) => {
     const why = [a.represented ? "represented" : "", a.shows ? `${a.shows} show${a.shows === 1 ? "" : "s"}` : "", a.works ? `${a.works} work${a.works === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
     return relRow(a, a.type, `${esc(a.name)}${a.estate ? ' <span class="ev-mono-dim">(estate)</span>' : ""}`, why);
@@ -466,14 +528,9 @@ function embeddingsPlaceholder(): string {
       </section>`;
 }
 
-function listSection(label: string, items: Array<string | { year: string; title: string; venue?: string; body?: string }>, empty: string): string {
-  if (!items.length) {
-    return `
-      <section class="ev-section">
-        <h2 class="ev-h2">// ${esc(label)} <span class="ev-h2-count">/00</span></h2>
-        <p class="ev-empty">${esc(empty)} — ${CONTRIB_LINK}</p>
-      </section>`;
-  }
+/** Hand-curated showcase lists (editorial, not yet edges). */
+function listSection(label: string, items: Array<string | { year: string; title: string; venue?: string; body?: string }>): string {
+  if (!items.length) return "";
   const rows = items.map((item, i) => {
     if (typeof item === "string") return `<li class="ev-list-row"><span class="ev-list-idx">${pad(i + 1)}</span> ${esc(item)}</li>`;
     const venue = item.venue || item.body || "";
@@ -531,7 +588,7 @@ export function renderEntityView(db: DatabaseSync, node: EntityNode, viewer: Ent
         <p class="ev-mono-dim ev-claim" id="ev-claim">${claim}</p>
         ${retired}
         ${tagline(showcase)}
-        ${hero(h, showcase)}
+        ${hero(h)}
         <hr class="ev-hr">
         ${bio(bioTxt)}
         ${metadata(metadataRows(db, node, meta, showcase))}
@@ -539,11 +596,11 @@ export function renderEntityView(db: DatabaseSync, node: EntityNode, viewer: Ent
         ${worksSection(node, gathered)}
         ${practiceSections(meta)}
         ${rosterSection(db, node)}
-        ${relationsSection(edges, showcase, notesByTriple(publicNotesFor(db, node.id)))}
+        ${relationGroups(db, node, edges, showcase, notesByTriple(publicNotesFor(db, node.id)), gathered.source === "graph").map(groupSection).join("")}
         ${embeddingsPlaceholder()}
-        ${listSection("collections", showcase?.collections ?? [], "no public collection holdings linked yet")}
-        ${listSection("exhibitions.selected", showcase?.exhibitions_selected ?? [], "no curated exhibition history yet")}
-        ${listSection("awards", showcase?.awards ?? [], "no awards linked yet")}
+        ${listSection("collections (editorial)", showcase?.collections ?? [])}
+        ${listSection("exhibitions.selected (editorial)", showcase?.exhibitions_selected ?? [])}
+        ${listSection("awards (editorial)", showcase?.awards ?? [])}
         ${provenance(node, meta, showcase, viewer)}
       </article>`;
 
