@@ -399,7 +399,10 @@ curl -s -X POST "$ADAI_BASE/api/v1/images" \
 ```
 
 Returns `{ node_id, upload: { key, url, sha256, bytes, content_type,
-already_existed }, status, signal_id, intake_id }`. The `upload` block
+already_existed }, status, signal_id, intake_id }`. Every transport reads
+the file's own first bytes to decide what it is — the declared type
+(multipart part type, `mime_type`) is ignored; bytes that aren't a
+JPEG/PNG/GIF/WebP/AVIF are refused with `415 not_an_image`. The `upload` block
 is the immutable R2 object; the `status` tells you whether the metadata
 patch went live or is queued.
 

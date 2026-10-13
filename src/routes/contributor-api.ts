@@ -32,6 +32,7 @@ import {
 } from "../utils/contribution.js";
 import { uploadImage, isR2Configured } from "../r2.js";
 import { mirrorImageFromUrl, ImageFetchError } from "../utils/images.js";
+import { sniffImageMime } from "../utils/ssrf.js";
 import { getSkillVersion } from "../utils/skill-version.js";
 import { embedNodeAsync } from "../embed/server.js";
 import { normaliseOrgKinds, orgKindsError, ORG_KINDS } from "../utils/org-kinds.js";
@@ -656,6 +657,7 @@ router.post(
     }
 
     let upresult: Awaited<ReturnType<typeof uploadImage>>;
+    let declaredMime: string | null = null;
     if (imageUrl) {
       try {
         upresult = (await mirrorImageFromUrl(imageUrl)).upload;
@@ -668,6 +670,16 @@ router.post(
         return;
       }
     } else {
+      // The stored type and key extension come from the bytes, never from the
+      // label the client sent: a JPEG declared text/plain was once stored as
+      // .bin and served as garbage. Same rule as the image_url transport.
+      const sniffed = sniffImageMime(buf!);
+      if (!sniffed) {
+        res.status(415).set(JSON_HEADERS).json({ error: "not_an_image", detail: `the bytes are not a JPEG/PNG/GIF/WebP/AVIF image (declared ${mime})` });
+        return;
+      }
+      if (sniffed !== mime) declaredMime = mime;
+      mime = sniffed;
       try {
         upresult = await uploadImage(buf!, mime);
       } catch (e: any) {
@@ -679,7 +691,7 @@ router.post(
     const signalId = insertSignal(db, {
       contributor: req.contributor!,
       title: `Upload image to ${nodeId}`,
-      content: JSON.stringify({ node_id: nodeId, key: upresult.key, sha256: upresult.sha256, bytes: upresult.bytes, content_type: upresult.content_type, ...(imageUrl ? { image_url: imageUrl } : {}) }),
+      content: JSON.stringify({ node_id: nodeId, key: upresult.key, sha256: upresult.sha256, bytes: upresult.bytes, content_type: upresult.content_type, ...(declaredMime ? { declared_type: declaredMime } : {}), ...(imageUrl ? { image_url: imageUrl } : {}) }),
       source_url: imageUrl,
       source_type: "api_image",
       batch_id: batch.value,
