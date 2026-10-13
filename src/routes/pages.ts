@@ -130,7 +130,9 @@ function profileHandler(req: any, res: any) {
 
   const escName = htmlEscape(String(node.name));
   const escType = htmlEscape(String(node.type));
+  const fieldHref = `/field?node=${encodeURIComponent(node.id)}`;
   let body = `<h2>${escName}</h2><span class='tag'>${escType}</span>`;
+  body += ` <span class='meta'><a href='${htmlEscape(fieldHref)}'>view in field →</a> · <a href='${nodePath(node)}'>entity view →</a></span>`;
   // Claimed: the badge (+ the claimant's own links); unclaimed: "Is this you?"
   body += profileClaimBlock(db, node, readSession(db, req)?.contributor.id ?? null);
 
@@ -408,7 +410,7 @@ function profileHandler(req: any, res: any) {
   body += ` <a href='/field?node=${encodeURIComponent(node.id)}' class='btn'>View in field</a>`;
   body += ` <a href='/${encodeURIComponent(node.type)}/${encodeURIComponent(slug)}/history' class='btn'>History</a>`;
 
-  res.set(HTML_HEADERS).send(htmlPage(node.name, body));
+  res.set(HTML_HEADERS).send(htmlPage(node.name, body, "", { fieldNode: node.id }));
 }
 
 // Render the "Style kin", "Visually affine", and "AI-suggested attributions"
@@ -617,7 +619,7 @@ function historyHandler(req: any, res: any) {
   if (h.events.length === 0) body += `<p class='meta'>No recorded changes.</p>`;
   for (const e of h.events) body += renderHistoryEvent(e);
   if (h.node.created_at) body += `<div class='card'><p class='meta'>${htmlEscape(h.node.created_at.slice(0, 10))}</p><strong>created</strong></div>`;
-  res.set(HTML_HEADERS).send(htmlPage(`${h.node.name} — history`, body));
+  res.set(HTML_HEADERS).send(htmlPage(`${h.node.name} — history`, body, "", { fieldNode: h.node.id }));
 }
 
 function historyJsonHandler(req: any, res: any) {
@@ -717,7 +719,7 @@ router.get("/neighbours/:type/:slug", (req, res) => {
     body += renderNeighbourTable(neighbours);
   }
 
-  res.set(HTML_HEADERS).send(htmlPage(`Neighbours of ${node.name}`, body));
+  res.set(HTML_HEADERS).send(htmlPage(`Neighbours of ${node.name}`, body, "", { fieldNode: node.id }));
 });
 
 // Larger table variant for /neighbours/: shows name + type + similarity

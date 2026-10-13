@@ -43,6 +43,14 @@ it("entity view: page, overlay JSON, record, wrong-type redirect", async () => {
     const record = await (await fetch(`${base}/record/practitioner/ben-laposky`)).text();
     assert.match(record, /<h2>Ben Laposky<\/h2>/);
     assert.match(record, /href='\/record\/artwork\/oscillon-1184'/);
+
+    // the way back into the field (issue #63): beside the title, and the nav carries the node
+    assert.match(page, /<p class="ev-mono-dim ev-claim" id="ev-claim">.*class="ev-field-link" href="\/field\?node=practitioner%3Aben%20laposky">view in field →/);
+    assert.match(await (await fetch(`${base}/concept/ben-laposky`)).text(), /class="ev-field-link" href="\/field\?node=concept%3Aben-laposky"/);
+    assert.match(record, /<nav><a href='\/field\?node=practitioner%3Aben%20laposky'>Field<\/a>/);
+    assert.match(record, /<a href='\/field\?node=practitioner%3Aben%20laposky'>view in field →<\/a>/);
+    const hist = await (await fetch(`${base}/practitioner/ben-laposky/history`)).text();
+    assert.match(hist, /<nav><a href='\/field\?node=practitioner%3Aben%20laposky'>Field<\/a>/);
   } finally {
     server.close();
   }

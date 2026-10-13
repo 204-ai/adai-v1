@@ -358,6 +358,18 @@
       return;
     }
     if (handleAudience(e)) return;
+    // "view in field →": we are in the field — close onto the node.
+    if (e.target?.closest?.('.ev-field-link') && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = STATE.currentId;
+      close();
+      const field = window.ADAI_GRAPH_FIELD;
+      if (id && field && typeof field.zoomTo === 'function' && field.focusedId !== id) {
+        try { field.zoomTo(id); } catch { /* non-fatal */ }
+      }
+      return;
+    }
     // Links to other nodes (relations, works, embedding cards). A modified
     // click keeps the browser's new-tab behaviour on the standalone page.
     const link = e.target?.closest?.('a[data-node-id]');

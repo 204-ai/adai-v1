@@ -92,6 +92,8 @@ export function htmlEscape(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-export function htmlPage(title: string, body: string, head = ""): string {
-  return `<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — A(DAI)</title><style>${CSS}</style>${head}</head><body><div class='wrap'><header><h1>A<span>(DAI)</span></h1><nav><a href='/'>Field</a><a href='/contribute'>Contribute</a><a href='/me'>Me</a><a href='/whitepaper'>Whitepaper</a><a href='/review'>Review</a><a href='/api/stats'>Stats</a></nav></header>${body}<footer>A(DAI) — a digital arts institute convening the digital arts knowledge commons</footer></div></body></html>`;
+/** `fieldNode`: on a page about one node, the nav's Field opens the field on it. */
+export function htmlPage(title: string, body: string, head = "", opts: { fieldNode?: string } = {}): string {
+  const fieldHref = opts.fieldNode ? `/field?node=${encodeURIComponent(opts.fieldNode)}` : "/";
+  return `<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>${title} — A(DAI)</title><style>${CSS}</style>${head}</head><body><div class='wrap'><header><h1>A<span>(DAI)</span></h1><nav><a href='${htmlEscape(fieldHref)}'>Field</a><a href='/contribute'>Contribute</a><a href='/me'>Me</a><a href='/whitepaper'>Whitepaper</a><a href='/review'>Review</a><a href='/api/stats'>Stats</a></nav></header>${body}<footer>A(DAI) — a digital arts institute convening the digital arts knowledge commons</footer></div></body></html>`;
 }

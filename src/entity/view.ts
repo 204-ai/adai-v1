@@ -154,7 +154,10 @@ function title(node: EntityNode, meta: any, showcase: Showcase | null): string {
 
 /** Claimed badge, or "is this you?" (docs/CLAIM-SPEC.md §2.4). */
 function claimLine(db: DatabaseSync, node: EntityNode, meta: any, viewer: EntityViewer): string {
-  if (!(CLAIMABLE_TYPES as readonly string[]).includes(node.type)) return "";
+  // The way back into the graph (issue #63); in the /field overlay it closes
+  // the overlay onto the node instead (entity-view.js).
+  const field = `<a class="ev-field-link" href="/field?node=${encodeURIComponent(node.id)}">view in field →</a>`;
+  if (!(CLAIMABLE_TYPES as readonly string[]).includes(node.type)) return field;
   const claimed = meta.claimed ?? null;
   const claimHref = `/claim/${encodeURIComponent(node.type)}/${encodeURIComponent(node.slug)}`;
   const parts: string[] = [];
@@ -169,6 +172,7 @@ function claimLine(db: DatabaseSync, node: EntityNode, meta: any, viewer: Entity
   } else if (!claimed || node.type !== "practitioner") {
     parts.push(`<a href="${claimHref}">${claimed ? "part of this? claim it too →" : "is this you? claim this page →"}</a>`);
   }
+  parts.push(field);
   return parts.join(" · ");
 }
 
