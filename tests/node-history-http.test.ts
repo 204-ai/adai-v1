@@ -66,7 +66,10 @@ it("history: edits chain before → after, relations show added and ended, retir
     assert.match(html, /relation ended/);
     assert.match(html, /retired/);
     const profile = await (await fetch(`${base}/artwork/process-4`)).text();
-    assert.match(profile, /href='\/artwork\/process-4\/history'/);
+    assert.match(profile, /href="\/artwork\/process-4\/history"/);
+    assert.match(profile, /retired/);
+    const record = await (await fetch(`${base}/record/artwork/process-4`)).text();
+    assert.match(record, /href='\/artwork\/process-4\/history'/);
 
     assert.equal((await fetch(`${base}/artwork/nope/history.json`)).status, 404);
     assert.equal((await fetch(`${base}/artwork/nope/history`)).status, 404);

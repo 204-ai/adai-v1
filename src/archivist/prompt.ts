@@ -7,6 +7,7 @@
 // cache too often.
 
 import type { DatabaseSync } from "node:sqlite";
+import { siteBase } from "../utils/site.js";
 
 export interface ArchivistPromptParts {
   // The cacheable spine — persona + behavioural rules + schema crash course.
@@ -185,12 +186,6 @@ to current edges — you don't need to worry about it.
   of nodes you've just retrieved. No headers, no horizontal rules.
 - When you call focus_node or highlight_nodes, the user will see it
   happen — you don't need to narrate the call itself.`;
-
-/** The live host, for the rare visitor who asks for a full URL. */
-function siteBase(): string {
-  const env = (process.env.ADAI_BASE_URL || "").replace(/\/+$/, "");
-  return /^https?:\/\//i.test(env) ? env : "https://digitalartsinstitute.io";
-}
 
 function head(stats: {
   total_nodes: number;

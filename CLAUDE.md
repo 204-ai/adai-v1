@@ -186,8 +186,16 @@ empty — it requires evidence of artist intent, not thematic similarity.
 - `GET /explore` — list practitioners
 - `GET /graph` — D3 force-directed graph
 - `GET /field` — the 30k canvas field view (press `e` for embeddings mode)
-- `GET /practitioner/:slug` · `/artwork/:slug` · `/concept/:slug` · `/scene/:slug`
-  — profile pages (with on-demand Style-kin / Visually-affine sections)
+- `GET /<type>/:slug` (practitioner, artwork, concept, …) — the **entity view**,
+  server-rendered by `src/entity/view.ts` (+ `page.ts`): hero work, the node's
+  own words, works, graph-derived relations, embedding neighbours (filled
+  client-side). Resolves (type, slug), then slug alone; a wrong type segment
+  301s. The /field overlay is the SAME article via `GET /api/entity?id=`;
+  styles in `public/field/css/entity-view.css`, client in
+  `public/field/js-interface/entity-view.js`. Showcase data: `src/entity/showcase.ts`.
+- `GET /record/<type>/:slug` — the record view (back office: every field,
+  contributions as prose, raw relations, provenance); linked from the entity
+  view for curators and from `/review`
 - `GET /:type/:slug/history` (+ `history.json`) — every metadata edit (before →
   after) and every relation added/ended, newest first, each with its signal;
   consent-filtered like the profile (`src/utils/history.ts`)

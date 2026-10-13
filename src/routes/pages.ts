@@ -17,6 +17,8 @@ import { nodeHistory, type HistoryEvent } from "../utils/history.js";
 import { readSession } from "../intake/auth.js";
 import { accessClaimCards, accessClaimCount, claimReviewCards, curatorSignIn, objectionsBlock, profileClaimBlock, relationNotesHtml } from "../claim/pages.js";
 import { notesByTriple, publicNotesFor } from "../claim/notes.js";
+import { renderEntityView, nodePath, type EntityNode, type EntityViewer } from "../entity/view.js";
+import { entityPage } from "../entity/page.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.join(__dirname, "..", "..");
@@ -64,16 +66,66 @@ router.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "..", "public", "field", "index.html"));
 });
 
-// GET /:type/:slug — polymorphic profile page (slug-only lookup, type ignored for resolution)
-function profileHandler(req: any, res: any) {
-  const db = getDb();
-  const slug = req.params.slug;
+const NODE_ROUTE_TYPES = ["practitioner", "artwork", "concept", "scene", "collective", "institution", "platform", "publication", "project", "classification_regime"];
 
-  const node = db.prepare("SELECT id, name, type, slug, metadata FROM nodes WHERE slug = ?").get(slug) as any;
+/** A node by its address: (type, slug) first — slugs repeat across types — then slug alone. */
+function nodeAt(db: any, type: string, slug: string): EntityNode | undefined {
+  return (db.prepare("SELECT id, name, type, slug, metadata FROM nodes WHERE type = ? AND slug = ?").get(type, slug)
+    ?? db.prepare("SELECT id, name, type, slug, metadata FROM nodes WHERE slug = ?").get(slug)) as EntityNode | undefined;
+}
+
+function viewerOf(db: any, req: any): EntityViewer {
+  const session = readSession(db, req);
+  return { contributorId: session?.contributor.id ?? null, curator: session?.contributor.scope === "admin" };
+}
+
+const notFoundPage = () => htmlPage("Not Found", "<h2>Not Found</h2><p>No node with that slug.</p>");
+
+// GET /:type/:slug — the entity view (src/entity/view.ts), the designed page
+// of a node: what invitations link to and search engines index. The same
+// article opens as the /field overlay through /api/entity. An address whose
+// type segment is wrong redirects to the node's own.
+function entityHandler(type: string) {
+  return (req: any, res: any) => {
+    const db = getDb();
+    const node = nodeAt(db, type, req.params.slug);
+    if (!node) {
+      res.status(404).set(HTML_HEADERS).send(notFoundPage());
+      return;
+    }
+    if (node.type !== type) {
+      res.redirect(301, nodePath(node));
+      return;
+    }
+    res.set(HTML_HEADERS).send(entityPage(node, renderEntityView(db, node, viewerOf(db, req))));
+  };
+}
+
+// GET /api/entity?id=<node id> — the entity view's article for the /field
+// overlay (public/field/js-interface/entity-view.js).
+router.get("/api/entity", (req, res) => {
+  const db = getDb();
+  const id = typeof req.query.id === "string" ? req.query.id : "";
+  const node = id ? db.prepare("SELECT id, name, type, slug, metadata FROM nodes WHERE id = ?").get(id) as EntityNode | undefined : undefined;
   if (!node) {
-    res.status(404).set(HTML_HEADERS).send(htmlPage("Not Found", "<h2>Not Found</h2><p>No node with that slug.</p>"));
+    res.status(404).json({ error: "not_found" });
     return;
   }
+  const r = renderEntityView(db, node, viewerOf(db, req));
+  res.set("Cache-Control", "no-store").json({ id: node.id, type: node.type, slug: node.slug, name: node.name, html: r.article });
+});
+
+// GET /record/:type/:slug — the record view: the back office of one node —
+// every field, contribution, relation and its provenance. Linked from the
+// entity view for curators and from the review queue.
+function profileHandler(req: any, res: any) {
+  const db = getDb();
+  const node = nodeAt(db, req.params.type, req.params.slug) as any;
+  if (!node) {
+    res.status(404).set(HTML_HEADERS).send(notFoundPage());
+    return;
+  }
+  const slug = node.slug;
 
   const escName = htmlEscape(String(node.name));
   const escType = htmlEscape(String(node.type));
@@ -261,7 +313,7 @@ function profileHandler(req: any, res: any) {
   // into "claimed by N sources" (src/utils/claims.ts).
   const edges = collapseClaims(db
     .prepare(
-      `SELECT e.id, ${CLAIM_COLS}, e.confidence, n1.name as source_name, n1.slug as source_slug, n2.name as target_name, n2.slug as target_slug FROM edges e LEFT JOIN signals s ON s.id = e.signal_id LEFT JOIN nodes n1 ON e.source_id = n1.id LEFT JOIN nodes n2 ON e.target_id = n2.id WHERE e.valid_until IS NULL AND (e.source_id = ? OR e.target_id = ?) ORDER BY e.valid_from ASC`
+      `SELECT e.id, ${CLAIM_COLS}, e.confidence, n1.name as source_name, n1.slug as source_slug, n1.type as source_node_type, n2.name as target_name, n2.slug as target_slug, n2.type as target_node_type FROM edges e LEFT JOIN signals s ON s.id = e.signal_id LEFT JOIN nodes n1 ON e.source_id = n1.id LEFT JOIN nodes n2 ON e.target_id = n2.id WHERE e.valid_until IS NULL AND (e.source_id = ? OR e.target_id = ?) ORDER BY e.valid_from ASC`
     )
     .all(node.id, node.id) as any[]);
 
@@ -281,11 +333,12 @@ function profileHandler(req: any, res: any) {
       for (const e of list) {
         const otherName = e.source_id === node.id ? e.target_name : e.source_name;
         const otherSlug = e.source_id === node.id ? e.target_slug : e.source_slug;
+        const otherType = e.source_id === node.id ? e.target_node_type : e.source_node_type;
         if (!otherSlug) continue;
         const claimed = e.origins.length > 1
           ? ` <span class='meta'>— claimed by ${e.origins.length} sources: ${e.origins.map((o: { label: string }) => htmlEscape(o.label)).join(", ")}</span>`
           : "";
-        body += `<li><a href='/practitioner/${encodeURIComponent(otherSlug)}'>${htmlEscape(String(otherName ?? otherSlug))}</a>${claimed}${relationNotesHtml(notes.get(tripleKey(e)))}</li>`;
+        body += `<li><a href='/record/${encodeURIComponent(otherType)}/${encodeURIComponent(otherSlug)}'>${htmlEscape(String(otherName ?? otherSlug))}</a>${claimed}${relationNotesHtml(notes.get(tripleKey(e)))}</li>`;
       }
       body += `</ul></div>`;
     }
@@ -393,16 +446,8 @@ ${thumb}
   return s;
 }
 
-router.get("/practitioner/:slug", profileHandler);
-router.get("/artwork/:slug", profileHandler);
-router.get("/concept/:slug", profileHandler);
-router.get("/scene/:slug", profileHandler);
-router.get("/collective/:slug", profileHandler);
-router.get("/institution/:slug", profileHandler);
-router.get("/platform/:slug", profileHandler);
-router.get("/publication/:slug", profileHandler);
-router.get("/project/:slug", profileHandler);
-router.get("/classification_regime/:slug", profileHandler);
+for (const t of NODE_ROUTE_TYPES) router.get(`/${t}/:slug`, entityHandler(t));
+router.get("/record/:type/:slug", profileHandler);
 
 // JSON data export — polymorphic over node type, slug-only resolution.
 function dataHandler(req: any, res: any) {
@@ -840,10 +885,10 @@ router.get("/review", (req, res) => {
       const artSlug = String(item.target_node ?? "").split(":").slice(1).join(":");
       body += `<div class='card' id='item-${item.id}'>
 <h3>${artName}</h3>
-<p class='meta'>Proposed creator: <strong><a href='/practitioner/${encodeURIComponent(candSlug)}'>${candName}</a></strong>
+<p class='meta'>Proposed creator: <strong><a href='/record/practitioner/${encodeURIComponent(candSlug)}'>${candName}</a></strong>
  · cosine: <span class='tag'>${sim}</span>
  · ${String(item.created_at ?? "")}</p>
-<p class='meta'>Artwork: <a href='/artwork/${encodeURIComponent(artSlug)}'>${artName}</a></p>
+<p class='meta'>Artwork: <a href='/record/artwork/${encodeURIComponent(artSlug)}'>${artName}</a></p>
 <div style='margin-top:0.5rem'>
 <button class='btn btn-approve' onclick="reviewAction('${item.id}','approve')">Approve attribution</button>
 <button class='btn btn-reject' onclick="reviewAction('${item.id}','reject')">Reject</button>
@@ -853,7 +898,7 @@ router.get("/review", (req, res) => {
   } else {
     const items = db
       .prepare(
-        "SELECT iq.id, iq.signal_id, iq.target_node, iq.submitted_by, iq.trust_tier, iq.created_at, iq.proposed_nodes, iq.proposed_edges, s.title, s.content, s.source_url, s.source_type, n.name as target_name FROM intake_queue iq LEFT JOIN signals s ON iq.signal_id = s.id LEFT JOIN nodes n ON iq.target_node = n.id WHERE iq.status='pending' AND iq.kind='human_signal' ORDER BY iq.created_at DESC"
+        "SELECT iq.id, iq.signal_id, iq.target_node, iq.submitted_by, iq.trust_tier, iq.created_at, iq.proposed_nodes, iq.proposed_edges, s.title, s.content, s.source_url, s.source_type, n.name as target_name, n.type as target_type, n.slug as target_slug FROM intake_queue iq LEFT JOIN signals s ON iq.signal_id = s.id LEFT JOIN nodes n ON iq.target_node = n.id WHERE iq.status='pending' AND iq.kind='human_signal' ORDER BY iq.created_at DESC"
       )
       .all() as any[];
 
@@ -862,7 +907,9 @@ router.get("/review", (req, res) => {
       const qurl = htmlEscape(String(item.source_url ?? ""));
       const qauthor = htmlEscape(String(item.submitted_by ?? ""));
       const qtier = htmlEscape(String(item.trust_tier ?? ""));
-      const qtarget = htmlEscape(String(item.target_name ?? item.target_node ?? ""));
+      const qtarget = item.target_slug
+        ? `<a href='/record/${encodeURIComponent(item.target_type)}/${encodeURIComponent(item.target_slug)}'>${htmlEscape(String(item.target_name ?? item.target_node))}</a>`
+        : htmlEscape(String(item.target_name ?? item.target_node ?? ""));
       const qdate = String(item.created_at ?? "");
       const qsource = String(item.source_type ?? "");
 

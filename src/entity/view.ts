@@ -1,0 +1,555 @@
+// The entity view — the designed page of one node (issue #64). Rendered
+// here, on the server, so that ONE component serves both surfaces:
+//
+//   - GET /<type>/<slug>        the page itself (direct link, indexable)
+//   - GET /api/entity?id=<id>   the same article for the /field overlay
+//                               (public/field/js-interface/entity-view.js)
+//
+// The back-office view of a node (contributions, provenance, raw relations)
+// lives at /record/<type>/<slug>. Section classes (ev-*) are styled by
+// public/field/css/entity-view.css, shared by both surfaces.
+//
+// Editorial rules: the hero is a SIGNATURE WORK, never a portrait; the
+// source is stated at the bottom, AI-assisted showcase data says so.
+
+import type { DatabaseSync } from "node:sqlite";
+import { htmlEscape as esc } from "../templates.js";
+import { notRetired } from "../utils/visibility.js";
+import { formatArtworkYear, formatArtworkYearFromMetadata, YEAR_SQL_FRAGMENT } from "../utils/year.js";
+import { sourceLabel } from "../utils/source-label.js";
+import { rosterFor } from "../utils/roster.js";
+import { CLAIMABLE_TYPES } from "../claim/store.js";
+import { approvedClaimsFor } from "../claim/store.js";
+import { SHOWCASE, type Showcase, type ShowcaseWork } from "./showcase.js";
+import { notesByTriple, publicNotesFor, type RelationNote } from "../claim/notes.js";
+import { tripleKey } from "../utils/claims.js";
+
+export interface EntityNode {
+  id: string;
+  type: string;
+  name: string;
+  slug: string;
+  metadata: string | null;
+}
+
+export interface EntityViewer {
+  /** The signed-in contributor, if any (claim line). */
+  contributorId: string | null;
+  /** A curator: sees the link to the record view. */
+  curator: boolean;
+}
+
+export interface EntityRender {
+  /** The <article class="ev-article"> — the whole view, minus overlay chrome. */
+  article: string;
+  title: string;
+  description: string;
+  image: string | null;
+}
+
+const DERIVED_BY = "embedding-multimodal-v1";
+const WORKS_TYPES = new Set(["practitioner", "collective", "concept", "scene"]);
+const CONCEPT_WORKS_CAP = 24;
+const REL_ORDER = ["practitioner", "collective", "concept", "institution", "platform", "project", "scene", "publication", "classification_regime"];
+
+const pad = (n: number) => String(n).padStart(2, "0");
+const isHttp = (u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u);
+const parse = (s: string | null | undefined): any => {
+  if (!s) return {};
+  try {
+    const v = JSON.parse(s);
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+};
+
+export function nodePath(n: { type: string; slug: string }): string {
+  return `/${encodeURIComponent(n.type)}/${encodeURIComponent(n.slug)}`;
+}
+
+export const CONTRIB_LINK = `<a class="ev-contrib-link" href="/contribute" title="how to contribute to A(DAI)">contribute ↗</a>`;
+
+interface Peer {
+  id: string;
+  type: string;
+  name: string;
+  slug: string;
+  image: string | null;
+  year: string | null;
+}
+
+interface LiveEdge {
+  edge_type: string;
+  source_id: string;
+  target_id: string;
+  dir: "out" | "in";
+  other: Peer;
+}
+
+/** Live, curated (not embedding-derived) edges touching the node, other end not retired. */
+function liveEdges(db: DatabaseSync, nodeId: string): LiveEdge[] {
+  const rows = db.prepare(
+    `SELECT e.edge_type, e.source_id, e.target_id, n.id, n.type, n.name, n.slug,
+            json_extract(n.metadata,'$.cdn_image_url') AS cdn_image_url,
+            json_extract(n.metadata,'$.image_url') AS image_url,
+            ${YEAR_SQL_FRAGMENT.replace(/metadata/g, "n.metadata")}
+       FROM edges e
+       JOIN nodes n ON n.id = CASE WHEN e.source_id = ? THEN e.target_id ELSE e.source_id END
+      WHERE e.valid_until IS NULL AND (e.source_id = ? OR e.target_id = ?)
+        AND (e.created_by IS NULL OR e.created_by != '${DERIVED_BY}')
+        AND n.id != ? AND ${notRetired("n")}
+      ORDER BY e.valid_from ASC`
+  ).all(nodeId, nodeId, nodeId, nodeId) as any[];
+  return rows.map((r) => ({
+    edge_type: r.edge_type,
+    source_id: r.source_id,
+    target_id: r.target_id,
+    dir: r.source_id === nodeId ? "out" : "in",
+    other: {
+      id: r.id,
+      type: r.type,
+      name: r.name,
+      slug: r.slug,
+      image: isHttp(r.cdn_image_url) ? r.cdn_image_url : isHttp(r.image_url) ? r.image_url : null,
+      year: r.type === "artwork" ? formatArtworkYear(r) : null,
+    },
+  }));
+}
+
+function nodeById(db: DatabaseSync, id: string): Peer | null {
+  const r = db.prepare(
+    `SELECT id, type, name, slug, json_extract(metadata,'$.cdn_image_url') AS cdn_image_url,
+            json_extract(metadata,'$.image_url') AS image_url, ${YEAR_SQL_FRAGMENT}
+       FROM nodes WHERE id = ? AND ${notRetired("nodes")}`
+  ).get(id) as any;
+  if (!r) return null;
+  return {
+    id: r.id, type: r.type, name: r.name, slug: r.slug,
+    image: isHttp(r.cdn_image_url) ? r.cdn_image_url : isHttp(r.image_url) ? r.image_url : null,
+    year: r.type === "artwork" ? formatArtworkYear(r) : null,
+  };
+}
+
+// ---------- sections ----------
+
+function breadcrumb(node: EntityNode): string {
+  return `
+      <div class="ev-breadcrumb">
+        <a class="ev-bc-field" href="/field?node=${encodeURIComponent(node.id)}">field/</a>
+        <span class="ev-bc-type">[${esc(node.type)}]</span>
+        <span class="ev-bc-sep">/</span>
+        <span class="ev-bc-slug">n.${esc(node.type)}.${esc(node.slug)}</span>
+      </div>`;
+}
+
+function title(node: EntityNode, meta: any, showcase: Showcase | null): string {
+  const display = showcase?.name_display || node.name;
+  const dateStr = showcase?.dates_compact || (node.type === "artwork" ? formatArtworkYearFromMetadata(meta) : null);
+  const dates = dateStr ? `<span class="ev-dates">[${esc(dateStr)}]</span>` : "";
+  return `<h1 class="ev-title">${esc(display)} ${dates}</h1>`;
+}
+
+/** Claimed badge, or "is this you?" (docs/CLAIM-SPEC.md §2.4). */
+function claimLine(db: DatabaseSync, node: EntityNode, meta: any, viewer: EntityViewer): string {
+  if (!(CLAIMABLE_TYPES as readonly string[]).includes(node.type)) return "";
+  const claimed = meta.claimed ?? null;
+  const claimHref = `/claim/${encodeURIComponent(node.type)}/${encodeURIComponent(node.slug)}`;
+  const parts: string[] = [];
+  if (claimed) {
+    parts.push(`<span class="ev-claimed">✓ claimed</span>`);
+    if (claimed.handle) parts.push(`<a href="/@${esc(String(claimed.handle))}">@${esc(String(claimed.handle))}</a>`);
+    if (Array.isArray(claimed.by) && claimed.by.length) parts.push(claimed.by.map((b: unknown) => esc(String(b))).join(", "));
+  }
+  const mine = viewer.contributorId ? approvedClaimsFor(db, node.id).some((c) => c.contributor_id === viewer.contributorId) : false;
+  if (mine) {
+    parts.push(`this is your page · <a href="/me?node=${encodeURIComponent(node.id)}">your log</a>`);
+  } else if (!claimed || node.type !== "practitioner") {
+    parts.push(`<a href="${claimHref}">${claimed ? "part of this? claim it too →" : "is this you? claim this page →"}</a>`);
+  }
+  return parts.join(" · ");
+}
+
+function tagline(showcase: Showcase | null): string {
+  if (!showcase) return "";
+  const disc = (showcase.tagline_disciplines || []).map(esc).join(" · ");
+  const cf = (showcase.tagline_cf || []).map(esc).join(" , ");
+  if (!disc && !cf) return "";
+  return `
+      <div class="ev-tagline">
+        ${disc ? `<span class="ev-tagline-disc">${disc}</span>` : ""}
+        ${cf ? `<span class="ev-tagline-cf">cf. ${cf}</span>` : ""}
+      </div>`;
+}
+
+function heroNode(db: DatabaseSync, node: EntityNode, meta: any, showcase: Showcase | null, works: Peer[]): { peer: Peer; drop: string } | null {
+  if (showcase?.hero?.artwork_id) {
+    const p = nodeById(db, showcase.hero.artwork_id);
+    if (p?.image) return { peer: p, drop: showcase.hero.drop || "" };
+  }
+  if (node.type === "artwork") {
+    const img = isHttp(meta.cdn_image_url) ? meta.cdn_image_url : isHttp(meta.image_url) ? meta.image_url : null;
+    return img ? { peer: { id: node.id, type: node.type, name: node.name, slug: node.slug, image: img, year: null }, drop: "" } : null;
+  }
+  // A maker's first imaged work. Never a portrait.
+  const w = works.find((p) => p.image);
+  return w ? { peer: w, drop: "" } : null;
+}
+
+function hero(h: { peer: Peer; drop: string } | null, showcase: Showcase | null): string {
+  if (h?.peer.image) {
+    return `
+      <figure class="ev-hero ev-hero--image">
+        <img src="${esc(h.peer.image)}" alt="${esc(h.peer.name)}" crossorigin="anonymous">
+        <figcaption class="ev-hero-cap"><span class="ev-mono-tag">img.hero · ${esc(h.peer.name)}</span>${h.drop ? `<br><span class="ev-mono-dim">drop: ${esc(h.drop)}</span>` : ""}</figcaption>
+      </figure>`;
+  }
+  const fallback = showcase?.hero?.fallback_copy || "img.hero / signature work";
+  const sub = showcase ? esc("awaiting linkage — image fields not yet populated for this work") : `${CONTRIB_LINK} — sense, then link`;
+  return `
+      <figure class="ev-hero ev-hero--empty" data-hatch="1">
+        <figcaption class="ev-hero-cap">
+          <span class="ev-mono-tag">${esc(fallback)}</span><br>
+          <span class="ev-mono-dim">drop: ${sub}</span>
+        </figcaption>
+      </figure>`;
+}
+
+/** The node's own words: showcase bio, else what its metadata says it is. */
+function bioText(meta: any, showcase: Showcase | null): string | null {
+  const profile = meta.full_profile ?? meta;
+  const candidates = [showcase?.bio, meta.summary, meta.description, profile?.practice_description?.practice_summary, meta.bio];
+  const s = candidates.find((c) => typeof c === "string" && c.trim());
+  return s ? String(s).trim() : null;
+}
+
+function bio(text: string | null): string {
+  return text ? `<p class="ev-bio">&gt; ${esc(text)} <span class="ev-bio-mark">‖</span></p>` : "";
+}
+
+const ALIAS_LABEL: Record<string, string> = { wikidata: "wikidata", moma: "MoMA", met: "Met", artblocks: "Art Blocks", fxhash: "fxhash" };
+
+function metadataRows(db: DatabaseSync, node: EntityNode, meta: any, showcase: Showcase | null): Array<[string, string]> {
+  const rows: Array<[string, string]> = [];
+  if (showcase) {
+    if (showcase.born) rows.push(["born", `${esc(showcase.born.date)} · ${esc(showcase.born.place)}`]);
+    if (showcase.died) rows.push(["died", `${esc(showcase.died.date)} · ${esc(showcase.died.place)}`]);
+    if (showcase.nationality) rows.push(["nationality", esc(showcase.nationality)]);
+    if (showcase.pronunciation) rows.push(["pronunciation", esc(showcase.pronunciation)]);
+    if (showcase.disciplines_full?.length) rows.push(["disciplines", showcase.disciplines_full.map(esc).join(" · ")]);
+    if (showcase.movements?.length) rows.push(["movements", showcase.movements.map(esc).join(" · ")]);
+    return rows;
+  }
+  const profile = meta.full_profile ?? meta;
+  const info = profile?.basic_info ?? {};
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : typeof v === "number" ? String(v) : null);
+  const kinds = Array.isArray(meta.kind) ? meta.kind.map(String) : null;
+  if (node.type === "institution" && meta.kind) rows.push(["kind", kinds ? kinds.map(esc).join(" · ") : esc(String(meta.kind))]);
+  const location = str(info.location) ?? str(meta.location) ?? [str(meta.city), str(meta.country)].filter(Boolean).join(", ");
+  if (location) rows.push(["location", esc(location)]);
+  const active = str(info.active_years) ?? str(meta.active_years);
+  if (active && node.type !== "artwork") rows.push(["active", esc(active)]);
+  const medium = str(profile?.practice_description?.medium) ?? str(meta.medium);
+  if (medium) rows.push(["medium", esc(medium)]);
+  if (str(meta.status)) rows.push(["status", esc(String(meta.status))]);
+  const web = [info.url, meta.homepage, meta.website, meta.url].find(isHttp);
+  if (web) rows.push(["web", `<a href="${esc(web)}" target="_blank" rel="noopener">${esc(web.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/$/, ""))} ↗</a>`]);
+  for (const a of db.prepare("SELECT source, external_id FROM node_aliases WHERE node_id = ? AND source != 'handle' ORDER BY source").all(node.id) as any[]) {
+    const label = ALIAS_LABEL[a.source] ?? a.source;
+    const id = esc(String(a.external_id));
+    rows.push([esc(label), a.source === "wikidata" ? `<a href="https://www.wikidata.org/wiki/${encodeURIComponent(a.external_id)}" target="_blank" rel="noopener">${id} ↗</a>` : id]);
+  }
+  return rows;
+}
+
+function metadata(rows: Array<[string, string]>): string {
+  if (!rows.length) return "";
+  const half = Math.ceil(rows.length / 2);
+  const col = (rs: Array<[string, string]>) => rs.map(([k, v]) => `<dt class="ev-meta-k">${k}</dt><dd class="ev-meta-v">:${v}</dd>`).join("");
+  return `<dl class="ev-meta"><div class="ev-meta-col">${col(rows.slice(0, half))}</div><div class="ev-meta-col">${col(rows.slice(half))}</div></dl>`;
+}
+
+function quote(showcase: Showcase | null): string {
+  if (!showcase?.quote) return "";
+  return `
+      <blockquote class="ev-quote">
+        <p class="ev-quote-text">«${esc(showcase.quote.text)}»</p>
+        <p class="ev-quote-attr">— ${esc(showcase.quote.attribution)}</p>
+      </blockquote>`;
+}
+
+/** Prose sections a legacy profile carries beyond its summary. */
+function practiceSections(meta: any): string {
+  const profile = meta.full_profile ?? meta;
+  const blocks: Array<[string, unknown]> = [
+    ["methodology", profile?.practice_description?.methodology],
+    ["commons orientation", profile?.commons_orientation?.commons_summary],
+    ["governance", profile?.governance_model?.governance_detail],
+  ];
+  return blocks
+    .filter(([, v]) => typeof v === "string" && v.trim())
+    .map(([k, v]) => `
+      <section class="ev-section">
+        <h2 class="ev-h2">// ${esc(k)}</h2>
+        <p class="ev-prose">${esc(String(v))}</p>
+      </section>`)
+    .join("");
+}
+
+interface WorkItem extends ShowcaseWork { peer: Peer | null }
+
+/** A maker's works (CREATED_BY), a concept's works (EMBODIES), else showcase / legacy key works. */
+function gatherWorks(db: DatabaseSync, node: EntityNode, meta: any, showcase: Showcase | null, edges: LiveEdge[]): { works: WorkItem[]; source: "graph" | "showcase" | "none" } {
+  const conceptLike = node.type === "concept" || node.type === "scene";
+  const want = conceptLike ? "EMBODIES" : "CREATED_BY";
+  const seen = new Set<string>();
+  let graphWorks: WorkItem[] = [];
+  for (const e of edges) {
+    if (e.edge_type !== want || e.dir !== "in" || e.other.type !== "artwork" || seen.has(e.other.id)) continue;
+    seen.add(e.other.id);
+    graphWorks.push({ slug: e.other.slug, title: e.other.name, year: e.other.year ?? undefined, graph_id: e.other.id, peer: e.other });
+  }
+  if (conceptLike && graphWorks.length > CONCEPT_WORKS_CAP) graphWorks = graphWorks.slice(0, CONCEPT_WORKS_CAP);
+  // Imaged graph works win over hand-curated stubs; showcase prose still renders.
+  if (graphWorks.some((w) => w.peer?.image)) return { works: graphWorks, source: "graph" };
+  if (showcase?.works?.length) {
+    return { works: showcase.works.map((w) => ({ ...w, peer: w.graph_id ? nodeById(db, w.graph_id) : null })), source: "showcase" };
+  }
+  const profile = meta.full_profile ?? meta;
+  if (!graphWorks.length && Array.isArray(profile?.key_works?.works) && profile.key_works.works.length) {
+    return {
+      works: profile.key_works.works.map((w: any) => ({ title: String(w.title ?? ""), year: w.year != null ? String(w.year) : undefined, blurb: typeof w.description === "string" ? w.description : undefined, peer: null })),
+      source: "showcase",
+    };
+  }
+  return { works: graphWorks, source: graphWorks.length ? "graph" : "none" };
+}
+
+function worksSection(node: EntityNode, gathered: ReturnType<typeof gatherWorks>): string {
+  if (!WORKS_TYPES.has(node.type)) return "";
+  const { works, source } = gathered;
+  if (!works.length) {
+    const conceptLike = node.type === "concept" || node.type === "scene";
+    const msg = conceptLike ? `no works have linked this ${esc(node.type)} yet` : `no works have been linked to this ${esc(node.type)} yet`;
+    return `
+      <section class="ev-section">
+        <h2 class="ev-h2">// works <span class="ev-h2-count">/00</span></h2>
+        <p class="ev-empty">${msg} — <em>${CONTRIB_LINK}</em></p>
+      </section>`;
+  }
+  const items = works.map((w, i) => {
+    const url = w.peer?.image ?? null;
+    const slug = w.slug || (w.title || "").toLowerCase().replace(/\s+/g, "-").slice(0, 64);
+    const desc = w.img_descriptor ? `<br>${esc(w.img_descriptor)}` : "";
+    const imgBlock = url
+      ? `<div class="ev-work-img"><img src="${esc(url)}" alt="${esc(w.title)}" crossorigin="anonymous" loading="lazy"><div class="ev-work-img-cap"><span class="ev-mono-tag">img.slot · ${esc(slug)}</span>${desc}</div></div>`
+      : `<div class="ev-work-img ev-work-img--empty" data-hatch="1"><div class="ev-work-img-cap"><span class="ev-mono-tag">img.slot · ${esc(slug)}</span>${desc || '<br><span class="ev-mono-dim">awaiting linkage</span>'}</div></div>`;
+    const yearTag = w.year ? `<span class="ev-work-year">[${esc(w.year)}]</span>` : "";
+    const mediumLine = w.medium || w.method
+      ? `<p class="ev-work-medium">${esc(w.medium || "")} ${w.method ? `· <span class="ev-work-method">method: ${esc(w.method)}</span>` : ""}</p>`
+      : `<p class="ev-work-medium ev-mono-dim">medium · method · year — <em>awaiting ${CONTRIB_LINK}</em></p>`;
+    const blurb = w.blurb ? `<p class="ev-work-blurb">// ${esc(w.blurb)}</p>` : "";
+    const titleHtml = w.peer
+      ? `<a href="${nodePath(w.peer)}" data-node-id="${esc(w.peer.id)}">${esc(w.title)}</a>`
+      : esc(w.title);
+    return `
+        <article class="ev-work">
+          ${w.peer ? `<a class="ev-work-link" href="${nodePath(w.peer)}" data-node-id="${esc(w.peer.id)}" tabindex="-1" aria-hidden="true">${imgBlock}</a>` : imgBlock}
+          <div class="ev-work-body">
+            <h3 class="ev-work-title">w.${pad(i + 1)} <strong>${titleHtml}</strong> ${yearTag}</h3>
+            ${mediumLine}
+            ${blurb}
+          </div>
+        </article>`;
+  }).join("");
+  const sourceTag = source === "graph" ? '<span class="ev-h2-source">· from graph (awaiting editorial enrichment)</span>' : "";
+  return `
+      <section class="ev-section">
+        <h2 class="ev-h2">// works <span class="ev-h2-count">/${pad(works.length)}</span>${sourceTag}</h2>
+        <div class="ev-works">${items}</div>
+      </section>`;
+}
+
+/** The subject's word on a relation: an open contest, or context (docs/CLAIM-SPEC.md). */
+function notesHtml(notes: RelationNote[]): string {
+  return notes.map((n) => {
+    const who = n.handle ? `@${esc(n.handle)}` : esc(n.by ?? "the subject");
+    return n.kind === "contest"
+      ? `<div class="ev-rel-note ev-rel-note--contest">⚑ contested by the subject (${who}): ${esc(n.note)}</div>`
+      : `<div class="ev-rel-note">“${esc(n.note)}” — ${who}</div>`;
+  }).join("");
+}
+
+function relRow(p: { id: string; type: string; slug: string; name: string }, tag: string, nameHtml: string, qualifier: string, notes: RelationNote[] = []): string {
+  return `
+          <li><a class="ev-rel-row" href="${nodePath(p)}" data-node-id="${esc(p.id)}" title="open ${esc(p.name)}">
+            <span class="ev-rel-leader">··········</span>
+            <span class="ev-rel-tag">[${esc(tag)}]</span>
+            <span class="ev-rel-name">${nameHtml}</span>
+            <span class="ev-rel-qualifier">${esc(qualifier)}</span>
+          </a>${notesHtml(notes)}</li>`;
+}
+
+/** Neighbours grouped by node type; artworks have their own section. */
+function relationsSection(edges: LiveEdge[], showcase: Showcase | null, notes: Map<string, RelationNote[]>): string {
+  const seen = new Map<string, { peer: Peer; types: string[]; notes: RelationNote[] }>();
+  for (const e of edges) {
+    if (e.edge_type === "CLASSIFIED_BY") continue;
+    const s = seen.get(e.other.id) ?? { peer: e.other, types: [], notes: [] };
+    s.types.push(e.edge_type);
+    s.notes.push(...(notes.get(tripleKey(e)) ?? []));
+    seen.set(e.other.id, s);
+  }
+  const buckets = new Map<string, Array<{ peer: Peer; types: string[]; notes: RelationNote[] }>>();
+  for (const s of seen.values()) {
+    if (s.peer.type === "artwork") continue;
+    const list = buckets.get(s.peer.type) ?? [];
+    list.push(s);
+    buckets.set(s.peer.type, list);
+  }
+  const total = seen.size;
+  if (!total) {
+    return `
+      <section class="ev-section">
+        <h2 class="ev-h2">// relations <span class="ev-h2-count">/00 ·n=00</span></h2>
+        <p class="ev-empty">no relations linked yet — <em>${CONTRIB_LINK}</em></p>
+      </section>`;
+  }
+  const qualifiers = showcase?.relation_qualifiers ?? {};
+  const order = [...REL_ORDER, ...[...buckets.keys()].filter((t) => !REL_ORDER.includes(t)).sort()];
+  const groups = order.filter((t) => buckets.has(t)).map((t) => {
+    const items = buckets.get(t)!;
+    const rows = items.map(({ peer, types, notes: n }) =>
+      relRow(peer, t, esc(peer.name), qualifiers[peer.id] || types.map((x) => x.toLowerCase().replace(/_/g, " ")).join(" · "), n)
+    ).join("");
+    return `
+        <div class="ev-rel-group">
+          <h3 class="ev-rel-h3">[${esc(t)}] <span class="ev-h3-count">/${pad(items.length)}</span></h3>
+          <ul class="ev-rel-list">${rows}</ul>
+        </div>`;
+  }).join("");
+  return `
+      <section class="ev-section">
+        <h2 class="ev-h2">// relations <span class="ev-h2-count">/${pad(total)} ·n=${pad(total)}</span></h2>
+        ${groups}
+      </section>`;
+}
+
+/** A gallery's / platform's artists, read off its shows and works (src/utils/roster.ts). */
+function rosterSection(db: DatabaseSync, node: EntityNode): string {
+  if (node.type !== "institution" && node.type !== "platform") return "";
+  const roster = rosterFor(db, node.id);
+  if (!roster.length) {
+    return `
+      <section class="ev-section">
+        <h2 class="ev-h2">// artists <span class="ev-h2-count">/00</span></h2>
+        <p class="ev-empty">no artists linked through its shows or works yet</p>
+      </section>`;
+  }
+  const rows = roster.slice(0, 300).map((a) => {
+    const why = [a.represented ? "represented" : "", a.shows ? `${a.shows} show${a.shows === 1 ? "" : "s"}` : "", a.works ? `${a.works} work${a.works === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+    return relRow(a, a.type, `${esc(a.name)}${a.estate ? ' <span class="ev-mono-dim">(estate)</span>' : ""}`, why);
+  }).join("");
+  return `
+      <section class="ev-section">
+        <h2 class="ev-h2">// artists <span class="ev-h2-count">/${pad(roster.length)}</span></h2>
+        <ul class="ev-rel-list">${rows}</ul>
+      </section>`;
+}
+
+/** Filled by the client (/api/neighbours) — cosine search stays off the page's critical path. */
+function embeddingsPlaceholder(): string {
+  return `
+      <section class="ev-section ev-embeddings" id="ev-embeddings">
+        <h2 class="ev-h2">// embedding neighbours <span class="ev-h2-count" id="ev-emb-count">/··</span></h2>
+        <p class="ev-empty adai-embed-loading" id="ev-emb-status"><span class="adai-spin"></span>computing cosine neighbours over the embedding space…</p>
+      </section>`;
+}
+
+function listSection(label: string, items: Array<string | { year: string; title: string; venue?: string; body?: string }>, empty: string): string {
+  if (!items.length) {
+    return `
+      <section class="ev-section">
+        <h2 class="ev-h2">// ${esc(label)} <span class="ev-h2-count">/00</span></h2>
+        <p class="ev-empty">${esc(empty)} — ${CONTRIB_LINK}</p>
+      </section>`;
+  }
+  const rows = items.map((item, i) => {
+    if (typeof item === "string") return `<li class="ev-list-row"><span class="ev-list-idx">${pad(i + 1)}</span> ${esc(item)}</li>`;
+    const venue = item.venue || item.body || "";
+    return `<li class="ev-list-row"><span class="ev-list-year">[${esc(item.year)}]</span> <strong>${esc(item.title)}</strong>${venue ? ` · ${esc(venue)}` : ""}</li>`;
+  }).join("");
+  return `
+      <section class="ev-section">
+        <h2 class="ev-h2">// ${esc(label)} <span class="ev-h2-count">/${pad(items.length)}</span></h2>
+        <ul class="ev-list">${rows}</ul>
+      </section>`;
+}
+
+function provenance(node: EntityNode, meta: any, showcase: Showcase | null, viewer: EntityViewer): string {
+  const links: string[] = [];
+  if (showcase) {
+    links.push(`<span class="ev-prov-tag">source_origin: ${esc(showcase.source_origin || "unknown")}</span>`);
+    links.push(`<span class="ev-prov-tag">confidence: ${esc(showcase.confidence || "unknown")}</span>`);
+    if (showcase.review_pending) links.push(`<span class="ev-prov-tag ev-prov-warn">review pending</span>`);
+    links.push(`<span class="ev-prov-tag">last_updated: ${esc(showcase.last_updated || "—")}</span>`);
+  } else {
+    const src = sourceLabel(meta) || "community contribution";
+    const href = isHttp(meta.source_url) ? meta.source_url : /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(src) ? `https://${src}` : null;
+    links.push(href
+      ? `<a class="ev-prov-link" href="${esc(href)}" target="_blank" rel="noopener">source: ${esc(src)} ↗</a>`
+      : `<span class="ev-prov-tag">source: ${esc(src)}</span>`);
+  }
+  const base = nodePath(node);
+  links.push(`<a class="ev-prov-link" href="${base}/history">history</a>`);
+  if (viewer.curator) links.push(`<a class="ev-prov-link" href="/record${base}">record</a>`);
+  links.push(`<span class="ev-prov-tag">${CONTRIB_LINK}</span>`);
+  return `
+      <footer class="ev-provenance">
+        ${links.join(" · ")}
+      </footer>`;
+}
+
+// ---------- the view ----------
+
+export function renderEntityView(db: DatabaseSync, node: EntityNode, viewer: EntityViewer): EntityRender {
+  const meta = parse(node.metadata);
+  const showcase = SHOWCASE[node.id] ?? null;
+  const edges = liveEdges(db, node.id);
+  const gathered = gatherWorks(db, node, meta, showcase, edges);
+  const h = heroNode(db, node, meta, showcase, gathered.works.map((w) => w.peer).filter((p): p is Peer => !!p));
+  const bioTxt = bioText(meta, showcase);
+  const claim = claimLine(db, node, meta, viewer);
+  const retired = meta.retired === true
+    ? `<p class="ev-empty ev-prov-warn">retired${typeof meta.retired_reason === "string" ? ` — ${esc(meta.retired_reason)}` : ""}: kept on record, hidden from listings.</p>`
+    : "";
+
+  const article = `
+      <article class="ev-article" data-node-id="${esc(node.id)}" data-node-type="${esc(node.type)}" data-node-slug="${esc(node.slug)}">
+        ${breadcrumb(node)}
+        ${title(node, meta, showcase)}
+        <p class="ev-mono-dim ev-claim" id="ev-claim">${claim}</p>
+        ${retired}
+        ${tagline(showcase)}
+        ${hero(h, showcase)}
+        <hr class="ev-hr">
+        ${bio(bioTxt)}
+        ${metadata(metadataRows(db, node, meta, showcase))}
+        ${quote(showcase)}
+        ${worksSection(node, gathered)}
+        ${practiceSections(meta)}
+        ${rosterSection(db, node)}
+        ${relationsSection(edges, showcase, notesByTriple(publicNotesFor(db, node.id)))}
+        ${embeddingsPlaceholder()}
+        ${listSection("collections", showcase?.collections ?? [], "no public collection holdings linked yet")}
+        ${listSection("exhibitions.selected", showcase?.exhibitions_selected ?? [], "no curated exhibition history yet")}
+        ${listSection("awards", showcase?.awards ?? [], "no awards linked yet")}
+        ${provenance(node, meta, showcase, viewer)}
+      </article>`;
+
+  const year = node.type === "artwork" ? formatArtworkYearFromMetadata(meta) : null;
+  const description = bioTxt
+    ? (bioTxt.length > 280 ? bioTxt.slice(0, 277) + "…" : bioTxt)
+    : `${node.name}${year ? ` (${year})` : ""} — ${node.type} in A(DAI), the digital arts knowledge commons.`;
+  return { article, title: node.name, description, image: h?.peer.image ?? null };
+}
