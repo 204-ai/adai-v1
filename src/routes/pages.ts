@@ -12,6 +12,7 @@ import { sourceLabel } from "../utils/source-label.js";
 import { edgeLabel } from "../utils/edge-labels.js";
 import { contributionCards, type ContributionRow } from "../utils/signal-prose.js";
 import { rosterFor } from "../utils/roster.js";
+import { heldWorks } from "../utils/held-works.js";
 import { collapseClaims, CLAIM_COLS, tripleKey } from "../utils/claims.js";
 import { nodeHistory, type HistoryEvent } from "../utils/history.js";
 import { readSession } from "../intake/auth.js";
@@ -289,6 +290,22 @@ function profileHandler(req: any, res: any) {
         body += `<li><a href='/${htmlEscape(a.type)}/${encodeURIComponent(a.slug)}'>${htmlEscape(a.name)}</a>${a.estate ? " <span class='meta'>(estate)</span>" : ""} <span class='meta'>${htmlEscape(why)}</span></li>`;
       }
       if (roster.length > LIMIT) body += `<li class='meta'>and ${roster.length - LIMIT} more</li>`;
+      body += `</ul>`;
+    }
+  }
+
+  // A collection's holdings: from incoming HELD_BY, with year, image, makers.
+  if (node.type === "institution") {
+    const held = heldWorks(db, node.id);
+    if (held.length) {
+      body += `<h3>works held (${held.length})</h3><ul class='edge-list'>`;
+      for (const w of held) {
+        const thumb = w.image
+          ? `<img src='${htmlEscape(w.image)}' alt='' loading='lazy' style='width:48px;height:48px;object-fit:cover;border-radius:3px;vertical-align:middle;margin-right:0.6rem'>`
+          : `<span style='display:inline-block;width:48px;height:48px;background:#181818;border-radius:3px;vertical-align:middle;margin-right:0.6rem'></span>`;
+        const by = w.artists.map((a) => `<a href='/record/${encodeURIComponent(a.type)}/${encodeURIComponent(a.slug)}'>${htmlEscape(a.name)}</a>`).join(", ");
+        body += `<li>${thumb}<a href='/record/${encodeURIComponent(w.type)}/${encodeURIComponent(w.slug)}'>${htmlEscape(w.name)}</a>${w.year ? ` <span class='meta'>(${htmlEscape(w.year)})</span>` : ""}${by ? ` <span class='meta'>— ${by}</span>` : ""}</li>`;
+      }
       body += `</ul>`;
     }
   }

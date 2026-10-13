@@ -18,6 +18,7 @@ import { notRetired } from "../utils/visibility.js";
 import { formatArtworkYear, formatArtworkYearFromMetadata, YEAR_SQL_FRAGMENT } from "../utils/year.js";
 import { sourceLabel } from "../utils/source-label.js";
 import { rosterFor } from "../utils/roster.js";
+import { heldWorks } from "../utils/held-works.js";
 import { CLAIMABLE_TYPES } from "../claim/store.js";
 import { approvedClaimsFor } from "../claim/store.js";
 import { SHOWCASE, type Showcase, type ShowcaseWork } from "./showcase.js";
@@ -474,6 +475,8 @@ function relationGroups(db: DatabaseSync, node: EntityNode, edges: LiveEdge[], s
   for (const e of edges) {
     // Lenses are listed on the regime's own record, not on every node they saw.
     if (e.edge_type === "CLASSIFIED_BY") continue;
+    // A collection's holdings have their own section, with images and makers.
+    if (e.edge_type === "HELD_BY" && e.dir === "in" && node.type === "institution") continue;
     // A maker's / concept's works have their own section (with images).
     if (worksFromGraph && e.other.type === "artwork" && e.dir === "in" && (e.edge_type === "CREATED_BY" || e.edge_type === "EMBODIES") && WORKS_TYPES.has(node.type)) continue;
     const key = SYMMETRIC.has(e.edge_type) ? e.edge_type : `${e.edge_type}:${e.dir}`;
@@ -516,6 +519,33 @@ function rosterSection(db: DatabaseSync, node: EntityNode): string {
       <section class="ev-section">
         <h2 class="ev-h2">// artists <span class="ev-h2-count">/${pad(roster.length)}</span></h2>
         <ul class="ev-rel-list">${rows}</ul>
+      </section>`;
+}
+
+/** A collection's holdings (issue #58): image, title, year, artist — from incoming HELD_BY. */
+function heldWorksSection(db: DatabaseSync, node: EntityNode): string {
+  if (node.type !== "institution") return "";
+  const works = heldWorks(db, node.id);
+  if (!works.length) return "";
+  const cards = works.map((w) => {
+    const name = esc(w.name);
+    const img = w.image
+      ? `<img src="${esc(w.image)}" alt="${name}" loading="lazy" crossorigin="anonymous">`
+      : `<div class="ev-emb-thumb-empty" data-hatch="1">${name.slice(0, 32)}</div>`;
+    const by = w.artists.map((a) => esc(a.name)).join(", ");
+    return `
+          <a class="ev-emb-card ev-held-card" href="${nodePath(w)}" data-node-id="${esc(w.id)}" title="${name}">
+            <div class="ev-emb-thumb">${img}</div>
+            <div class="ev-emb-meta">
+              <span class="ev-emb-name">${name}</span>
+              <span class="ev-emb-row"><span class="ev-held-by">${by || "&nbsp;"}</span><span class="ev-emb-type">${w.year ? esc(w.year) : ""}</span></span>
+            </div>
+          </a>`;
+  }).join("");
+  return `
+      <section class="ev-section" id="ev-held">
+        <h2 class="ev-h2">// works held <span class="ev-h2-count">/${pad(works.length)}</span></h2>
+        <div class="ev-emb-grid">${cards}</div>
       </section>`;
 }
 
@@ -596,6 +626,7 @@ export function renderEntityView(db: DatabaseSync, node: EntityNode, viewer: Ent
         ${worksSection(node, gathered)}
         ${practiceSections(meta)}
         ${rosterSection(db, node)}
+        ${heldWorksSection(db, node)}
         ${relationGroups(db, node, edges, showcase, notesByTriple(publicNotesFor(db, node.id)), gathered.source === "graph").map(groupSection).join("")}
         ${embeddingsPlaceholder()}
         ${listSection("collections (editorial)", showcase?.collections ?? [])}
