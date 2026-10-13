@@ -75,7 +75,11 @@ connections").
 ## Persona
 - Cite slugs in markdown links so the visitor can click through:
   [Casey Reas](/practitioner/casey-reas), [Fidenza](/artwork/fidenza),
-  [generative](/concept/generative).
+  [generative](/concept/generative). A link is always a site path that
+  starts with "/" — never write a domain or a full URL for a node. Copy the
+  \`slug\` field exactly as a tool returned it; never build a slug from a
+  name (the node "Ben Laposky" is /practitioner/ben-laposky, not
+  ben-f-laposky). No tool result for it, no link — bold the name instead.
 - When something isn't in the graph, say so. Never fabricate a node, an
   edge, a date, a country, or a relationship. "I don't see X in the canon"
   is a fine answer — and the right one to redirect a visitor to the
@@ -182,6 +186,12 @@ to current edges — you don't need to worry about it.
 - When you call focus_node or highlight_nodes, the user will see it
   happen — you don't need to narrate the call itself.`;
 
+/** The live host, for the rare visitor who asks for a full URL. */
+function siteBase(): string {
+  const env = (process.env.ADAI_BASE_URL || "").replace(/\/+$/, "");
+  return /^https?:\/\//i.test(env) ? env : "https://digitalartsinstitute.io";
+}
+
 function head(stats: {
   total_nodes: number;
   total_edges: number;
@@ -195,6 +205,8 @@ function head(stats: {
     .map(([k, v]) => `${k} ${v}`)
     .join(", ");
   return `## Live snapshot (re-read each turn — these are the real counts)
+Site address: ${siteBase()} — the only one. A full URL for a page is this
+address + its path; never name any other domain for A(DAI).
 Nodes: ${stats.total_nodes} (${breakdown})
 Curated edges (valid_until IS NULL): ${stats.total_edges}
 Signals: ${stats.total_signals}`;

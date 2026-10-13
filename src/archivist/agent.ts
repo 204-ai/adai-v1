@@ -23,6 +23,7 @@ import {
   type ToolDef,
 } from "./tools.js";
 import { buildPrompt, type VisitorContext } from "./prompt.js";
+import { collectNodes, resolveLinks, type SeenNode } from "./links.js";
 
 export type AgentEvent =
   | { type: "text_delta"; text: string }
@@ -30,6 +31,7 @@ export type AgentEvent =
   | { type: "tool_use_end"; tool_use_id: string; name: string; ok: boolean }
   | { type: "client_tool"; tool_use_id: string; name: string; input: Record<string, unknown> }
   | { type: "usage"; usage: UsageReport }
+  | { type: "links"; links: Record<string, string | null> }
   | { type: "stop"; reason: string }
   | { type: "error"; error: string };
 
@@ -98,6 +100,25 @@ interface RunOpts {
  * the wire and decides when to bump session counters / record usage.
  */
 export async function* runArchivist(opts: RunOpts): AsyncGenerator<AgentEvent, void, void> {
+  // The reply's links are checked against the graph once it is complete
+  // (src/archivist/links.ts); the client rewrites or unlinks them.
+  const seen: SeenNode[] = [];
+  let text = "";
+  for await (const evt of runTurn(opts, seen)) {
+    if (evt.type === "text_delta") text += evt.text;
+    if (evt.type === "stop" && text) {
+      try {
+        const links = resolveLinks(opts.db, text, seen);
+        if (Object.keys(links).length) yield { type: "links", links };
+      } catch (e: any) {
+        console.warn("[archivist] link check failed:", e?.message ?? e);
+      }
+    }
+    yield evt;
+  }
+}
+
+async function* runTurn(opts: RunOpts, seen: SeenNode[]): AsyncGenerator<AgentEvent, void, void> {
   const client = getClient();
   if (!client) {
     yield { type: "error", error: "archivist_offline: ANTHROPIC_API_KEY not configured" };
@@ -246,6 +267,7 @@ export async function* runArchivist(opts: RunOpts): AsyncGenerator<AgentEvent, v
       } else {
         try {
           result = handler(opts.db, call.input);
+          collectNodes(result, seen);
         } catch (e: any) {
           ok = false;
           result = { error: "tool_execution_failed", detail: e?.message ?? String(e) };
