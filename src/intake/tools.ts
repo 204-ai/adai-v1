@@ -9,7 +9,7 @@ import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { SERVER_HANDLERS, type ServerHandler, type ToolDef } from "../archivist/tools.js";
 import { NODE_NOT_RETIRED } from "../utils/visibility.js";
-import { slugify } from "../utils/slug.js";
+import { slugify, legacySlugify } from "../utils/slug.js";
 import { embedOnce, TASK_PREFIX } from "../embed/server.js";
 import { l2normalise } from "../embed/vectors.js";
 import { topKByVector, withMetadata } from "../embed/neighbours.js";
@@ -88,10 +88,12 @@ export async function resolve_entity(db: DatabaseSync, input: Record<string, unk
   for (const r of exactRows) push(project(r, "exact"));
 
   // 1b. deterministic id — what a create would collide with
+  // (also under the pre-October-2026 slug rules, which kept accents and #)
   const slug = slugify(name);
+  const legacy = legacySlugify(name);
   const idRows = (type
-    ? db.prepare(`SELECT ${NODE_COLS} FROM nodes WHERE (id = ? OR slug = ?) AND ${NODE_NOT_RETIRED} LIMIT 3`).all(`${type}:${slug}`, slug)
-    : db.prepare(`SELECT ${NODE_COLS} FROM nodes WHERE slug = ? AND ${NODE_NOT_RETIRED} LIMIT 3`).all(slug)) as any[];
+    ? db.prepare(`SELECT ${NODE_COLS} FROM nodes WHERE (id IN (?, ?) OR slug IN (?, ?)) AND ${NODE_NOT_RETIRED} LIMIT 3`).all(`${type}:${slug}`, `${type}:${legacy}`, slug, legacy)
+    : db.prepare(`SELECT ${NODE_COLS} FROM nodes WHERE slug IN (?, ?) AND ${NODE_NOT_RETIRED} LIMIT 3`).all(slug, legacy)) as any[];
   for (const r of idRows) push(project(r, "exact"));
 
   // 2. web alias

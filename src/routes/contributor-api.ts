@@ -15,7 +15,7 @@ import { getDb } from "../db.js";
 import { JSON_HEADERS } from "../templates.js";
 import { requireToken, requireAdmin, isAutoMerge } from "../auth.js";
 import { mintToken, revokeTokenByPrefix, listTokens, MintError } from "../utils/token-mint.js";
-import { nodeId as composeNodeId, slugify } from "../utils/slug.js";
+import { slugify, slugForCreate } from "../utils/slug.js";
 import {
   insertSignal,
   insertIntake,
@@ -346,8 +346,20 @@ router.post("/api/v1/nodes", requireToken, (req, res) => {
     effectiveMetadata = { ...effectiveMetadata, kind: k.kinds };
   }
 
-  const slug = typeof providedSlug === "string" && providedSlug.length > 0 ? providedSlug : slugify(name);
-  const computedId = composeNodeId(type, slug);
+  // The slug is a URL path segment: an explicit one goes through the same
+  // slugifier as a name (a `#` or `,` in it broke the page address).
+  let slug: string;
+  if (typeof providedSlug === "string" && providedSlug.length > 0) {
+    slug = slugify(providedSlug);
+    if (slug !== providedSlug) warnings.push(`slug "${providedSlug}" normalised to "${slug}"`);
+  } else {
+    slug = slugForCreate((id) => !!db.prepare("SELECT 1 FROM nodes WHERE id = ?").get(id), type, name);
+  }
+  if (!slug) {
+    res.status(400).set(JSON_HEADERS).json({ error: "invalid_slug", message: "the name (or slug) has no letters or digits to make an address from" });
+    return;
+  }
+  const computedId = `${type}:${slug}`;
 
   // Signal anchors every contribution. Stash the full payload so the curator
   // can review verbatim.
