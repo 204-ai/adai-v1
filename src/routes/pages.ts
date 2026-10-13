@@ -9,6 +9,8 @@ import { buildEmbeddingSections } from "../embed/sections.js";
 import { formatArtworkYearFromMetadata, formatArtworkYear, YEAR_SQL_FRAGMENT } from "../utils/year.js";
 import { NODE_NOT_RETIRED } from "../utils/visibility.js";
 import { sourceLabel } from "../utils/source-label.js";
+import { edgeLabel } from "../utils/edge-labels.js";
+import { contributionCards, type ContributionRow } from "../utils/signal-prose.js";
 import { rosterFor } from "../utils/roster.js";
 import { collapseClaims, CLAIM_COLS, tripleKey } from "../utils/claims.js";
 import { nodeHistory, type HistoryEvent } from "../utils/history.js";
@@ -41,22 +43,6 @@ router.get("/skill.md", (_req, res) => {
 });
 
 const ENTITY_TYPES_EXCLUDE = "('related', 'concept', 'scene', 'classification_regime')";
-
-const EDGE_TYPE_LABEL: Record<string, string> = {
-  PRACTICES: "practices",
-  BELONGS_TO: "belongs to",
-  RELATED_TO: "related to",
-  COLLABORATES_WITH: "collaborates with",
-  CREATED_BY: "created by",
-  EXHIBITED_AT: "exhibited at",
-  HELD_BY: "held by",
-  CLASSIFIED_BY: "classified by",
-  LEGIBLE_TO: "legible to",
-  PARTICIPATED_IN: "participated in",
-  PRESENTED_BY: "presented by",
-  CURATED_BY: "curated by",
-  REPRESENTS: "represents",
-};
 
 const ALIAS_SOURCE_LABEL: Record<string, string> = {
   wikidata: "Wikidata",
@@ -262,22 +248,13 @@ function profileHandler(req: any, res: any) {
   // NULL/other consent_scope values pass through (allow-by-default).
   const contribs = db
     .prepare(
-      "SELECT s.title, s.summary, s.content, s.source_url, s.submitted_by, s.created_at, s.consent_attribution FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id WHERE iq.target_node = ? AND iq.status = 'approved' AND (s.consent_scope IS NULL OR s.consent_scope != 'structural_only') ORDER BY s.created_at DESC"
+      "SELECT s.title, s.content, s.source_url, s.source_type, s.submitted_by, s.created_at, s.consent_attribution, iq.proposed_nodes, iq.proposed_edges FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id WHERE iq.target_node = ? AND iq.status = 'approved' AND (s.consent_scope IS NULL OR s.consent_scope != 'structural_only') ORDER BY s.created_at DESC"
     )
-    .all(node.id) as any[];
+    .all(node.id) as unknown as ContributionRow[];
 
   if (contribs.length > 0) {
     body += `<h3>community contributions (${contribs.length})</h3>`;
-    for (const c of contribs) {
-      const attributable = c.consent_attribution !== "anonymous";
-      body += `<div class='card'>`;
-      if (c.title) body += `<strong>${htmlEscape(String(c.title))}</strong>`;
-      if (c.content) body += `<p>${htmlEscape(String(c.content))}</p>`;
-      if (c.source_url) body += `<p class='meta'>Source: <a href='${htmlEscape(String(c.source_url))}' target='_blank' rel='noopener'>${htmlEscape(String(c.source_url))}</a></p>`;
-      if (c.submitted_by && attributable) body += `<p class='meta'>Contributed by: ${htmlEscape(String(c.submitted_by))}</p>`;
-      else if (!attributable) body += `<p class='meta'>Contributed anonymously</p>`;
-      body += `</div>`;
-    }
+    body += contributionCards(db, contribs);
   }
 
   // One line per relation; several claims of it (different sources) collapse
@@ -299,7 +276,7 @@ function profileHandler(req: any, res: any) {
     }
     body += `<h3>connections (${edges.length})</h3>`;
     for (const [etype, list] of grouped) {
-      const label = EDGE_TYPE_LABEL[etype] ?? etype.toLowerCase().replace(/_/g, " ");
+      const label = edgeLabel(etype);
       body += `<div style='margin-top:0.8rem'><span class='edge-type'>${htmlEscape(etype)}</span> <span class='meta'>— ${htmlEscape(label)} (${list.length})</span><ul class='edge-list'>`;
       for (const e of list) {
         const otherName = e.source_id === node.id ? e.target_name : e.source_name;
