@@ -162,9 +162,12 @@ function claimLine(db: DatabaseSync, node: EntityNode, meta: any, viewer: Entity
   const claimHref = `/claim/${encodeURIComponent(node.type)}/${encodeURIComponent(node.slug)}`;
   const parts: string[] = [];
   if (claimed) {
-    parts.push(`<span class="ev-claimed">✓ claimed</span>`);
-    if (claimed.handle) parts.push(`<a href="/@${esc(String(claimed.handle))}">@${esc(String(claimed.handle))}</a>`);
-    if (Array.isArray(claimed.by) && claimed.by.length) parts.push(claimed.by.map((b: unknown) => esc(String(b))).join(", "));
+    // "claimed by @handle" (issue #68): the handle links to the page's
+    // history, where the claimant's notes and the edits they answer live.
+    const h = claimed.handle ? esc(String(claimed.handle)) : null;
+    const by = Array.isArray(claimed.by) && claimed.by.length ? claimed.by.map((b: unknown) => esc(String(b))).join(", ") : null;
+    parts.push(`<span class="ev-claimed">✓ claimed by ${h ? `<a href="/@${h}/history">@${h}</a>` : by ?? "its subject"}</span>`);
+    if (h && by) parts.push(by);
   }
   const mine = viewer.contributorId ? approvedClaimsFor(db, node.id).some((c) => c.contributor_id === viewer.contributorId) : false;
   if (mine) {

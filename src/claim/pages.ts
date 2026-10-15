@@ -174,7 +174,7 @@ export function profileClaimBlock(db: DatabaseSync, node: { id: string; type: st
   let html = "";
   if (claimed) {
     const by = Array.isArray(claimed.by) && claimed.by.length ? ` by ${claimed.by.map(esc).join(", ")}` : "";
-    html += `<p class='claim-badge' style='margin:0.3rem 0 0.8rem'><span class='tag' style='border-color:#2a5a3a;color:#6fbf8a'>✓ claimed</span>${claimed.handle ? ` <a href='/@${esc(claimed.handle)}'>@${esc(claimed.handle)}</a>` : ""}<span class='meta'>${by}</span></p>`;
+    html += `<p class='claim-badge' style='margin:0.3rem 0 0.8rem'><span class='tag' style='border-color:#2a5a3a;color:#6fbf8a'>✓ claimed${claimed.handle ? ` by <a href='/@${esc(claimed.handle)}/history'>@${esc(claimed.handle)}</a>` : ""}</span><span class='meta'>${by}</span></p>`;
   }
   if (mine) {
     html += `<p class='meta' style='margin-bottom:0.8rem'>This is your page · <a href='/me?node=${encodeURIComponent(node.id)}'>your log</a> · <a href='${claimHref}'>handle</a> · <a href='/field?node=${encodeURIComponent(node.id)}&lens=1'>see in field</a></p>`;

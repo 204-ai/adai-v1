@@ -82,8 +82,12 @@ it("claim → handle → log → contest → curator; signed-out request → inv
     assert.equal((await call("GET", "/@ada/history")).location, "/practitioner/ada/history");
     assert.equal((await call("GET", "/@nobody")).status, 404);
     const profile = await call("GET", "/practitioner/ada", null);
-    assert.match(profile.text, /✓ claimed/);
-    assert.match(profile.text, /@ada/);
+    // "claimed by @handle", the handle opening the page's history (#68); no "is this you?"
+    assert.match(profile.text, /✓ claimed by <a href="\/@ada\/history">@ada<\/a>/);
+    assert.doesNotMatch(profile.text, /is this you\?/);
+    assert.match((await call("GET", "/record/practitioner/ada", null)).text, /✓ claimed by <a href='\/@ada\/history'>@ada<\/a>/);
+    const overlay = await call("GET", "/api/entity?id=practitioner%3Aada", null);
+    assert.match(overlay.json.html, /✓ claimed by <a href="\/@ada\/history">@ada<\/a>/);
     assert.match((await call("GET", "/practitioner/ada", ada)).text, /this is your page/);
     assert.match((await call("GET", "/practitioner/bob", eve)).text, /is this you\? claim this page/);
     assert.match((await call("GET", "/record/practitioner/ada", ada)).text, /This is your page/);
