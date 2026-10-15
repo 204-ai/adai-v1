@@ -339,7 +339,7 @@ function worksSection(node: EntityNode, gathered: ReturnType<typeof gatherWorks>
     const desc = w.img_descriptor ? `<br>${esc(w.img_descriptor)}` : "";
     const imgBlock = url
       ? `<div class="ev-work-img"><img src="${esc(url)}" alt="${esc(w.title)}" crossorigin="anonymous" loading="lazy"><div class="ev-work-img-cap"><span class="ev-mono-tag">img.slot · ${esc(slug)}</span>${desc}</div></div>`
-      : `<div class="ev-work-img ev-work-img--empty" data-hatch="1"><div class="ev-work-img-cap"><span class="ev-mono-tag">img.slot · ${esc(slug)}</span>${desc || '<br><span class="ev-mono-dim">awaiting linkage</span>'}</div></div>`;
+      : `<div class="ev-work-img ev-work-img--empty" data-hatch="1"><div class="ev-work-img-cap"><span class="ev-mono-tag">img.slot · ${esc(slug)}</span>${desc}</div></div>`;
     const yearTag = w.year ? `<span class="ev-work-year">[${esc(w.year)}]</span>` : "";
     const mediumLine = w.medium || w.method
       ? `<p class="ev-work-medium">${esc(w.medium || "")} ${w.method ? `· <span class="ev-work-method">method: ${esc(w.method)}</span>` : ""}</p>`
@@ -358,7 +358,9 @@ function worksSection(node: EntityNode, gathered: ReturnType<typeof gatherWorks>
           </div>
         </article>`;
   }).join("");
-  const sourceTag = source === "graph" ? '<span class="ev-h2-source">· from graph (awaiting editorial enrichment)</span>' : "";
+  // Graph works are the norm and carry no tag; a hand-picked list says so,
+  // like the other editorial lists (issue #66: no "awaiting" lines).
+  const sourceTag = source === "showcase" ? '<span class="ev-h2-source">(editorial)</span>' : "";
   return `
       <section class="ev-section">
         <h2 class="ev-h2">// works <span class="ev-h2-count">/${pad(total)}</span>${sourceTag}</h2>

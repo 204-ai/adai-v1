@@ -39,7 +39,7 @@ it("entity relations: in collections via works, shows via participation, new typ
     assert.match(text, /\/\/ shows presented by \/01 ·········· \[institution\] Sanford Museum 1 show/);
     assert.match(text, /\/\/ funded by \/01 ·········· \[institution\] A Foundation/);
     assert.match(text, /\/\/ works \/02/);
-    assert.doesNotMatch(text, /\/00|awards|exhibitions\.selected|no .* yet/);
+    assert.doesNotMatch(text, /\/00|awards|exhibitions\.selected|no .* yet|awaiting/);
     assert.equal((html.match(/ev-contrib-link/g) ?? []).length, 1, "one invitation, at the bottom");
     assert.ok(text.indexOf("in collections") < text.indexOf("funded by"));
   } finally {
