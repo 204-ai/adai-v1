@@ -1,6 +1,6 @@
 // Invite a contributor to the URL intake (docs/URL-INTAKE-SPEC.md §4.3).
 //
-//   npm run invite -- --email x@y.z --name "Name" --tier auto [--practitioner "practitioner:name"] [--send]
+//   npm run invite -- --email x@y.z [--name "Name"] --tier auto [--practitioner "practitioner:name"] [--send]
 //
 // Inserts the contributor + contributor_emails row up front so the tier and
 // the display name are right on first login. --send also emails a sign-in
@@ -9,7 +9,7 @@
 
 import { initDb } from "../db.js";
 import { resolveCliDbPath } from "../utils/db-path.js";
-import { ensureContributorForEmail, normaliseEmail } from "../intake/auth.js";
+import { ensureContributorForEmail, normaliseEmail, requestedName } from "../intake/auth.js";
 import { backfillInviteClaims } from "../claim/store.js";
 import { sendLoginEmail } from "../intake/mail.js";
 
@@ -22,12 +22,12 @@ function arg(name: string): string | null {
 
 async function main() {
   const email = normaliseEmail(arg("email"));
-  const name = arg("name");
+  const nameArg = arg("name");
   const tier = arg("tier") ?? "probationary";
   const practitioner = arg("practitioner");
   const send = process.argv.includes("--send");
-  if (!email || !name) {
-    console.error('Usage: npm run invite -- --email x@y.z --name "Name" [--tier auto|reviewed|probationary] [--practitioner "practitioner:slug"] [--send]');
+  if (!email) {
+    console.error('Usage: npm run invite -- --email x@y.z [--name "Name"] [--tier auto|reviewed|probationary] [--practitioner "practitioner:slug"] [--send]');
     process.exit(2);
   }
   if (!["auto", "reviewed", "probationary"].includes(tier)) {
@@ -37,6 +37,12 @@ async function main() {
   const dbPath = resolveCliDbPath();
   const db = initDb(dbPath);
   console.error(`[invite] using DB ${dbPath}`);
+  // Left out, the name is the one their access request asked for (issue #72).
+  const name = nameArg || requestedName(db, email);
+  if (!name) {
+    console.error(`[invite] --name is required: ${email} has no access request naming one`);
+    process.exit(2);
+  }
   if (practitioner) {
     const row = db.prepare("SELECT id FROM nodes WHERE id = ?").get(practitioner);
     if (!row) {

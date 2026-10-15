@@ -288,7 +288,9 @@ CREATE TABLE IF NOT EXISTS intake_access_requests (
     count           INTEGER NOT NULL DEFAULT 1,
     notified_at     TEXT,                           -- last admin email about it (at most daily)
     node_id         TEXT,                           -- signed-out "claim this page": the node asked for
-    evidence        TEXT                            -- … and why it is theirs
+    evidence        TEXT,                           -- … and why it is theirs
+    display_name    TEXT,                           -- how they'd like to appear (pre-fills the invite)
+    about           TEXT                            -- optional: who they are, what they'd contribute
 );
 
 -- Drafts double as the job queue: a row with job IS NOT NULL is claimable by

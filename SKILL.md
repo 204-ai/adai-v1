@@ -780,10 +780,13 @@ superseded — re-attest the ones that should live again (§1.4).
 The URL intake (`/contribute` — paste a website, the agent proposes cards) is
 **invite-only**: every read costs model money, so only invited addresses get a
 sign-in link. Anyone else who asks is recorded as a pending request, and the
-admins get an email about it.
+admins get an email about it. After asking, a newcomer can say how they would
+like to appear and add a short note about themselves; a request carries these
+as `display_name` and `about`, and an invite without `name` uses
+`display_name` — names come from the person, not from us.
 
 ```bash
-# Invite (name = their public attribution; tier as in §4.1; node = the page they ARE — theirs at once, optional)
+# Invite (name = their public attribution, defaults to the request's display_name; tier as in §4.1; node = the page they ARE — theirs at once, optional)
 curl -s -X POST "$ADAI_BASE/api/v1/invites" -H "Authorization: Bearer $ADAI_TOKEN" -H 'content-type: application/json' \
   -d '{"email":"irina@example.org","name":"Irina","tier":"reviewed","send":true}' | jq
 # Who is invited, and who asked without an invite

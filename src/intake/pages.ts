@@ -95,6 +95,22 @@ async function api(method, path, body) {
   return { ok: r.ok, status: r.status, json: j };
 }
 function pill(s) { return '<span class="pill ' + esc(s) + '">' + esc(s) + '</span>'; }
+// After a sign-in request (issue #72): a new contributor says how they'd like
+// to appear. Shown to everyone, whatever the address, so it reveals nothing.
+function requestDetails(el, email) {
+  const box = document.createElement('form');
+  box.className = 'request-details';
+  box.innerHTML = '<p class="lede" style="margin-top:14px">New to A(DAI)? Tell the team how to credit you, so your invitation carries the right name.</p>' +
+    '<label>how you&#39;d like to appear in the commons</label><input name="name" required minlength="2" maxlength="120" autocomplete="name" placeholder="Your name, studio or institution">' +
+    '<label>about you <span class="lede">(optional)</span></label><textarea name="about" maxlength="1000" placeholder="Artist, curator, collector, institution… and what you would like to contribute" style="width:100%;min-height:60px"></textarea>' +
+    '<button class="btn" type="submit">Send</button>';
+  box.onsubmit = async (e) => {
+    e.preventDefault();
+    const r = await api('POST', '/api/intake/request-details', { email, name: box.elements.namedItem('name').value, about: box.elements.namedItem('about').value });
+    box.innerHTML = r.ok ? '<p class="lede" style="margin-top:14px">Thank you, passed on with your request.</p>' : '<p class="lede">' + esc((r.json && r.json.message) || 'could not send') + '</p>';
+  };
+  el.appendChild(box);
+}
 `;
 
 // ---- /contribute -----------------------------------------------------------------
@@ -114,8 +130,9 @@ function loginForm(msg) {
   $('#f').onsubmit = async (e) => {
     e.preventDefault();
     const b = $('button', e.target); b.disabled = true;
-    const r = await api('POST', '/api/intake/login', { email: e.target.email.value });
-    if (r.ok) app.innerHTML = '<div class="msg msg-ok">If this address is invited, a sign-in link is on its way (valid for 15 minutes). If not, your request has been passed on to the A(DAI) team.</div>';
+    const email = e.target.email.value;
+    const r = await api('POST', '/api/intake/login', { email });
+    if (r.ok) { app.innerHTML = '<div class="msg msg-ok">If this address is invited, a sign-in link is on its way (valid for 15 minutes). If not, your request has been passed on to the A(DAI) team.</div>'; requestDetails(app, email); }
     else { b.disabled = false; alertMsg(r.json && r.json.message || 'could not send'); }
   };
 }

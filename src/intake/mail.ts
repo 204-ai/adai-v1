@@ -45,6 +45,19 @@ export async function sendAccessRequestEmail(email: string): Promise<void> {
   for (const to of admins) await send(to, `A(DAI) access request: ${email}`, text);
 }
 
+/** The requester said how they'd like to appear (issue #72): once per request. */
+export async function sendAccessRequestDetailsEmail(email: string, name: string, about: string | null): Promise<void> {
+  const admins = replyTo();
+  if (!admins.length) return;
+  const text =
+    `${email} would like to appear in the commons as: ${name}\n` +
+    (about ? `\nAbout them: ${about}\n` : "") +
+    `\nTo invite them under that name (it is the default when "name" is left out):\n` +
+    `  POST ${baseUrl()}/api/v1/invites {"email": "${email}", "send": true}`;
+  // No ready-made shell line here: the name is the requester's own text.
+  for (const to of admins) await send(to, `A(DAI) access request: ${name} <${email}>`, text);
+}
+
 export function candidateCounts(d: Draft): { works: number; shows: number; people: number; images: number; questions: number; known: number } {
   let works = 0, shows = 0, people = 0, images = 0, questions = 0, known = 0;
   for (const c of d.candidates) {

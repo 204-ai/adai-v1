@@ -12,6 +12,7 @@ import {
   loginRateOk,
   isInvited,
   recordAccessRequest,
+  recordRequestDetails,
   clientIp,
   consumeMagicLink,
   ensureContributorForEmail,
@@ -42,7 +43,7 @@ import {
   DraftError,
 } from "../intake/draft.js";
 import { CandidateError } from "../intake/candidate.js";
-import { sendLoginEmail, sendReceiptEmail, sendAccessRequestEmail } from "../intake/mail.js";
+import { sendLoginEmail, sendReceiptEmail, sendAccessRequestEmail, sendAccessRequestDetailsEmail } from "../intake/mail.js";
 import { spawnAsync } from "../intake/spawn.js";
 import { contributePage, draftPage, batchPage } from "../intake/pages.js";
 import { myNodes } from "../claim/log.js";
@@ -91,6 +92,26 @@ router.post("/api/intake/login", async (req, res) => {
     else if (recordAccessRequest(db, email)) await sendAccessRequestEmail(email);
   } catch (e: any) {
     console.error("[intake] login email failed:", e?.message ?? e);
+  }
+});
+
+// After the sign-in form: how a NEW contributor would like to appear, and an
+// optional note (issue #72). Asked of everyone and always 200, so it says
+// nothing about who is invited; it only lands on a recent access request.
+router.post("/api/intake/request-details", (req, res) => {
+  const email = normaliseEmail(req.body?.email);
+  const name = typeof req.body?.name === "string" ? req.body.name.trim().replace(/\s+/g, " ") : "";
+  const about = typeof req.body?.about === "string" ? req.body.about.trim().slice(0, 1000) || null : null;
+  if (name.length < 2 || name.length > 120) {
+    res.status(400).set(JSON_HEADERS).json({ error: "bad_name", message: "a name is 2–120 characters" });
+    return;
+  }
+  res.set(JSON_HEADERS).json({ ok: true });
+  if (!email || !loginRateOk(email, clientIp(req))) return;
+  try {
+    if (recordRequestDetails(getDb(), email, name, about)) void sendAccessRequestDetailsEmail(email, name, about).catch((e) => console.error("[intake] details email failed:", e?.message ?? e));
+  } catch (e: any) {
+    console.error("[intake] request details failed:", e?.message ?? e);
   }
 });
 

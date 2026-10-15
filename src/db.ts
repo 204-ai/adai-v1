@@ -56,8 +56,9 @@ function runMigrations(db: DatabaseSync) {
     }
   }
   // intake_access_requests.node_id / evidence (Oct 2026): a signed-out
-  // "claim this page" request names the node (docs/CLAIM-SPEC.md §2.3).
-  for (const col of ["node_id", "evidence"]) {
+  // "claim this page" request names the node (docs/CLAIM-SPEC.md §2.3);
+  // display_name / about: how the requester would like to appear (issue #72).
+  for (const col of ["node_id", "evidence", "display_name", "about"]) {
     try {
       db.exec(`ALTER TABLE intake_access_requests ADD COLUMN ${col} TEXT`);
     } catch (e: any) {

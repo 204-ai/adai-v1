@@ -198,6 +198,26 @@ export function recordAccessRequest(db: DatabaseSync, email: string): boolean {
   return notify;
 }
 
+/**
+ * How an access requester would like to appear, and an optional note about
+ * them (issue #72). Asked after the sign-in form is sent, so the form still
+ * says nothing about who is invited: it only lands on a request made in the
+ * last 30 minutes (an invited address has none). Returns true the first time
+ * a name arrives, so the admins hear about it once.
+ */
+export function recordRequestDetails(db: DatabaseSync, email: string, name: string, about: string | null): boolean {
+  const row = db.prepare("SELECT display_name, last_at FROM intake_access_requests WHERE email = ?").get(email) as any;
+  if (!row || row.last_at < plusIso(-30 * 60_000)) return false;
+  db.prepare("UPDATE intake_access_requests SET display_name = ?, about = ? WHERE email = ?").run(name, about, email);
+  return !row.display_name;
+}
+
+/** The name an access request asked for, if any: an invite without one falls back to it. */
+export function requestedName(db: DatabaseSync, email: string): string | null {
+  const row = db.prepare("SELECT display_name FROM intake_access_requests WHERE email = ?").get(email) as any;
+  return row?.display_name || null;
+}
+
 /** End an invite: sessions end now, unused links die. The contributor and their history stay. */
 export function revokeInvite(db: DatabaseSync, email: string): boolean {
   const row = db.prepare("SELECT contributor_id FROM contributor_emails WHERE email = ?").get(email) as any;

@@ -37,7 +37,7 @@ import { getSkillVersion } from "../utils/skill-version.js";
 import { embedNodeAsync } from "../embed/server.js";
 import { normaliseOrgKinds, orgKindsError, ORG_KINDS } from "../utils/org-kinds.js";
 import { checkDirection } from "../intake/candidate.js";
-import { ensureContributorForEmail, normaliseEmail, revokeInvite, intakeOpen } from "../intake/auth.js";
+import { ensureContributorForEmail, normaliseEmail, revokeInvite, intakeOpen, requestedName } from "../intake/auth.js";
 import { sendLoginEmail } from "../intake/mail.js";
 import { approveIntakeItem, rejectIntakeItem } from "../utils/review.js";
 import { backfillInviteClaims, endClaim, ClaimError } from "../claim/store.js";
@@ -806,12 +806,13 @@ router.post("/api/v1/invites", requireAdmin, async (req, res) => {
   const db = getDb();
   const b = req.body ?? {};
   const email = normaliseEmail(b.email);
-  const name = typeof b.name === "string" ? b.name.trim() : "";
+  // Left out, the name is the one the access request asked for (issue #72).
+  const name = (typeof b.name === "string" ? b.name.trim() : "") || (email ? requestedName(db, email) ?? "" : "");
   const tier = typeof b.tier === "string" ? b.tier : "probationary";
   // `node` (any claimable type) is the newer name for `practitioner`.
   const practitioner = typeof b.node === "string" && b.node ? b.node : typeof b.practitioner === "string" && b.practitioner ? b.practitioner : null;
   if (!email) { res.status(400).set(JSON_HEADERS).json({ error: "email is required" }); return; }
-  if (!name) { res.status(400).set(JSON_HEADERS).json({ error: "name is required — it is the public attribution on their contributions" }); return; }
+  if (!name) { res.status(400).set(JSON_HEADERS).json({ error: "name is required — it is the public attribution on their contributions (no access request named one)" }); return; }
   if (!["auto", "reviewed", "probationary"].includes(tier)) { res.status(400).set(JSON_HEADERS).json({ error: "tier must be auto | reviewed | probationary" }); return; }
   if (practitioner && !db.prepare("SELECT 1 FROM nodes WHERE id = ?").get(practitioner)) {
     res.status(400).set(JSON_HEADERS).json({ error: `practitioner node '${practitioner}' does not exist` });
@@ -837,7 +838,7 @@ router.get("/api/v1/invites", requireAdmin, (_req, res) => {
         ORDER BY e.invited_at DESC`
     )
     .all();
-  const requests = db.prepare("SELECT email, first_at, last_at, count FROM intake_access_requests ORDER BY last_at DESC LIMIT 200").all();
+  const requests = db.prepare("SELECT email, display_name, about, node_id, first_at, last_at, count FROM intake_access_requests ORDER BY last_at DESC LIMIT 200").all();
   res.set(JSON_HEADERS).json({ invite_only: !intakeOpen(), invites, requests });
 });
 

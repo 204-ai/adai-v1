@@ -34,8 +34,10 @@ function loginForm(el, redirect, lead) {
   el.innerHTML = '<p class="lede">' + lead + '</p><form id="lf"><label>your email</label><div class="row"><input type="email" name="email" required autocomplete="email"><button class="btn primary" type="submit">Send me a link</button></div></form>';
   $('#lf').onsubmit = async (e) => {
     e.preventDefault();
-    await api('POST', '/api/intake/login', { email: e.target.email.value, redirect });
+    const email = e.target.email.value;
+    await api('POST', '/api/intake/login', { email, redirect });
     el.innerHTML = '<div class="msg msg-ok">If this address may sign in, a link is on its way (valid 15 minutes).</div>';
+    requestDetails(el, email);
   };
 }
 function nameForm(el, me, then) {
@@ -77,8 +79,9 @@ function signedOut() {
     '<button class="btn primary" type="submit">Continue</button><p class="lede">If your address is already invited to A(DAI) you get a sign-in link that brings you back here. If not, the A(DAI) team gets your request and replies by email.</p></form>';
   $('#so').onsubmit = async (e) => {
     e.preventDefault();
-    const r = await api('POST', '/api/claims/request', { email: e.target.email.value, evidence: e.target.evidence.value, node_id: NODE.id });
-    if (r.ok) app.innerHTML = '<div class="msg msg-ok">Thank you. Check your inbox: either a sign-in link, or a note from the team once they have looked.</div>';
+    const email = e.target.email.value;
+    const r = await api('POST', '/api/claims/request', { email, evidence: e.target.evidence.value, node_id: NODE.id });
+    if (r.ok) { app.innerHTML = '<div class="msg msg-ok">Thank you. Check your inbox: either a sign-in link, or a note from the team once they have looked.</div>'; requestDetails(app, email); }
     else alertMsg((r.json && r.json.message) || 'could not send');
   };
 }
