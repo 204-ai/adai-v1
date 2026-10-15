@@ -10,6 +10,7 @@
 // step when a field changes.
 
 import { normaliseOrgKinds, orgKindsError } from "../utils/org-kinds.js";
+import { legacySlugify } from "../utils/slug.js";
 
 export type Ref = string; // existing node id, or 'cid:c_03' for a node candidate in this draft
 
@@ -376,8 +377,10 @@ export function validateCandidate(
       if (!resolves_to && resolution !== "none") throw new CandidateError(`resolution '${resolution}' without resolves_to`, "resolution");
       if (origin === "site" && !base.evidence) throw new CandidateError("node with origin 'site' needs evidence {page_url, quote}", "evidence");
       if (!resolves_to && ctx.nodeExists && ctx.slugify) {
-        const id = `${type}:${ctx.slugify(name)}`;
-        if (ctx.nodeExists(id)) {
+        // A node made from the same name under the pre-October-2026 slug
+        // rules (`toujours-là`) is the same collision.
+        const id = [`${type}:${ctx.slugify(name)}`, `${type}:${legacySlugify(name)}`].find(ctx.nodeExists);
+        if (id) {
           throw new CandidateError(
             `a node with id '${id}' already exists; set resolves_to to link it, or ask the contributor`,
             "resolves_to"

@@ -44,7 +44,12 @@ it("kind: validated on create and patch; the page shows kinds and leads with art
     db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, created_by, valid_from) VALUES ('e1', 'artwork:untitled', ?, 'EXHIBITED_AT', 't', '2026-01-01T00:00:00Z')").run(row.id);
     db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, created_by, valid_from) VALUES ('e2', 'artwork:untitled', 'practitioner:vera-molnar', 'CREATED_BY', 't', '2026-01-01T00:00:00Z')").run();
 
-    const html = await (await fetch(`${base}/institution/${row.id.split(":")[1]}`)).text();
+    // the entity view: kinds in its metadata, artists from its works
+    const view = await (await fetch(`${base}/institution/${row.id.split(":")[1]}`)).text();
+    assert.match(view, /kind<\/dt><dd class="ev-meta-v">:gallery · fair/);
+    assert.match(view, /\/\/ artists[\s\S]*Vera Molnár[\s\S]*1 work/);
+    // the record view
+    const html = await (await fetch(`${base}/record/institution/${row.id.split(":")[1]}`)).text();
     assert.match(html, /<span class='tag'>gallery<\/span> <span class='tag'>fair<\/span>/);
     assert.match(html, /a project-based gallery, private art dealership and advisory/);
     assert.match(html, /artists \(1\)[\s\S]*Vera Molnár[\s\S]*1 work/);

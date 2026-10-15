@@ -84,8 +84,10 @@ it("claim → handle → log → contest → curator; signed-out request → inv
     const profile = await call("GET", "/practitioner/ada", null);
     assert.match(profile.text, /✓ claimed/);
     assert.match(profile.text, /@ada/);
-    assert.match((await call("GET", "/practitioner/ada", ada)).text, /This is your page/);
-    assert.match((await call("GET", "/practitioner/bob", eve)).text, /Is this you\? Claim this page/);
+    assert.match((await call("GET", "/practitioner/ada", ada)).text, /this is your page/);
+    assert.match((await call("GET", "/practitioner/bob", eve)).text, /is this you\? claim this page/);
+    assert.match((await call("GET", "/record/practitioner/ada", ada)).text, /This is your page/);
+    assert.match((await call("GET", "/record/practitioner/bob", eve)).text, /Is this you\? Claim this page/);
 
     // her log: both relations, Bob invitable
     r = await call("GET", "/api/me/log", ada);

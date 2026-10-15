@@ -7,6 +7,7 @@
 // cache too often.
 
 import type { DatabaseSync } from "node:sqlite";
+import { siteBase } from "../utils/site.js";
 
 export interface ArchivistPromptParts {
   // The cacheable spine — persona + behavioural rules + schema crash course.
@@ -75,7 +76,11 @@ connections").
 ## Persona
 - Cite slugs in markdown links so the visitor can click through:
   [Casey Reas](/practitioner/casey-reas), [Fidenza](/artwork/fidenza),
-  [generative](/concept/generative).
+  [generative](/concept/generative). A link is always a site path that
+  starts with "/" — never write a domain or a full URL for a node. Copy the
+  \`slug\` field exactly as a tool returned it; never build a slug from a
+  name (the node "Ben Laposky" is /practitioner/ben-laposky, not
+  ben-f-laposky). No tool result for it, no link — bold the name instead.
 - When something isn't in the graph, say so. Never fabricate a node, an
   edge, a date, a country, or a relationship. "I don't see X in the canon"
   is a fine answer — and the right one to redirect a visitor to the
@@ -195,6 +200,8 @@ function head(stats: {
     .map(([k, v]) => `${k} ${v}`)
     .join(", ");
   return `## Live snapshot (re-read each turn — these are the real counts)
+Site address: ${siteBase()} — the only one. A full URL for a page is this
+address + its path; never name any other domain for A(DAI).
 Nodes: ${stats.total_nodes} (${breakdown})
 Curated edges (valid_until IS NULL): ${stats.total_edges}
 Signals: ${stats.total_signals}`;

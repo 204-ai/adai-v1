@@ -83,59 +83,103 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  // Minimal markdown — paragraphs, bullets, bold, italic, inline code, links.
-  // Intentionally NOT a full parser. We control the model's output style
-  // via the system prompt; this just needs to handle the common cases.
-  function renderMarkdown(src) {
+  // Minimal markdown — paragraphs, bullets, numbered lists, headings (shown
+  // as a bold line), bold, italic, inline code, links. Intentionally NOT a
+  // full parser; it walks lines so a paragraph followed by a list in the
+  // same block still renders as both.
+  // `links` is the server's correction map for this reply ({ href → path |
+  // null }, src/archivist/links.ts): a slug the model derived from a name is
+  // swapped for the real one, a node that doesn't exist loses its link.
+  function renderMarkdown(src, links) {
     if (!src) return '';
-    // Split on blank lines to get paragraph-like blocks.
-    const blocks = src.replace(/\r\n/g, '\n').split(/\n{2,}/);
     const out = [];
-    for (const blockRaw of blocks) {
-      const block = blockRaw.trim();
-      if (!block) continue;
-      const lines = block.split('\n');
-      const isBulletList = lines.every(l => /^[-*]\s+/.test(l));
-      const isNumList = lines.every(l => /^\d+\.\s+/.test(l));
-      if (isBulletList) {
-        out.push('<ul>' + lines.map(l => '<li>' + inline(l.replace(/^[-*]\s+/, '')) + '</li>').join('') + '</ul>');
-      } else if (isNumList) {
-        out.push('<ol>' + lines.map(l => '<li>' + inline(l.replace(/^\d+\.\s+/, '')) + '</li>').join('') + '</ol>');
-      } else {
-        out.push('<p>' + inline(block).replace(/\n/g, '<br>') + '</p>');
+    let para = [];
+    let list = null;
+    const flushPara = () => {
+      if (para.length) out.push('<p>' + para.map((l) => inline(l, links)).join('<br>') + '</p>');
+      para = [];
+    };
+    const flushList = () => {
+      if (list) out.push(`<${list.tag}>` + list.items.map((i) => '<li>' + inline(i, links) + '</li>').join('') + `</${list.tag}>`);
+      list = null;
+    };
+    for (const raw of src.replace(/\r\n/g, '\n').split('\n')) {
+      const line = raw.trim();
+      let m;
+      if (!line) { flushPara(); flushList(); continue; }
+      if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) { flushPara(); flushList(); continue; }
+      if ((m = /^#{1,6}\s+(.*)$/.exec(line))) {
+        flushPara(); flushList();
+        out.push('<p><strong>' + inline(m[1].replace(/^\*\*(.*)\*\*$/, '$1'), links) + '</strong></p>');
+        continue;
       }
+      const bullet = /^[-*•]\s+(.*)$/.exec(line);
+      const num = bullet ? null : /^\d+[.)]\s+(.*)$/.exec(line);
+      if (bullet || num) {
+        const tag = bullet ? 'ul' : 'ol';
+        flushPara();
+        if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
+        list.items.push((bullet || num)[1]);
+        continue;
+      }
+      if (list && /^\s{2,}/.test(raw)) { list.items[list.items.length - 1] += ' ' + line; continue; }
+      flushList();
+      para.push(line);
     }
+    flushPara();
+    flushList();
     return out.join('');
   }
-  function inline(s) {
-    // Escape first, then re-introduce the few constructs we support. Markdown
-    // links are restricted to same-origin paths starting with '/'.
-    let t = escapeHtml(s);
-    // code: `foo`
-    t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
-    // bold: **foo**
-    t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    // italic: *foo* (must not match left over from bold; bold already replaced)
-    t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-    // links: [text](/path) — only same-origin paths.
-    // Reject protocol-relative ('//evil.com'), backslash variants
-    // ('/\evil.com'), AND tab/LF/CR variants ('/\t/evil.com'). Per WHATWG
-    // URL parsing, browsers strip ASCII TAB (0x09), LF (0x0A), and CR
-    // (0x0D) from `href` BEFORE resolving — so '/\t/evil.com' renders in
-    // markup as <a href="/\t/evil.com"> and the browser turns it into
-    // '//evil.com' (protocol-relative cross-origin) at navigation time.
-    // The click interceptor's /^\/([a-z_]+)\/([^\/?#]+)$/ would miss any
-    // of these too, so they'd fall through to default browser nav.
-    // A model influenced by prompt injection in canon content could
-    // otherwise emit clickable cross-origin links. We require the path
-    // to be a single-leading-slash same-origin path; on rejection the
-    // raw (HTML-escaped) markdown stays visible so the visitor can see
-    // what the model wrote without being able to click it.
-    t = t.replace(/\[([^\]]+)\]\((\/[^)]*)\)/g, (_m, label, href) => {
-      if (href.length < 2 || /[\/\\\t\n\r]/.test(href[1])) return _m;
-      return `<a href="${href}">${label}</a>`;
+
+  // Hosts that are this site: a model-written https://<host>/type/slug is a
+  // site path (it has written https://adai.is/… before).
+  const OWN_HOSTS = new Set([
+    'adai.is', 'www.adai.is', 'digitalartsinstitute.io', 'www.digitalartsinstitute.io',
+    'adai-basel.fly.dev', 'adai-staging.fly.dev', location.host,
+  ]);
+
+  function emphasis(escaped) {
+    return escaped
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      // italic: *foo* (bold already replaced)
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  }
+
+  // A link's target, or null to show the label alone. Only single-leading-
+  // slash same-origin paths survive. Reject protocol-relative ('//evil.com'),
+  // backslash variants ('/\evil.com'), AND tab/LF/CR variants ('/\t/evil.com'):
+  // per WHATWG URL parsing, browsers strip ASCII TAB, LF and CR from `href`
+  // BEFORE resolving, so '/\t/evil.com' would navigate to '//evil.com'. A
+  // model influenced by prompt injection in canon content could otherwise
+  // emit clickable cross-origin links; someone else's page shows as its
+  // label, unlinked.
+  function linkTarget(href, links) {
+    let target = href;
+    if (links && Object.prototype.hasOwnProperty.call(links, href)) {
+      target = links[href];
+    } else if (/^https?:\/\//i.test(href)) {
+      try {
+        const u = new URL(href);
+        target = OWN_HOSTS.has(u.host.toLowerCase()) ? u.pathname + u.search : null;
+      } catch { target = null; }
+    }
+    if (typeof target !== 'string' || target[0] !== '/' || target.length < 2) return null;
+    if (/[\/\\\t\n\r]/.test(target[1]) || /[\t\n\r]/.test(target)) return null;
+    return target;
+  }
+
+  function inline(s, links) {
+    // Links are lifted out first (their hrefs must be matched raw, before
+    // escaping), then the rest is escaped and formatted, so **[a](/b)** works.
+    const anchors = [];
+    const withTokens = String(s).replace(/\u0000/g, '').replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_m, label, href) => {
+      const target = linkTarget(href, links);
+      const labelHtml = emphasis(escapeHtml(label));
+      anchors.push(target ? `<a href="${escapeHtml(target)}">${labelHtml}</a>` : labelHtml);
+      return `\u0000${anchors.length - 1}\u0000`;
     });
-    return t;
+    return emphasis(escapeHtml(withTokens)).replace(/\u0000(\d+)\u0000/g, (_m, i) => anchors[Number(i)]);
   }
 
   // ---------- DOM ----------
@@ -225,12 +269,12 @@
   function renderTurn(turn /*, idx */) {
     const cls = `arch-msg arch-msg-${turn.role}`;
     if (turn.role === 'user') {
-      return `<div class="${cls}">${renderMarkdown(turn.text || '')}</div>`;
+      return `<div class="${cls}">${renderMarkdown(turn.text || '', null)}</div>`;
     }
     const chipsHtml = (turn.chips && turn.chips.length)
       ? `<div class="arch-chips">${turn.chips.map(chipHtml).join('')}</div>`
       : '';
-    return `<div class="${cls}">${renderMarkdown(turn.text || '')}${chipsHtml}</div>`;
+    return `<div class="${cls}">${renderMarkdown(turn.text || '', turn.links)}${chipsHtml}</div>`;
   }
   function chipHtml(c) {
     const cls = ['arch-chip'];
@@ -556,6 +600,9 @@
         a.chips.push(chip);
       }
       dispatchClientTool(data.name, data.input || {});
+      renderLog();
+    } else if (event === 'links' && data.links && typeof data.links === 'object') {
+      a.links = data.links;
       renderLog();
     } else if (event === 'stop') {
       // record reason silently; UI cleanup happens in send()

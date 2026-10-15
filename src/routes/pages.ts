@@ -9,12 +9,17 @@ import { buildEmbeddingSections } from "../embed/sections.js";
 import { formatArtworkYearFromMetadata, formatArtworkYear, YEAR_SQL_FRAGMENT } from "../utils/year.js";
 import { NODE_NOT_RETIRED } from "../utils/visibility.js";
 import { sourceLabel } from "../utils/source-label.js";
+import { edgeLabel } from "../utils/edge-labels.js";
+import { contributionCards, type ContributionRow } from "../utils/signal-prose.js";
 import { rosterFor } from "../utils/roster.js";
+import { heldWorks } from "../utils/held-works.js";
 import { collapseClaims, CLAIM_COLS, tripleKey } from "../utils/claims.js";
 import { nodeHistory, type HistoryEvent } from "../utils/history.js";
 import { readSession } from "../intake/auth.js";
 import { accessClaimCards, accessClaimCount, claimReviewCards, curatorSignIn, objectionsBlock, profileClaimBlock, relationNotesHtml } from "../claim/pages.js";
 import { notesByTriple, publicNotesFor } from "../claim/notes.js";
+import { renderEntityView, nodePath, type EntityNode, type EntityViewer } from "../entity/view.js";
+import { entityPage } from "../entity/page.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.join(__dirname, "..", "..");
@@ -42,22 +47,6 @@ router.get("/skill.md", (_req, res) => {
 
 const ENTITY_TYPES_EXCLUDE = "('related', 'concept', 'scene', 'classification_regime')";
 
-const EDGE_TYPE_LABEL: Record<string, string> = {
-  PRACTICES: "practices",
-  BELONGS_TO: "belongs to",
-  RELATED_TO: "related to",
-  COLLABORATES_WITH: "collaborates with",
-  CREATED_BY: "created by",
-  EXHIBITED_AT: "exhibited at",
-  HELD_BY: "held by",
-  CLASSIFIED_BY: "classified by",
-  LEGIBLE_TO: "legible to",
-  PARTICIPATED_IN: "participated in",
-  PRESENTED_BY: "presented by",
-  CURATED_BY: "curated by",
-  REPRESENTS: "represents",
-};
-
 const ALIAS_SOURCE_LABEL: Record<string, string> = {
   wikidata: "Wikidata",
   moma: "MoMA",
@@ -78,20 +67,72 @@ router.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "..", "public", "field", "index.html"));
 });
 
-// GET /:type/:slug — polymorphic profile page (slug-only lookup, type ignored for resolution)
-function profileHandler(req: any, res: any) {
-  const db = getDb();
-  const slug = req.params.slug;
+const NODE_ROUTE_TYPES = ["practitioner", "artwork", "concept", "scene", "collective", "institution", "platform", "publication", "project", "classification_regime"];
 
-  const node = db.prepare("SELECT id, name, type, slug, metadata FROM nodes WHERE slug = ?").get(slug) as any;
+/** A node by its address: (type, slug) first — slugs repeat across types — then slug alone. */
+function nodeAt(db: any, type: string, slug: string): EntityNode | undefined {
+  return (db.prepare("SELECT id, name, type, slug, metadata FROM nodes WHERE type = ? AND slug = ?").get(type, slug)
+    ?? db.prepare("SELECT id, name, type, slug, metadata FROM nodes WHERE slug = ?").get(slug)) as EntityNode | undefined;
+}
+
+function viewerOf(db: any, req: any): EntityViewer {
+  const session = readSession(db, req);
+  return { contributorId: session?.contributor.id ?? null, curator: session?.contributor.scope === "admin" };
+}
+
+const notFoundPage = () => htmlPage("Not Found", "<h2>Not Found</h2><p>No node with that slug.</p>");
+
+// GET /:type/:slug — the entity view (src/entity/view.ts), the designed page
+// of a node: what invitations link to and search engines index. The same
+// article opens as the /field overlay through /api/entity. An address whose
+// type segment is wrong redirects to the node's own.
+function entityHandler(type: string) {
+  return (req: any, res: any) => {
+    const db = getDb();
+    const node = nodeAt(db, type, req.params.slug);
+    if (!node) {
+      res.status(404).set(HTML_HEADERS).send(notFoundPage());
+      return;
+    }
+    if (node.type !== type) {
+      res.redirect(301, nodePath(node));
+      return;
+    }
+    res.set(HTML_HEADERS).send(entityPage(node, renderEntityView(db, node, viewerOf(db, req))));
+  };
+}
+
+// GET /api/entity?id=<node id> — the entity view's article for the /field
+// overlay (public/field/js-interface/entity-view.js).
+router.get("/api/entity", (req, res) => {
+  const db = getDb();
+  const id = typeof req.query.id === "string" ? req.query.id : "";
+  const node = id ? db.prepare("SELECT id, name, type, slug, metadata FROM nodes WHERE id = ?").get(id) as EntityNode | undefined : undefined;
   if (!node) {
-    res.status(404).set(HTML_HEADERS).send(htmlPage("Not Found", "<h2>Not Found</h2><p>No node with that slug.</p>"));
+    res.status(404).json({ error: "not_found" });
     return;
   }
+  const r = renderEntityView(db, node, viewerOf(db, req));
+  res.set("Cache-Control", "no-store").json({ id: node.id, type: node.type, slug: node.slug, name: node.name, html: r.article });
+});
+
+// GET /record/:type/:slug — the record view: the back office of one node —
+// every field, contribution, relation and its provenance. Linked from the
+// entity view for curators and from the review queue.
+function profileHandler(req: any, res: any) {
+  const db = getDb();
+  const node = nodeAt(db, req.params.type, req.params.slug) as any;
+  if (!node) {
+    res.status(404).set(HTML_HEADERS).send(notFoundPage());
+    return;
+  }
+  const slug = node.slug;
 
   const escName = htmlEscape(String(node.name));
   const escType = htmlEscape(String(node.type));
+  const fieldHref = `/field?node=${encodeURIComponent(node.id)}`;
   let body = `<h2>${escName}</h2><span class='tag'>${escType}</span>`;
+  body += ` <span class='meta'><a href='${htmlEscape(fieldHref)}'>view in field →</a> · <a href='${nodePath(node)}'>entity view →</a></span>`;
   // Claimed: the badge (+ the claimant's own links); unclaimed: "Is this you?"
   body += profileClaimBlock(db, node, readSession(db, req)?.contributor.id ?? null);
 
@@ -255,6 +296,22 @@ function profileHandler(req: any, res: any) {
     }
   }
 
+  // A collection's holdings: from incoming HELD_BY, with year, image, makers.
+  if (node.type === "institution") {
+    const held = heldWorks(db, node.id);
+    if (held.length) {
+      body += `<h3>works held (${held.length})</h3><ul class='edge-list'>`;
+      for (const w of held) {
+        const thumb = w.image
+          ? `<img src='${htmlEscape(w.image)}' alt='' loading='lazy' style='width:48px;height:48px;object-fit:cover;border-radius:3px;vertical-align:middle;margin-right:0.6rem'>`
+          : `<span style='display:inline-block;width:48px;height:48px;background:#181818;border-radius:3px;vertical-align:middle;margin-right:0.6rem'></span>`;
+        const by = w.artists.map((a) => `<a href='/record/${encodeURIComponent(a.type)}/${encodeURIComponent(a.slug)}'>${htmlEscape(a.name)}</a>`).join(", ");
+        body += `<li>${thumb}<a href='/record/${encodeURIComponent(w.type)}/${encodeURIComponent(w.slug)}'>${htmlEscape(w.name)}</a>${w.year ? ` <span class='meta'>(${htmlEscape(w.year)})</span>` : ""}${by ? ` <span class='meta'>— ${by}</span>` : ""}</li>`;
+      }
+      body += `</ul>`;
+    }
+  }
+
   // Honor consent_scope='structural_only': the contributor was promised
   // "only the edge counts, not the content" — so we hide title/summary/
   // content for those signals here too. Their edges are still rendered
@@ -262,29 +319,20 @@ function profileHandler(req: any, res: any) {
   // NULL/other consent_scope values pass through (allow-by-default).
   const contribs = db
     .prepare(
-      "SELECT s.title, s.summary, s.content, s.source_url, s.submitted_by, s.created_at, s.consent_attribution FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id WHERE iq.target_node = ? AND iq.status = 'approved' AND (s.consent_scope IS NULL OR s.consent_scope != 'structural_only') ORDER BY s.created_at DESC"
+      "SELECT s.title, s.content, s.source_url, s.source_type, s.submitted_by, s.created_at, s.consent_attribution, iq.proposed_nodes, iq.proposed_edges FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id WHERE iq.target_node = ? AND iq.status = 'approved' AND (s.consent_scope IS NULL OR s.consent_scope != 'structural_only') ORDER BY s.created_at DESC"
     )
-    .all(node.id) as any[];
+    .all(node.id) as unknown as ContributionRow[];
 
   if (contribs.length > 0) {
     body += `<h3>community contributions (${contribs.length})</h3>`;
-    for (const c of contribs) {
-      const attributable = c.consent_attribution !== "anonymous";
-      body += `<div class='card'>`;
-      if (c.title) body += `<strong>${htmlEscape(String(c.title))}</strong>`;
-      if (c.content) body += `<p>${htmlEscape(String(c.content))}</p>`;
-      if (c.source_url) body += `<p class='meta'>Source: <a href='${htmlEscape(String(c.source_url))}' target='_blank' rel='noopener'>${htmlEscape(String(c.source_url))}</a></p>`;
-      if (c.submitted_by && attributable) body += `<p class='meta'>Contributed by: ${htmlEscape(String(c.submitted_by))}</p>`;
-      else if (!attributable) body += `<p class='meta'>Contributed anonymously</p>`;
-      body += `</div>`;
-    }
+    body += contributionCards(db, contribs);
   }
 
   // One line per relation; several claims of it (different sources) collapse
   // into "claimed by N sources" (src/utils/claims.ts).
   const edges = collapseClaims(db
     .prepare(
-      `SELECT e.id, ${CLAIM_COLS}, e.confidence, n1.name as source_name, n1.slug as source_slug, n2.name as target_name, n2.slug as target_slug FROM edges e LEFT JOIN signals s ON s.id = e.signal_id LEFT JOIN nodes n1 ON e.source_id = n1.id LEFT JOIN nodes n2 ON e.target_id = n2.id WHERE e.valid_until IS NULL AND (e.source_id = ? OR e.target_id = ?) ORDER BY e.valid_from ASC`
+      `SELECT e.id, ${CLAIM_COLS}, e.confidence, n1.name as source_name, n1.slug as source_slug, n1.type as source_node_type, n2.name as target_name, n2.slug as target_slug, n2.type as target_node_type FROM edges e LEFT JOIN signals s ON s.id = e.signal_id LEFT JOIN nodes n1 ON e.source_id = n1.id LEFT JOIN nodes n2 ON e.target_id = n2.id WHERE e.valid_until IS NULL AND (e.source_id = ? OR e.target_id = ?) ORDER BY e.valid_from ASC`
     )
     .all(node.id, node.id) as any[]);
 
@@ -299,16 +347,17 @@ function profileHandler(req: any, res: any) {
     }
     body += `<h3>connections (${edges.length})</h3>`;
     for (const [etype, list] of grouped) {
-      const label = EDGE_TYPE_LABEL[etype] ?? etype.toLowerCase().replace(/_/g, " ");
+      const label = edgeLabel(etype);
       body += `<div style='margin-top:0.8rem'><span class='edge-type'>${htmlEscape(etype)}</span> <span class='meta'>— ${htmlEscape(label)} (${list.length})</span><ul class='edge-list'>`;
       for (const e of list) {
         const otherName = e.source_id === node.id ? e.target_name : e.source_name;
         const otherSlug = e.source_id === node.id ? e.target_slug : e.source_slug;
+        const otherType = e.source_id === node.id ? e.target_node_type : e.source_node_type;
         if (!otherSlug) continue;
         const claimed = e.origins.length > 1
           ? ` <span class='meta'>— claimed by ${e.origins.length} sources: ${e.origins.map((o: { label: string }) => htmlEscape(o.label)).join(", ")}</span>`
           : "";
-        body += `<li><a href='/practitioner/${encodeURIComponent(otherSlug)}'>${htmlEscape(String(otherName ?? otherSlug))}</a>${claimed}${relationNotesHtml(notes.get(tripleKey(e)))}</li>`;
+        body += `<li><a href='/record/${encodeURIComponent(otherType)}/${encodeURIComponent(otherSlug)}'>${htmlEscape(String(otherName ?? otherSlug))}</a>${claimed}${relationNotesHtml(notes.get(tripleKey(e)))}</li>`;
       }
       body += `</ul></div>`;
     }
@@ -361,7 +410,7 @@ function profileHandler(req: any, res: any) {
   body += ` <a href='/field?node=${encodeURIComponent(node.id)}' class='btn'>View in field</a>`;
   body += ` <a href='/${encodeURIComponent(node.type)}/${encodeURIComponent(slug)}/history' class='btn'>History</a>`;
 
-  res.set(HTML_HEADERS).send(htmlPage(node.name, body));
+  res.set(HTML_HEADERS).send(htmlPage(node.name, body, "", { fieldNode: node.id }));
 }
 
 // Render the "Style kin", "Visually affine", and "AI-suggested attributions"
@@ -416,16 +465,8 @@ ${thumb}
   return s;
 }
 
-router.get("/practitioner/:slug", profileHandler);
-router.get("/artwork/:slug", profileHandler);
-router.get("/concept/:slug", profileHandler);
-router.get("/scene/:slug", profileHandler);
-router.get("/collective/:slug", profileHandler);
-router.get("/institution/:slug", profileHandler);
-router.get("/platform/:slug", profileHandler);
-router.get("/publication/:slug", profileHandler);
-router.get("/project/:slug", profileHandler);
-router.get("/classification_regime/:slug", profileHandler);
+for (const t of NODE_ROUTE_TYPES) router.get(`/${t}/:slug`, entityHandler(t));
+router.get("/record/:type/:slug", profileHandler);
 
 // JSON data export — polymorphic over node type, slug-only resolution.
 function dataHandler(req: any, res: any) {
@@ -578,7 +619,7 @@ function historyHandler(req: any, res: any) {
   if (h.events.length === 0) body += `<p class='meta'>No recorded changes.</p>`;
   for (const e of h.events) body += renderHistoryEvent(e);
   if (h.node.created_at) body += `<div class='card'><p class='meta'>${htmlEscape(h.node.created_at.slice(0, 10))}</p><strong>created</strong></div>`;
-  res.set(HTML_HEADERS).send(htmlPage(`${h.node.name} — history`, body));
+  res.set(HTML_HEADERS).send(htmlPage(`${h.node.name} — history`, body, "", { fieldNode: h.node.id }));
 }
 
 function historyJsonHandler(req: any, res: any) {
@@ -678,7 +719,7 @@ router.get("/neighbours/:type/:slug", (req, res) => {
     body += renderNeighbourTable(neighbours);
   }
 
-  res.set(HTML_HEADERS).send(htmlPage(`Neighbours of ${node.name}`, body));
+  res.set(HTML_HEADERS).send(htmlPage(`Neighbours of ${node.name}`, body, "", { fieldNode: node.id }));
 });
 
 // Larger table variant for /neighbours/: shows name + type + similarity
@@ -863,10 +904,10 @@ router.get("/review", (req, res) => {
       const artSlug = String(item.target_node ?? "").split(":").slice(1).join(":");
       body += `<div class='card' id='item-${item.id}'>
 <h3>${artName}</h3>
-<p class='meta'>Proposed creator: <strong><a href='/practitioner/${encodeURIComponent(candSlug)}'>${candName}</a></strong>
+<p class='meta'>Proposed creator: <strong><a href='/record/practitioner/${encodeURIComponent(candSlug)}'>${candName}</a></strong>
  · cosine: <span class='tag'>${sim}</span>
  · ${String(item.created_at ?? "")}</p>
-<p class='meta'>Artwork: <a href='/artwork/${encodeURIComponent(artSlug)}'>${artName}</a></p>
+<p class='meta'>Artwork: <a href='/record/artwork/${encodeURIComponent(artSlug)}'>${artName}</a></p>
 <div style='margin-top:0.5rem'>
 <button class='btn btn-approve' onclick="reviewAction('${item.id}','approve')">Approve attribution</button>
 <button class='btn btn-reject' onclick="reviewAction('${item.id}','reject')">Reject</button>
@@ -876,7 +917,7 @@ router.get("/review", (req, res) => {
   } else {
     const items = db
       .prepare(
-        "SELECT iq.id, iq.signal_id, iq.target_node, iq.submitted_by, iq.trust_tier, iq.created_at, iq.proposed_nodes, iq.proposed_edges, s.title, s.content, s.source_url, s.source_type, n.name as target_name FROM intake_queue iq LEFT JOIN signals s ON iq.signal_id = s.id LEFT JOIN nodes n ON iq.target_node = n.id WHERE iq.status='pending' AND iq.kind='human_signal' ORDER BY iq.created_at DESC"
+        "SELECT iq.id, iq.signal_id, iq.target_node, iq.submitted_by, iq.trust_tier, iq.created_at, iq.proposed_nodes, iq.proposed_edges, s.title, s.content, s.source_url, s.source_type, n.name as target_name, n.type as target_type, n.slug as target_slug FROM intake_queue iq LEFT JOIN signals s ON iq.signal_id = s.id LEFT JOIN nodes n ON iq.target_node = n.id WHERE iq.status='pending' AND iq.kind='human_signal' ORDER BY iq.created_at DESC"
       )
       .all() as any[];
 
@@ -885,7 +926,9 @@ router.get("/review", (req, res) => {
       const qurl = htmlEscape(String(item.source_url ?? ""));
       const qauthor = htmlEscape(String(item.submitted_by ?? ""));
       const qtier = htmlEscape(String(item.trust_tier ?? ""));
-      const qtarget = htmlEscape(String(item.target_name ?? item.target_node ?? ""));
+      const qtarget = item.target_slug
+        ? `<a href='/record/${encodeURIComponent(item.target_type)}/${encodeURIComponent(item.target_slug)}'>${htmlEscape(String(item.target_name ?? item.target_node))}</a>`
+        : htmlEscape(String(item.target_name ?? item.target_node ?? ""));
       const qdate = String(item.created_at ?? "");
       const qsource = String(item.source_type ?? "");
 

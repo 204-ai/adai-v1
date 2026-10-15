@@ -96,7 +96,6 @@
     const focusedId = window.ADAI_GRAPH_FIELD?.focusedId;
     if (focusedId && g.byId.has(focusedId)) {
       const node = g.byId.get(focusedId);
-      const showcase = (window.ADAI_ENTITY_SHOWCASE || {})[focusedId] || null;
       block += `\n## Focused entity\n\n`;
       block += `id: ${node.id}\n`;
       block += `name: ${node.name}\n`;
@@ -105,15 +104,9 @@
       // Real provenance label shipped on every graph node (sourceLabel() server
       // side, from metadata.source_url / va_maker_name).
       if (node.source) block += `source: ${node.source}\n`;
-      if (showcase) {
-        block += `source_origin: ${showcase.source_origin || 'unknown'}; confidence: ${showcase.confidence || 'unknown'}${showcase.review_pending ? '; review_pending: true' : ''}\n`;
-        if (showcase.dates_compact) block += `dates: ${showcase.dates_compact}\n`;
-        if (showcase.nationality) block += `nationality: ${showcase.nationality}\n`;
-        if (showcase.bio) block += `\nbio: ${showcase.bio}\n`;
-        if (showcase.quote?.text) block += `\nattributed quote: "${showcase.quote.text}" — ${showcase.quote.attribution}\n`;
-      } else {
-        block += `note: no curated editorial profile in this snapshot — graph fields only (id/name/type/slug${node.source ? ' + source' : ''})\n`;
-      }
+      // The editorial profile is server-rendered now (src/entity/view.ts):
+      // point at it rather than snapshot it.
+      if (node.slug) block += `profile: ${location.origin}/${node.type}/${node.slug}\n`;
 
       // Edges grouped by type
       const edges = g.edgesFor(focusedId);

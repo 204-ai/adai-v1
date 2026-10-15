@@ -15,7 +15,7 @@ import { getDb } from "../db.js";
 import { JSON_HEADERS } from "../templates.js";
 import { requireToken, requireAdmin, isAutoMerge } from "../auth.js";
 import { mintToken, revokeTokenByPrefix, listTokens, MintError } from "../utils/token-mint.js";
-import { nodeId as composeNodeId, slugify } from "../utils/slug.js";
+import { slugify, slugForCreate } from "../utils/slug.js";
 import {
   insertSignal,
   insertIntake,
@@ -32,6 +32,7 @@ import {
 } from "../utils/contribution.js";
 import { uploadImage, isR2Configured } from "../r2.js";
 import { mirrorImageFromUrl, ImageFetchError } from "../utils/images.js";
+import { sniffImageMime } from "../utils/ssrf.js";
 import { getSkillVersion } from "../utils/skill-version.js";
 import { embedNodeAsync } from "../embed/server.js";
 import { normaliseOrgKinds, orgKindsError, ORG_KINDS } from "../utils/org-kinds.js";
@@ -345,8 +346,20 @@ router.post("/api/v1/nodes", requireToken, (req, res) => {
     effectiveMetadata = { ...effectiveMetadata, kind: k.kinds };
   }
 
-  const slug = typeof providedSlug === "string" && providedSlug.length > 0 ? providedSlug : slugify(name);
-  const computedId = composeNodeId(type, slug);
+  // The slug is a URL path segment: an explicit one goes through the same
+  // slugifier as a name (a `#` or `,` in it broke the page address).
+  let slug: string;
+  if (typeof providedSlug === "string" && providedSlug.length > 0) {
+    slug = slugify(providedSlug);
+    if (slug !== providedSlug) warnings.push(`slug "${providedSlug}" normalised to "${slug}"`);
+  } else {
+    slug = slugForCreate((id) => !!db.prepare("SELECT 1 FROM nodes WHERE id = ?").get(id), type, name);
+  }
+  if (!slug) {
+    res.status(400).set(JSON_HEADERS).json({ error: "invalid_slug", message: "the name (or slug) has no letters or digits to make an address from" });
+    return;
+  }
+  const computedId = `${type}:${slug}`;
 
   // Signal anchors every contribution. Stash the full payload so the curator
   // can review verbatim.
@@ -656,6 +669,7 @@ router.post(
     }
 
     let upresult: Awaited<ReturnType<typeof uploadImage>>;
+    let declaredMime: string | null = null;
     if (imageUrl) {
       try {
         upresult = (await mirrorImageFromUrl(imageUrl)).upload;
@@ -668,6 +682,16 @@ router.post(
         return;
       }
     } else {
+      // The stored type and key extension come from the bytes, never from the
+      // label the client sent: a JPEG declared text/plain was once stored as
+      // .bin and served as garbage. Same rule as the image_url transport.
+      const sniffed = sniffImageMime(buf!);
+      if (!sniffed) {
+        res.status(415).set(JSON_HEADERS).json({ error: "not_an_image", detail: `the bytes are not a JPEG/PNG/GIF/WebP/AVIF image (declared ${mime})` });
+        return;
+      }
+      if (sniffed !== mime) declaredMime = mime;
+      mime = sniffed;
       try {
         upresult = await uploadImage(buf!, mime);
       } catch (e: any) {
@@ -679,7 +703,7 @@ router.post(
     const signalId = insertSignal(db, {
       contributor: req.contributor!,
       title: `Upload image to ${nodeId}`,
-      content: JSON.stringify({ node_id: nodeId, key: upresult.key, sha256: upresult.sha256, bytes: upresult.bytes, content_type: upresult.content_type, ...(imageUrl ? { image_url: imageUrl } : {}) }),
+      content: JSON.stringify({ node_id: nodeId, key: upresult.key, sha256: upresult.sha256, bytes: upresult.bytes, content_type: upresult.content_type, ...(declaredMime ? { declared_type: declaredMime } : {}), ...(imageUrl ? { image_url: imageUrl } : {}) }),
       source_url: imageUrl,
       source_type: "api_image",
       batch_id: batch.value,

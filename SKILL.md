@@ -184,8 +184,10 @@ node's public surfaces, so malformed values are rejected with a `400`.
 
 Use this when nothing in §1.0 matched what the practitioner is talking
 about. The server computes `<type>:<slug>` from the name (slug =
-lowercase, spaces → `-`, parens/dots/apostrophes stripped, `&` → `and`).
-Pass `slug` explicitly only if you need to override that.
+lowercase, accents transliterated, parens/dots/apostrophes stripped, `&` →
+`and`, any other punctuation or space → one `-`). Pass `slug` explicitly
+only if you need to override that; it is normalised by the same rules
+(a `warnings` entry says so when it changed).
 
 ```bash
 curl -s -X POST "$ADAI_BASE/api/v1/nodes" \
@@ -399,7 +401,10 @@ curl -s -X POST "$ADAI_BASE/api/v1/images" \
 ```
 
 Returns `{ node_id, upload: { key, url, sha256, bytes, content_type,
-already_existed }, status, signal_id, intake_id }`. The `upload` block
+already_existed }, status, signal_id, intake_id }`. Every transport reads
+the file's own first bytes to decide what it is — the declared type
+(multipart part type, `mime_type`) is ignored; bytes that aren't a
+JPEG/PNG/GIF/WebP/AVIF are refused with `415 not_an_image`. The `upload` block
 is the immutable R2 object; the `status` tells you whether the metadata
 patch went live or is queued.
 
@@ -596,8 +601,10 @@ the practitioner did not name, and never put an email address anywhere public.
 ## 2 — ID conventions
 
 - **Newly-created nodes** always get the hyphenated form:
-  `<type>:<slug>` where slug is `lowercase`, spaces → `-`, parens / dots /
-  apostrophes stripped, `&` → `and`. Examples: `practitioner:casey-reas`,
+  `<type>:<slug>` where slug is `lowercase`, accents transliterated to
+  ASCII (`là` → `la`), parens / dots / apostrophes stripped, `&` → `and`,
+  every other run of punctuation or spaces (`#`, `,`, `/`, `?`, `–`, `—`)
+  → a single `-`, none at either end. Examples: `practitioner:casey-reas`,
   `artwork:fidenza`, `classification_regime:a-dai-seed-canon-v1-2026-04`.
   This is what the API produces and what you should use in every example.
 - **Legacy seed nodes** keep spaces from their original names:
@@ -611,7 +618,11 @@ the practitioner did not name, and never put an email address anywhere public.
 - **Edges**: the server computes the id (see §1.4). You don't write it.
 
 To slugify yourself: `slugify("Casey Reas")` → `casey-reas`,
-`slugify("Form & Code")` → `form-and-code`.
+`slugify("Form & Code")` → `form-and-code`,
+`slugify("Aaron at Tsukuba, #6 22/5/85")` → `aaron-at-tsukuba-6-22-5-85`,
+`slugify("Toujours là")` → `toujours-la`. Nodes created before October
+2026 keep the slug they were given (some carry accents or `#`); read the
+slug from the API rather than recomputing it.
 
 ---
 
