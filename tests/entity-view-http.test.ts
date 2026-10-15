@@ -26,7 +26,7 @@ it("entity view: page, overlay JSON, record, wrong-type redirect", async () => {
     assert.match(page, /<meta name="description" content="Oscilloscope pioneer\.">/);
     assert.match(page, /<meta property="og:image" content="https:\/\/cdn\.test\/o\.jpg">/); // hero = a work, never a portrait
     assert.match(page, /href="\/artwork\/oscillon-1184" data-node-id="artwork:oscillon-1184"/);
-    assert.match(page, /href="\/field\?node=practitioner%3Aben%20laposky"/);
+    assert.match(page, /href="\/field\/practitioner\/ben-laposky"/);
     assert.doesNotMatch(page, /href="\/record\//, "the record link is for curators");
 
     // (type, slug) wins over slug alone
@@ -45,12 +45,31 @@ it("entity view: page, overlay JSON, record, wrong-type redirect", async () => {
     assert.match(record, /href='\/record\/artwork\/oscillon-1184'/);
 
     // the way back into the field (issue #63): beside the title, and the nav carries the node
-    assert.match(page, /<p class="ev-mono-dim ev-claim" id="ev-claim">.*class="ev-field-link" href="\/field\?node=practitioner%3Aben%20laposky">view in field →/);
-    assert.match(await (await fetch(`${base}/concept/ben-laposky`)).text(), /class="ev-field-link" href="\/field\?node=concept%3Aben-laposky"/);
-    assert.match(record, /<nav><a href='\/field\?node=practitioner%3Aben%20laposky'>Field<\/a>/);
-    assert.match(record, /<a href='\/field\?node=practitioner%3Aben%20laposky'>view in field →<\/a>/);
+    assert.match(page, /<p class="ev-mono-dim ev-claim" id="ev-claim">.*class="ev-field-link" href="\/field\/practitioner\/ben-laposky">view in field →/);
+    assert.match(await (await fetch(`${base}/concept/ben-laposky`)).text(), /class="ev-field-link" href="\/field\/concept\/ben-laposky"/);
+    assert.match(record, /<nav><a href='\/field\/practitioner\/ben-laposky'>Field<\/a>/);
+    assert.match(record, /<a href='\/field\/practitioner\/ben-laposky'>view in field →<\/a>/);
     const hist = await (await fetch(`${base}/practitioner/ben-laposky/history`)).text();
-    assert.match(hist, /<nav><a href='\/field\?node=practitioner%3Aben%20laposky'>Field<\/a>/);
+    assert.match(hist, /<nav><a href='\/field\/practitioner\/ben-laposky'>Field<\/a>/);
+
+    // clean field URLs (issue #71): the path serves the field; ?node= 301s to it
+    const field = await fetch(`${base}/field/practitioner/ben-laposky`);
+    assert.equal(field.status, 200);
+    assert.match(await field.text(), /graph-field\.js/);
+    const go = async (u: string) => (await fetch(`${base}${u}`, { redirect: "manual" }));
+    for (const [from, to] of [
+      [`/field?node=${encodeURIComponent("practitioner:ben laposky")}`, "/field/practitioner/ben-laposky"],
+      ["/field?node=practitioner:ben-laposky", "/field/practitioner/ben-laposky"],
+      ["/field?node=oscillon-1184&lens=1", "/field/artwork/oscillon-1184?lens=1"],
+      ["/field/project/oscillon-1184", "/field/artwork/oscillon-1184"],
+    ]) {
+      const r = await go(from);
+      assert.equal(r.status, 301, from);
+      assert.equal(r.headers.get("location"), to, from);
+    }
+    assert.equal((await go("/field?node=nope")).status, 200, "an unknown node still opens the field");
+    assert.equal((await go("/field")).status, 200);
+    assert.equal((await go("/field/artwork/nope")).status, 404);
   } finally {
     server.close();
   }

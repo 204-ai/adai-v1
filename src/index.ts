@@ -78,10 +78,6 @@ if (isStaging()) {
   });
   app.get("/robots.txt", (_req, res) => res.type("text/plain").send("User-agent: *\nDisallow: /\n"));
   app.get("/api/staging", (_req, res) => res.json({ env: "staging", switches: publicSwitches() }));
-  app.get("/field", (_req, res) => {
-    const file = path.join(__dirname, "..", "public", "field", "index.html");
-    res.set(HTML_HEADERS).send(fs.readFileSync(file, "utf-8"));
-  });
 }
 
 // /field-static serves the public/field tree (p5-derived data-driven graph view).

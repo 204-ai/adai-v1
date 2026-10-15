@@ -207,8 +207,9 @@ metadata is **not** merged in that case; use PATCH (§1.3) instead.
 
 After a successful create, hand the practitioner the share links: the
 profile page `$ADAI_BASE/<type>/<slug>` and the field view zoomed straight
-to the node, `$ADAI_BASE/field?node=<node_id>` (URL-encode the id). The
-second one is the "look at what I added" link.
+to the node, `$ADAI_BASE/field/<type>/<slug>`. The second one is the
+"look at what I added" link (the old `/field?node=<node_id>` form redirects
+to it).
 
 **Concepts are the field vocabulary — and "field" status is curated.** In
 `/field`, a `concept` with no `tag_origin` reads as a real *field* (the

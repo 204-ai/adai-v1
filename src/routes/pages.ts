@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getDb } from "../db.js";
 import { htmlPage, htmlEscape, CSS, HTML_HEADERS } from "../templates.js";
+import { fieldPath } from "../utils/site.js";
 import { topKByNodeId, withMetadata, type Neighbour } from "../embed/neighbours.js";
 import { buildEmbeddingSections } from "../embed/sections.js";
 import { formatArtworkYearFromMetadata, formatArtworkYear, YEAR_SQL_FRAGMENT } from "../utils/year.js";
@@ -130,7 +131,7 @@ function profileHandler(req: any, res: any) {
 
   const escName = htmlEscape(String(node.name));
   const escType = htmlEscape(String(node.type));
-  const fieldHref = `/field?node=${encodeURIComponent(node.id)}`;
+  const fieldHref = fieldPath(node);
   let body = `<h2>${escName}</h2><span class='tag'>${escType}</span>`;
   body += ` <span class='meta'><a href='${htmlEscape(fieldHref)}'>view in field →</a> · <a href='${nodePath(node)}'>entity view →</a></span>`;
   // Claimed: the badge (+ the claimant's own links); unclaimed: "Is this you?"
@@ -407,10 +408,10 @@ function profileHandler(req: any, res: any) {
 
   // Shareable deep-link into the field view, zoomed straight to this node —
   // the URL contributors send around ("look at what I added").
-  body += ` <a href='/field?node=${encodeURIComponent(node.id)}' class='btn'>View in field</a>`;
+  body += ` <a href='${htmlEscape(fieldPath(node))}' class='btn'>View in field</a>`;
   body += ` <a href='/${encodeURIComponent(node.type)}/${encodeURIComponent(slug)}/history' class='btn'>History</a>`;
 
-  res.set(HTML_HEADERS).send(htmlPage(node.name, body, "", { fieldNode: node.id }));
+  res.set(HTML_HEADERS).send(htmlPage(node.name, body, "", { fieldNode: node }));
 }
 
 // Render the "Style kin", "Visually affine", and "AI-suggested attributions"
@@ -619,7 +620,7 @@ function historyHandler(req: any, res: any) {
   if (h.events.length === 0) body += `<p class='meta'>No recorded changes.</p>`;
   for (const e of h.events) body += renderHistoryEvent(e);
   if (h.node.created_at) body += `<div class='card'><p class='meta'>${htmlEscape(h.node.created_at.slice(0, 10))}</p><strong>created</strong></div>`;
-  res.set(HTML_HEADERS).send(htmlPage(`${h.node.name} — history`, body, "", { fieldNode: h.node.id }));
+  res.set(HTML_HEADERS).send(htmlPage(`${h.node.name} — history`, body, "", { fieldNode: h.node }));
 }
 
 function historyJsonHandler(req: any, res: any) {
@@ -719,7 +720,7 @@ router.get("/neighbours/:type/:slug", (req, res) => {
     body += renderNeighbourTable(neighbours);
   }
 
-  res.set(HTML_HEADERS).send(htmlPage(`Neighbours of ${node.name}`, body, "", { fieldNode: node.id }));
+  res.set(HTML_HEADERS).send(htmlPage(`Neighbours of ${node.name}`, body, "", { fieldNode: node }));
 });
 
 // Larger table variant for /neighbours/: shows name + type + similarity
@@ -1020,9 +1021,47 @@ fetch('/api/review/'+id+'/'+action,{method:'POST',headers:{'Content-Type':'appli
   res.set(HTML_HEADERS).send(htmlPage("Review Queue", body));
 });
 
-// GET /field — data-driven p5-derived dot-field view (assets in public/field)
-router.get("/field", (_req, res) => {
-  res.sendFile(path.join(__dirname, "..", "..", "public", "field", "index.html"));
+// GET /field — data-driven p5-derived dot-field view (assets in public/field).
+// GET /field/:type/:slug — the field focused on one node (issue #71); the
+// client reads the node from the path. The old /field?node=<id> 301s to it,
+// other parameters (lens, reading, seed) kept. Sent through res.send, not
+// sendFile, so the staging bar is added like on every other page.
+const FIELD_HTML = path.join(__dirname, "..", "..", "public", "field", "index.html");
+const sendField = (res: any) => res.set(HTML_HEADERS).send(fs.readFileSync(FIELD_HTML, "utf-8"));
+
+/** A ?node= value: a node id, `type:slug`, or a bare slug. */
+function fieldNodeOf(db: any, raw: string): EntityNode | undefined {
+  const byId = db.prepare("SELECT id, name, type, slug, metadata FROM nodes WHERE id = ?").get(raw) as EntityNode | undefined;
+  if (byId) return byId;
+  const m = /^([a-z_]+):(.+)$/.exec(raw);
+  return m ? nodeAt(db, m[1], m[2]) : nodeAt(db, "", raw);
+}
+
+router.get("/field", (req, res) => {
+  const raw = typeof req.query.node === "string" ? req.query.node.trim() : "";
+  const node = raw ? fieldNodeOf(getDb(), raw) : undefined;
+  if (node) {
+    const rest = new URLSearchParams(req.url.split("?")[1] ?? "");
+    rest.delete("node");
+    const q = rest.toString();
+    res.redirect(301, fieldPath(node) + (q ? `?${q}` : ""));
+    return;
+  }
+  sendField(res);
+});
+
+router.get("/field/:type/:slug", (req, res) => {
+  const node = nodeAt(getDb(), req.params.type, req.params.slug);
+  if (!node) {
+    res.status(404).set(HTML_HEADERS).send(notFoundPage());
+    return;
+  }
+  if (node.type !== req.params.type || node.slug !== req.params.slug) {
+    const q = req.url.split("?")[1];
+    res.redirect(301, fieldPath(node) + (q ? `?${q}` : ""));
+    return;
+  }
+  sendField(res);
 });
 
 export default router;

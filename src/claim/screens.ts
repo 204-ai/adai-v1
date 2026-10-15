@@ -101,7 +101,7 @@ function claimForm(me) {
 }
 function approved(me, c) {
   app.innerHTML = '<div class="msg msg-ok">This page is yours' + (c.handle ? ' — <a href="/@' + esc(c.handle) + '">@' + esc(c.handle) + '</a>' : '') + '.</div>' +
-    '<p class="lede"><a href="/me?node=' + encodeURIComponent(NODE.id) + '">Open your log</a> · <a href="/field?node=' + encodeURIComponent(NODE.id) + '&lens=1">See yourself in the field</a></p>' +
+    '<p class="lede"><a href="/me?node=' + encodeURIComponent(NODE.id) + '">Open your log</a> · <a href="/field/' + encodeURIComponent(NODE.type) + '/' + encodeURIComponent(NODE.slug) + '?lens=1">See yourself in the field</a></p>' +
     '<form id="hf">' + handleInput('handle', c.handle || NODE.suggested, NODE.id) + '<button class="btn" type="submit">' + (c.handle ? 'Change handle' : 'Set handle') + '</button><p class="lede">A handle can change once every 30 days; old ones keep working as links.</p></form>' +
     '<p class="lede" style="margin-top:20px"><a href="#" id="wd">Withdraw my claim</a></p>';
   wireHandle($('#hf'), NODE.id);
@@ -200,7 +200,7 @@ function render() {
   if (!L.node) { app.innerHTML = tabs + '<p class="lede">Your claim is with a curator. Your log opens once it is approved.</p>'; return; }
   const n = L.node;
   let h = tabs + '<h2>' + esc(n.name) + ' <span class="pill">' + esc(n.type) + '</span>' + (n.handle ? ' <a href="/@' + esc(n.handle) + '" style="font-size:13px">@' + esc(n.handle) + '</a>' : '') + '</h2>' +
-    '<p class="lede"><a href="' + href(n.id, n.slug) + '">page</a> · <a href="' + href(n.id, n.slug) + '/history">full history</a> · <a href="/field?node=' + encodeURIComponent(n.id) + '&lens=1">field</a> · <a href="/claim/' + esc(n.type) + '/' + encodeURIComponent(n.slug) + '">handle &amp; claim</a></p>' +
+    '<p class="lede"><a href="' + href(n.id, n.slug) + '">page</a> · <a href="' + href(n.id, n.slug) + '/history">full history</a> · <a href="/field/' + encodeURIComponent(n.type) + '/' + encodeURIComponent(n.slug) + '?lens=1">field</a> · <a href="/claim/' + esc(n.type) + '/' + encodeURIComponent(n.slug) + '">handle &amp; claim</a></p>' +
     '<p class="lede">Curators approve every change to the commons. Here you speak for this page: add context to a relation, contest one that is wrong (it shows as contested until a curator decides), object to proposals still in review, and invite the people at the other end.</p>';
   h += '<section><h3>Relations (' + L.relations.length + ')</h3>' + (L.relations.map(relRow).join('') || '<p class="lede">None yet.</p>') + '</section>';
   h += '<section><h3>In review about you (' + L.pending.length + ')</h3>' + (L.pending.map(pendingRow).join('') || '<p class="lede">Nothing pending.</p>') + '</section>';

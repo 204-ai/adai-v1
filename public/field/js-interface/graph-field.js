@@ -1447,6 +1447,8 @@
     next.searchParams.delete('seed');
     next.searchParams.delete('node');
     next.searchParams.delete('reading');
+    // A clean /field/<type>/<slug> names a node too: regenerate unfocused.
+    next.pathname = '/field';
     next.searchParams.set('regen', String(Date.now()));
     window.location.assign(next.toString());
   }
@@ -3523,27 +3525,35 @@
       setTimeout(() => replayPath(graph, bundle, urlPath, { snapshot: false }), 400);
     }
 
-    // If the URL has ?node=<id-or-slug>, zoom straight to that node on load —
-    // the shareable deep-link for "look at this exact node in the field"
-    // (e.g. /field?node=concept:protocol-art). Unlike ?reading the param is
-    // KEPT in the URL: it IS the share artifact, and re-focusing on reload is
-    // what you'd expect from such a link.
-    const deepLinkRaw = new URL(window.location.href).searchParams.get('node');
-    if (deepLinkRaw && deepLinkRaw.trim()) {
-      const wanted = deepLinkRaw.trim();
-      let targetId = graph.byId.has(wanted) ? wanted : null;
-      if (!targetId) {
-        // Fall back to slug match, with or without a `type:` prefix, so both
-        // /field?node=protocol-art and /field?node=concept:protocol-art
-        // resolve even when the stored id uses the legacy spaced form.
-        const m = wanted.match(/^([a-z_]+):(.+)$/);
-        for (const n of graph.nodes) {
-          if (m ? (n.type === m[1] && n.slug === m[2]) : n.slug === wanted) {
-            targetId = n.id;
-            break;
-          }
-        }
+    // The node the URL names, resolved to its id: /field/<type>/<slug> (the
+    // clean, shareable form, issue #71), or the legacy ?node=<id-or-slug>
+    // (the server 301s that to the clean form when it resolves). Kept in the
+    // URL: it IS the share artifact, and re-focusing on reload is what you'd
+    // expect from such a link.
+    function deepLinkTarget() {
+      const pm = window.location.pathname.match(/^\/field\/([a-z_]+)\/([^/]+)\/?$/);
+      let wanted = null;
+      if (pm) {
+        try { wanted = `${pm[1]}:${decodeURIComponent(pm[2])}`; } catch { wanted = `${pm[1]}:${pm[2]}`; }
+      } else {
+        const q = new URL(window.location.href).searchParams.get('node');
+        wanted = q && q.trim() ? q.trim() : null;
       }
+      if (!wanted) return { wanted: null, id: null };
+      if (graph.byId.has(wanted) && !pm) return { wanted, id: wanted };
+      // Slug match, with or without a `type:` prefix, so both
+      // /field?node=protocol-art and /field/concept/protocol-art resolve even
+      // when the stored id uses the legacy spaced form.
+      const m = wanted.match(/^([a-z_]+):(.+)$/);
+      for (const n of graph.nodes) {
+        if (m ? (n.type === m[1] && n.slug === m[2]) : n.slug === wanted) return { wanted, id: n.id };
+      }
+      return { wanted, id: graph.byId.has(wanted) ? wanted : null };
+    }
+
+    const deepLink = deepLinkTarget();
+    if (deepLink.wanted) {
+      const targetId = deepLink.id;
       if (targetId) {
         // Same beat as ?reading — let the brand viz finish its first paint,
         // then drive the field-study zoom (pans the bitmap camera AND reveals
@@ -3555,7 +3565,7 @@
           bundle.revealInPlace(id);
         }, 600);
       } else {
-        console.warn('[adai] ?node= deep-link did not resolve:', wanted);
+        console.warn('[adai] deep-link did not resolve:', deepLink.wanted);
       }
     }
 
@@ -3636,7 +3646,7 @@
           .map(c => c.id);
         if (!mine.length) return;
         const params = new URL(window.location.href).searchParams;
-        const named = params.get('node');
+        const named = deepLinkTarget().id;
         const L = bundle.lens;
         L.mine = mine;
         L.self = named && mine.includes(named) ? named : mine[0];

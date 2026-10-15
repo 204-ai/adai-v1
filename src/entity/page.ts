@@ -3,14 +3,14 @@
 // The same stylesheet and script serve the /field overlay.
 
 import { htmlEscape as esc } from "../templates.js";
-import { siteBase } from "../utils/site.js";
+import { fieldPath, siteBase } from "../utils/site.js";
 import { nodePath, type EntityNode, type EntityRender } from "./view.js";
 
 export const ENTITY_ASSET_VERSION = "20261013b";
 
 export function entityPage(node: EntityNode, r: EntityRender): string {
   const canonical = siteBase() + nodePath(node);
-  const fieldHref = `/field?node=${encodeURIComponent(node.id)}`;
+  const fieldHref = fieldPath(node);
   const og = [
     `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="A(DAI)">`,

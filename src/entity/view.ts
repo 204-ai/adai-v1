@@ -25,6 +25,7 @@ import { SHOWCASE, type Showcase, type ShowcaseWork } from "./showcase.js";
 import { notesByTriple, publicNotesFor, type RelationNote } from "../claim/notes.js";
 import { tripleKey } from "../utils/claims.js";
 import { edgeLabel } from "../utils/edge-labels.js";
+import { fieldPath } from "../utils/site.js";
 
 export interface EntityNode {
   id: string;
@@ -138,7 +139,7 @@ function nodeById(db: DatabaseSync, id: string): Peer | null {
 function breadcrumb(node: EntityNode): string {
   return `
       <div class="ev-breadcrumb">
-        <a class="ev-bc-field" href="/field?node=${encodeURIComponent(node.id)}">field/</a>
+        <a class="ev-bc-field" href="${esc(fieldPath(node))}">field/</a>
         <span class="ev-bc-type">[${esc(node.type)}]</span>
         <span class="ev-bc-sep">/</span>
         <span class="ev-bc-slug">n.${esc(node.type)}.${esc(node.slug)}</span>
@@ -156,7 +157,7 @@ function title(node: EntityNode, meta: any, showcase: Showcase | null): string {
 function claimLine(db: DatabaseSync, node: EntityNode, meta: any, viewer: EntityViewer): string {
   // The way back into the graph (issue #63); in the /field overlay it closes
   // the overlay onto the node instead (entity-view.js).
-  const field = `<a class="ev-field-link" href="/field?node=${encodeURIComponent(node.id)}">view in field →</a>`;
+  const field = `<a class="ev-field-link" href="${esc(fieldPath(node))}">view in field →</a>`;
   if (!(CLAIMABLE_TYPES as readonly string[]).includes(node.type)) return field;
   const claimed = meta.claimed ?? null;
   const claimHref = `/claim/${encodeURIComponent(node.type)}/${encodeURIComponent(node.slug)}`;
@@ -365,7 +366,7 @@ function worksSection(node: EntityNode, gathered: ReturnType<typeof gatherWorks>
       <section class="ev-section">
         <h2 class="ev-h2">// works <span class="ev-h2-count">/${pad(total)}</span>${sourceTag}</h2>
         <div class="ev-works">${items}</div>${total > works.length ? `
-        <p class="ev-empty">${total - works.length} more — <a href="/field?node=${encodeURIComponent(node.id)}">see them in the field</a></p>` : ""}
+        <p class="ev-empty">${total - works.length} more — <a href="${esc(fieldPath(node))}">see them in the field</a></p>` : ""}
       </section>`;
 }
 
