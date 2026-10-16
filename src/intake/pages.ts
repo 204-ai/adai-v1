@@ -31,8 +31,6 @@ const CSS = `
 #intake .dhead { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: baseline; border-bottom: 1px solid #1e1e20; padding-bottom: 12px; margin-bottom: 14px; font-size: 12px; color: #8a8a8c; }
 #intake .dhead .src { color: #e8e6e1; word-break: break-all; }
 #intake .dhead .spacer { flex: 1; }
-#intake .layout { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
-@media (max-width: 760px) { #intake .layout { grid-template-columns: 1fr; } }
 #intake .group h3 { font-size: 12px; color: #9a9a9c; letter-spacing: 0.06em; text-transform: uppercase; margin: 18px 0 8px; }
 #intake .card { padding: 10px 12px; font-size: 12.5px; line-height: 1.55; border-radius: 3px; }
 #intake .card.accepted { border-color: #2a5a3a; }
@@ -67,19 +65,62 @@ const CSS = `
 #intake .card .diff { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
 #intake .card .diff div { background: #111; padding: 6px 8px; border-radius: 3px; word-break: break-word; }
 #intake .card .diff .k { color: #666; font-size: 10.5px; }
-#intake .rail { border: 1px solid #1e1e20; border-radius: 3px; padding: 10px 12px; font-size: 12.5px; position: sticky; top: 12px; max-height: calc(100vh - 24px); display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-#intake .rail h3 { font-size: 12px; color: #9a9a9c; margin: 0 0 8px; letter-spacing: 0.06em; text-transform: uppercase; }
+/* the agent (summary, survey, chat): a drawer reachable from every step (issue #76) */
+#intake .rail { position: fixed; top: 0; right: 0; bottom: 0; width: min(400px, 100%); z-index: 40; background: #0f0f0f; border-left: 1px solid #2a2a2c; font-size: 12.5px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: calc(14px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px)) calc(14px + env(safe-area-inset-bottom, 0px)) 16px; transform: translateX(100%); transition: transform 180ms ease; visibility: hidden; }
+#intake .rail.open { transform: none; visibility: visible; }
+@media (prefers-reduced-motion: reduce) { #intake .rail { transition: none; } }
+#intake .scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 35; display: none; }
+#intake .scrim.open { display: block; }
+#intake .rail h3 { font-size: 12px; color: #9a9a9c; margin: 0 0 8px; letter-spacing: 0.06em; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; flex: 0 0 auto; }
 #intake .rail .log { flex: 1 1 auto; overflow: auto; min-height: 120px; }
 #intake .rail .m { margin-bottom: 8px; white-space: pre-wrap; }
 #intake .rail .m.user { color: #e8e6e1; }
 #intake .rail .m.assistant { color: #b8b6b1; }
 #intake .rail .m .who { color: #666; font-size: 10.5px; }
 #intake .rail form { margin-top: 8px; display: flex; gap: 6px; max-width: none; flex: 0 0 auto; }
-#intake .rail form textarea { min-height: 44px; font-family: inherit; font-size: 12px; flex: 1; }
-#intake .rail .summary { color: #9a9a9c; border-bottom: 1px solid #1e1e20; padding-bottom: 8px; margin-bottom: 8px; white-space: pre-wrap; flex: 0 1 auto; max-height: 40vh; overflow: auto; }
-#intake .rail h3 { flex: 0 0 auto; }
-#intake .rail .survey { color: #9a9a9c; border-bottom: 1px solid #1e1e20; padding-bottom: 8px; margin-bottom: 8px; flex: 0 1 auto; max-height: 24vh; overflow: auto; }
+#intake .rail form textarea { min-height: 56px; font-family: inherit; font-size: 12px; flex: 1; }
+#intake .rail .summary { color: #9a9a9c; border-bottom: 1px solid #1e1e20; padding-bottom: 8px; margin-bottom: 8px; white-space: pre-wrap; flex: 0 1 auto; max-height: 30vh; overflow: auto; }
+#intake .rail .survey { color: #9a9a9c; border-bottom: 1px solid #1e1e20; padding-bottom: 8px; margin-bottom: 8px; flex: 0 1 auto; max-height: 22vh; overflow: auto; }
 #intake .rail .survey .who { color: #666; font-size: 10.5px; }
+/* steps (issue #76): one kind of card at a time */
+#intake .stepper { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: #0a0a0a; border-bottom: 1px solid #1e1e20; padding: 6px 0; margin-bottom: 16px; }
+#intake .steps { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; list-style: none; margin: 0; padding: 0; }
+#intake .steps::-webkit-scrollbar { display: none; }
+#intake .steps li { flex: 1 0 auto; }
+#intake .steps button { width: 100%; display: grid; gap: 1px; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 3px; padding: 6px 10px; cursor: pointer; color: #8a8a8c; font-family: inherit; }
+#intake .steps button:hover { border-color: #2a2a2c; color: #b8b6b1; }
+#intake .steps .n { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: #6a6a6c; }
+#intake .steps .label { font-size: 12.5px; white-space: nowrap; }
+#intake .steps .state { font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+#intake .steps .state.todo { color: #c4a944; }
+#intake .steps .state.done { color: #6fbf8a; }
+#intake .steps li[aria-current="step"] button { border-color: #2a2a2c; background: #0f0f0f; color: #e8e6e1; }
+#intake .steps li[aria-current="step"] .n { color: #7eb8da; }
+#intake .sec-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; margin-bottom: 4px; }
+#intake .sec-head h2 { font-size: 17px; margin: 0; text-wrap: balance; }
+#intake .sec-head .count { color: #6a6a6c; font-size: 12px; font-variant-numeric: tabular-nums; }
+#intake .sub { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6a6a6c; margin: 16px 0 6px; }
+#intake .cards { display: grid; gap: 6px; }
+#intake .card .badge.wait { color: #c4a944; background: #2a2416; }
+#intake .card.blocked { opacity: 0.45; border-style: dashed; }
+#intake details.folded { color: #8a8a8c; font-size: 12px; border: 1px dashed #1e1e20; padding: 8px 12px; border-radius: 3px; margin-top: 12px; }
+#intake details.folded summary { cursor: pointer; }
+#intake details.folded .cards { margin-top: 8px; }
+#intake .stepfoot { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; border-top: 1px solid #1e1e20; margin-top: 22px; padding-top: 12px; }
+#intake .stepfoot .left { color: #8a8a8c; font-size: 12px; font-variant-numeric: tabular-nums; }
+#intake .stepfoot .right { display: flex; gap: 6px; flex-wrap: wrap; }
+#intake .tally { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 6px; margin-bottom: 14px; }
+#intake .tally div { border: 1px solid #1e1e20; background: #0f0f0f; padding: 10px 12px; border-radius: 3px; display: grid; gap: 2px; }
+#intake .tally .k { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: #6a6a6c; }
+#intake .tally .v { font-size: 20px; color: #e8e6e1; font-variant-numeric: tabular-nums; }
+#intake .tally .v.ok { color: #6fbf8a; } #intake .tally .v.no { color: #bf6f6f; } #intake .tally .v.open { color: #c4a944; }
+#intake .tally .d { font-size: 11.5px; color: #8a8a8c; }
+#intake .tablewrap { overflow-x: auto; margin-bottom: 14px; }
+#intake table.per { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+#intake table.per th, #intake table.per td { text-align: right; padding: 5px 8px; border-bottom: 1px solid #1e1e20; }
+#intake table.per th:first-child, #intake table.per td:first-child { text-align: left; }
+#intake table.per th { color: #6a6a6c; font-weight: 400; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+#intake table.per a { color: #7eb8da; cursor: pointer; }
 #intake .modal .box textarea { width: 100%; min-height: 64px; margin-top: 8px; font-family: inherit; font-size: 12.5px; }
 #intake .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 50; }
 #intake .modal.open { display: flex; }
@@ -209,10 +250,10 @@ load();`;
 export function draftPage(draftId: string): string {
   const body = `
 <div class="dhead" id="dhead"><span class="progress">loading draft…</span></div>
-<div class="layout">
-  <div id="cards"></div>
-  <div class="rail" id="rail"></div>
-</div>
+<nav class="stepper" id="stepper" aria-label="Draft steps" hidden><ol class="steps" id="steps"></ol></nav>
+<div id="cards"></div>
+<div class="scrim" id="scrim"></div>
+<aside class="rail" id="rail" aria-label="Ask the agent" aria-hidden="true"></aside>
 <div class="modal" id="modal"><div class="box" id="modalbox"></div></div>`;
   const script = `${helpers}
 const ID = ${JSON.stringify(draftId)};
@@ -330,20 +371,136 @@ function leftOpenCids() {
   }
   return open;
 }
+// Steps (issue #76): one kind of card at a time. A step with no cards is
+// not shown; the last step is the review and the only place to Confirm.
+const STEPS = [
+  { key: 'questions', label: 'Questions', groups: ['Questions'], lede: 'Answer these first: each answer adds a relation or leaves it out. Leave open what you cannot answer; another contributor can pick it up.' },
+  { key: 'nodes', label: 'Works and people', groups: ['Works', 'Shows and venues', 'People and organisations'], lede: 'Each card is a page A(DAI) would add, or link to when it already has it. Accept what the site shows, reject what is wrong, leave open what you cannot judge.' },
+  { key: 'relations', label: 'Relations', groups: ['Relations'], lede: 'Grouped by the work or show they are about. A relation goes in only when what it connects goes in.' },
+  { key: 'images', label: 'Images', groups: ['Images'], lede: 'Images the site shows. Each is copied to A(DAI) when you confirm.' },
+  { key: 'changes', label: 'Corrections', groups: ['Corrections', 'No longer listed'], lede: 'Where the site and A(DAI) disagree, and relations the site no longer shows. Ending a relation keeps it on record, with the date it ended.' },
+  { key: 'confirm', label: 'Review and confirm', groups: [], lede: 'Everything you decided, in one place. What you did not decide stays open for the next contributor.' },
+];
+let step = null;
+const stepOf = (c) => { const g = groupOf(c); const s = STEPS.find(x => x.groups.includes(g)); return s ? s.key : null; };
+// A card that needs a card turned down cannot stand (Confirm leaves it out).
+function blockers(c, open) {
+  const by = byCid();
+  return cardDeps(c).map(x => by[x]).filter(d => !d || ((d.state === 'rejected' || d.state === 'context_only') && !open.has(d.cid)));
+}
+const undecided = (c) => c.kind !== 'known' && (c.state === 'proposed' || linkUnchecked(c));
+function stepCards(key, open) { return D.candidates.filter(c => stepOf(c) === key && !blockers(c, open).length); }
+function visibleSteps(open) { return STEPS.filter(s => s.key === 'confirm' || D.candidates.some(c => stepOf(c) === s.key)); }
+// Relations by the new work or show they are about, else by their source.
+function relationGroup(c) {
+  const by = byCid();
+  const ref = [c.edge.source, c.edge.target].find(r => r && r.startsWith('cid:') && by[r.slice(4)] && by[r.slice(4)].kind === 'node') || c.edge.source;
+  return refName(ref);
+}
+function cardHtml(c, open) {
+  const by = byCid();
+  const waits = c.state === 'accepted' && open.has(c.cid) ? cardDeps(c).map(x => by[x]).filter(d => d && open.has(d.cid)) : [];
+  const wait = waits.length ? '<div class="link"><span class="badge wait">waits for ' + waits.map(d => esc(d.kind === 'node' ? d.node.name : d.cid)).join(', ') + '</span> it stays open with ' + (waits.length === 1 ? 'it' : 'them') + '</div>' : '';
+  return '<div class="card ' + esc(c.state) + '" data-cid="' + esc(c.cid) + '">' + cardBody(c) + wait + actions(c) + '</div>';
+}
+function decidedCount(open) {
+  const acc = D.candidates.filter(c => c.state === 'accepted' && !open.has(c.cid)).length + D.candidates.filter(c => c.kind === 'question' && c.question.answered_yes === true).length;
+  // A pick-up may confirm only "no"s: turning an item down is a decision too.
+  return D.picked_from ? D.candidates.filter(c => !open.has(c.cid) && c.kind !== 'known' && c.state !== 'proposed' && c.state !== 'open' && !linkUnchecked(c)).length : acc;
+}
+function renderSteps(open) {
+  const nav = $('#stepper');
+  if (!D.candidates.length) { nav.hidden = true; return; }
+  nav.hidden = false;
+  const vis = visibleSteps(open);
+  if (!vis.some(s => s.key === step)) {
+    const h = location.hash.slice(1);
+    step = vis.some(s => s.key === h) ? h : (vis.find(s => s.key !== 'confirm' && stepCards(s.key, open).some(undecided)) || vis[0]).key;
+  }
+  $('#steps').innerHTML = vis.map((s, i) => {
+    let state;
+    if (s.key === 'confirm') state = '<span class="state">' + decidedCount(open) + ' to confirm</span>';
+    else { const cs = stepCards(s.key, open), todo = cs.filter(undecided).length; state = todo ? '<span class="state todo">' + todo + ' of ' + cs.length + ' undecided</span>' : '<span class="state done">' + cs.length + ' decided ✓</span>'; }
+    return '<li' + (s.key === step ? ' aria-current="step"' : '') + '><button type="button" data-step="' + s.key + '"><span class="n">step ' + (i + 1) + '</span><span class="label">' + esc(s.label) + '</span>' + state + '</button></li>';
+  }).join('');
+}
+function goStep(key) {
+  step = key;
+  try { history.replaceState(null, '', '#' + key); } catch (e) { /* ignore */ }
+  renderAll();
+  window.scrollTo(0, 0);
+}
 function renderCards() {
-  const groups = {};
-  for (const c of D.candidates) (groups[groupOf(c)] ||= []).push(c);
   const el = $('#cards');
-  if (!D.candidates.length) { el.innerHTML = '<p class="progress">' + (D.job_pending ? 'The agent is reading the site. Cards appear here as it goes (' + D.pages.length + ' pages so far).' : (D.status === 'failed' ? 'Nothing could be read: ' + esc(D.error || '') : 'No candidates.')) + '</p>'; return; }
-  el.innerHTML = (D.status === 'ready' ? '<div class="bulk"><button class="btn" id="acceptall">Accept all source-backed</button><span class="meta" id="counts"></span></div>' : '') +
-    ORDER.filter(g => groups[g]).map(g => '<div class="group"><h3>' + esc(g) + ' · ' + groups[g].length + '</h3>' + groups[g].map(c => '<div class="card ' + esc(c.state) + '" data-cid="' + esc(c.cid) + '">' + cardBody(c) + actions(c) + '</div>').join('') + '</div>').join('');
   const open = leftOpenCids();
-  const acc = D.candidates.filter(c => c.state === 'accepted' && !open.has(c.cid)).length, ans = D.candidates.filter(c => c.kind === 'question' && c.question.answered_yes === true).length;
-  if ($('#counts')) $('#counts').textContent = acc + ' accepted · ' + ans + ' answered yes · ' + open.size + ' left open';
+  renderSteps(open);
+  if (!D.candidates.length) { el.innerHTML = '<p class="progress">' + (D.job_pending ? 'The agent is reading the site. Cards appear here as it goes (' + D.pages.length + ' pages so far).' : (D.status === 'failed' ? 'Nothing could be read: ' + esc(D.error || '') : 'No candidates.')) + '</p>'; return; }
+  const vis = visibleSteps(open);
+  const i = vis.findIndex(s => s.key === step), S = vis[i];
+  let html = '<div class="sec-head"><h2>' + esc(S.label) + '</h2>';
+  if (S.key !== 'confirm') { const cs = stepCards(S.key, open); html += '<span class="count">' + cs.length + ' card' + (cs.length === 1 ? '' : 's') + ' · ' + cs.filter(undecided).length + ' undecided</span>'; }
+  html += '</div><p class="lede">' + esc(S.lede) + (D.job_pending ? ' The agent is still reading; new cards appear as it goes.' : '') + '</p>';
+  if (S.key === 'confirm') html += confirmStep(open);
+  else {
+    const cs = stepCards(S.key, open);
+    if (D.status === 'ready' && S.key !== 'questions' && cs.some(c => c.state === 'proposed')) html += '<div class="bulk"><button class="btn" id="acceptall" type="button">Accept all source-backed in this step</button><span class="meta" id="counts"></span></div>';
+    const groups = new Map();
+    for (const c of cs) { const g = S.key === 'relations' ? relationGroup(c) : S.groups.length > 1 ? groupOf(c) : ''; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(c); }
+    const keys = S.key === 'relations' ? [...groups.keys()] : S.groups.length > 1 ? S.groups.filter(g => groups.has(g)) : [''];
+    for (const g of keys) {
+      if (g) html += '<div class="sub">' + esc(g) + ' · ' + groups.get(g).length + '</div>';
+      html += '<div class="cards">' + groups.get(g).map(c => cardHtml(c, open)).join('') + '</div>';
+    }
+    const gone = D.candidates.filter(c => stepOf(c) === S.key && blockers(c, open).length);
+    if (gone.length) {
+      const names = [...new Set(gone.flatMap(c => blockers(c, open).map(d => d ? (d.kind === 'node' ? d.node.name : d.cid) : 'a removed card')))];
+      html += '<details class="folded"><summary>' + gone.length + ' left out: ' + (gone.length === 1 ? 'it needs ' : 'they need ') + names.map(esc).join(', ') + ', which you turned down</summary><div class="cards">' + gone.map(c => '<div class="card blocked"><div class="title">' + (c.kind === 'edge' ? refLink(c.edge.source) + ' ' + esc(VERBS[c.edge.edge_type] || c.edge.edge_type.toLowerCase()) + ' ' + refLink(c.edge.target) : c.kind === 'image' ? 'image for ' + refLink(c.image.for) : esc(c.cid)) + '</div></div>').join('') + '</div></details>';
+    }
+  }
+  const prev = vis[i - 1], next = vis[i + 1];
+  const todo = S.key === 'confirm' ? 0 : stepCards(S.key, open).filter(undecided).length;
+  html += '<div class="stepfoot"><span class="left">' + (S.key === 'confirm' ? '' : todo ? todo + ' undecided here stay open if you move on' : 'Everything here is decided') + '</span><span class="right">' +
+    (prev ? '<button class="btn" type="button" data-step="' + prev.key + '">← ' + esc(prev.label) + '</button>' : '') +
+    (next ? '<button class="btn primary" type="button" data-step="' + next.key + '">Next: ' + esc(next.label) + ' →</button>' : '') + '</span></div>';
+  el.innerHTML = html;
   const ca = $('#acceptall'); if (ca) ca.onclick = acceptAll;
-  el.querySelectorAll('.card').forEach(card => {
+  const cf = $('#confirm'); if (cf) cf.onclick = confirmDraftNow;
+  const mb = $('#more'); if (mb) mb.onclick = moreModal;
+  const ab = $('#abandon'); if (ab) ab.onclick = abandonModal;
+  el.querySelectorAll('.card[data-cid]').forEach(card => {
     card.querySelectorAll('[data-a]').forEach(b => b.onclick = () => act(card, b.dataset.a));
   });
+}
+function confirmStep(open) {
+  const live = D.candidates.filter(c => c.kind !== 'known');
+  const gone = live.filter(c => blockers(c, open).length);
+  const stand = live.filter(c => !blockers(c, open).length);
+  const goes = stand.filter(c => !open.has(c.cid) && (c.state === 'accepted' || (c.kind === 'question' && c.question.answered_yes === true)));
+  const down = stand.filter(c => !open.has(c.cid) && !goes.includes(c));
+  const waiting = stand.filter(c => open.has(c.cid) && c.state === 'accepted');
+  const n = (k) => goes.filter(c => c.kind === k).length;
+  const kinds = [['node', 'pages'], ['edge', 'relations'], ['image', 'images'], ['patch', 'corrections'], ['ended', 'ended'], ['question', 'attested answers']].filter(([k]) => n(k)).map(([k, l]) => n(k) + ' ' + l).join(' · ');
+  const live2 = D.trust_tier === 'auto' || D.trust_tier === 'reviewed';
+  let h = '<div class="tally">' +
+    '<div><span class="k">goes in</span><span class="v ok">' + goes.length + '</span><span class="d">' + (goes.length ? esc(kinds) + '. ' + (live2 ? 'Live now, attributed to you as one batch.' : 'One batch for curator review; you get a receipt either way.') : 'nothing yet') + '</span></div>' +
+    '<div><span class="k">turned down</span><span class="v no">' + (down.length + gone.length) + '</span><span class="d">' + (gone.length ? gone.length + ' of them needed a card you turned down. ' : '') + 'A later read will not propose them to you again.</span></div>' +
+    '<div><span class="k">stays open</span><span class="v open">' + open.size + '</span><span class="d">' + (waiting.length ? waiting.length + ' accepted but waiting for an open card. ' : '') + 'Any contributor can pick these up from the contribute page.</span></div>' +
+    '</div>';
+  h += '<div class="tablewrap"><table class="per"><thead><tr><th>step</th><th>goes in</th><th>turned down</th><th>stays open</th><th></th></tr></thead><tbody>' +
+    visibleSteps(open).filter(s => s.key !== 'confirm').map(s => {
+      const cs = live.filter(c => stepOf(c) === s.key);
+      const a = cs.filter(c => goes.includes(c)).length, o = cs.filter(c => open.has(c.cid)).length;
+      return '<tr><td>' + esc(s.label) + '</td><td>' + a + '</td><td>' + (cs.length - a - o) + '</td><td>' + o + '</td><td><a data-step="' + s.key + '" role="button" tabindex="0">review</a></td></tr>';
+    }).join('') + '</tbody></table></div>';
+  const known = D.candidates.filter(c => c.kind === 'known');
+  if (known.length) h += '<details class="folded"><summary>Already in A(DAI) · ' + known.length + ' (nothing to decide)</summary><div class="cards">' + known.map(c => '<div class="card">' + cardBody(c) + '</div>').join('') + '</div></details>';
+  const decided = decidedCount(open);
+  h += '<div id="confirmerr"></div><div class="bulk" style="margin-top:14px">' +
+    (D.status === 'ready' ? '<button class="btn primary" id="confirm" type="button"' + (decided ? '' : ' disabled') + '>Confirm ' + (D.picked_from ? decided + ' decision' + (decided === 1 ? '' : 's') : goes.length + ' item' + (goes.length === 1 ? '' : 's')) + '</button>' : '') +
+    ((D.status === 'ready' || D.status === 'failed') && !D.job_pending ? '<button class="btn" id="more" type="button">Read more of the site</button>' : '') +
+    (D.status !== 'submitted' && D.status !== 'abandoned' ? '<button class="btn" id="abandon" type="button">Abandon</button>' : '') +
+    '</div>';
+  return h;
 }
 async function patch(cid, body) {
   const r = await api('PATCH', '/api/intake/drafts/' + ID + '/candidates/' + cid, body);
@@ -390,7 +547,8 @@ async function act(card, a) {
 }
 async function acceptAll() {
   // Ending a relation is always a deliberate, one-by-one decision.
-  const todo = D.candidates.filter(c => !(c.origin !== 'site' || c.kind === 'question' || c.kind === 'known' || c.kind === 'ended' || c.state !== 'proposed' || (c.kind === 'edge' && c.edge.confidence === 'low')));
+  const open = leftOpenCids();
+  const todo = stepCards(step, open).filter(c => !(c.origin !== 'site' || c.kind === 'question' || c.kind === 'known' || c.kind === 'ended' || c.state !== 'proposed' || (c.kind === 'edge' && c.edge.confidence === 'low')));
   const b = $('#acceptall'); if (b) b.disabled = true;
   const n = $('#counts');
   let done = 0;
@@ -404,22 +562,33 @@ async function acceptAll() {
   renderAll();
 }
 function renderHead() {
-  const open = leftOpenCids();
-  const acc = D.candidates.filter(c => c.state === 'accepted' && !open.has(c.cid)).length + D.candidates.filter(c => c.kind === 'question' && c.question.answered_yes === true).length;
-  // A pick-up may confirm only "no"s: turning an item down is a decision too.
-  const decided = D.picked_from ? D.candidates.filter(c => !open.has(c.cid) && c.state !== 'proposed' && c.state !== 'open' && !linkUnchecked(c)).length : acc;
+  const msgs = (D.messages || []).length;
   $('#dhead').innerHTML = '<span class="src">' + esc(D.source_url) + '</span>' +
     (D.picked_from ? '<span>picked up from <a href="/batch/' + esc(D.picked_from) + '">an earlier read</a></span>' : '') +
     '<span>subject: ' + (D.subject_node_id ? refLink(D.subject_node_id) : '<span class="meta">none yet</span>') + '</span>' +
     pill(D.job_pending ? 'running' : D.status) + '<span>' + D.pages.length + ' pages</span><span class="spacer"></span>' +
-    (D.status === 'ready' ? '<button class="btn primary" id="confirm"' + (decided ? '' : ' disabled') + '>Confirm ' + (D.picked_from ? decided + ' decisions' : acc + ' items') + '</button>' : '') +
-    ((D.status === 'ready' || D.status === 'failed') && !D.job_pending ? '<button class="btn" id="more">Read more of the site</button>' : '') +
-    (D.status !== 'submitted' && D.status !== 'abandoned' ? '<button class="btn" id="abandon">Abandon</button>' : '') +
+    '<button class="btn" id="askagent" type="button">Ask the agent' + (D.job_pending ? ' · working…' : msgs ? ' · ' + msgs : '') + '</button>' +
+    // Before there are cards, the review step (and its buttons) does not exist yet.
+    (!D.candidates.length && (D.status === 'ready' || D.status === 'failed') && !D.job_pending ? '<button class="btn" id="morehead" type="button">Read more of the site</button>' : '') +
+    (!D.candidates.length && D.status !== 'submitted' && D.status !== 'abandoned' ? '<button class="btn" id="abandonhead" type="button">Abandon</button>' : '') +
     (D.status === 'submitted' ? '<a class="btn" href="/batch/' + esc(D.id) + '">Receipt</a>' : '');
-  const cb = $('#confirm'); if (cb) cb.onclick = confirmModal;
-  const mb = $('#more'); if (mb) mb.onclick = moreModal;
-  const ab = $('#abandon'); if (ab) ab.onclick = abandonModal;
+  $('#askagent').onclick = () => drawer(true);
+  const mb = $('#morehead'); if (mb) mb.onclick = moreModal;
+  const ab = $('#abandonhead'); if (ab) ab.onclick = abandonModal;
 }
+function drawer(open) {
+  $('#rail').classList.toggle('open', open); $('#rail').setAttribute('aria-hidden', String(!open));
+  $('#scrim').classList.toggle('open', open);
+  if (open) { const log = $('#rail .log'); if (log) log.scrollTop = log.scrollHeight; const t = $('#rail textarea'); if (t) t.focus(); }
+}
+$('#scrim').onclick = () => drawer(false);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#modal').classList.contains('open')) drawer(false);
+  const t = e.target.closest && e.target.closest('a[data-step]');
+  if (t && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); goStep(t.dataset.step); }
+});
+document.addEventListener('click', (e) => { const t = e.target.closest('[data-step]'); if (t) goStep(t.dataset.step); });
+window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (D && h && h !== step && STEPS.some(s => s.key === h)) { step = h; renderAll(); } });
 // In-page modals, never window.confirm(): in-app browsers (and Chrome after
 // "prevent this page from creating additional dialogs") answer it 'no'
 // without showing anything, which reads as a dead button.
@@ -447,24 +616,23 @@ function surveyBlock() {
 function renderRail() {
   const rail = $('#rail');
   const msgs = D.messages || [];
-  rail.innerHTML = '<h3>Ask the agent</h3>' + (D.summary ? '<div class="summary">' + esc(D.summary) + '</div>' : '') + surveyBlock() +
+  const kept = rail.querySelector('textarea') ? rail.querySelector('textarea').value : '';
+  rail.innerHTML = '<h3>Ask the agent <button class="btn" id="closeagent" type="button">Close</button></h3>' + (D.summary ? '<div class="summary">' + esc(D.summary) + '</div>' : '') + surveyBlock() +
     '<div class="log">' + msgs.map(m => '<div class="m ' + esc(m.role) + '"><div class="who">' + (m.role === 'user' ? 'you' : 'agent') + '</div>' + esc(m.text) + '</div>').join('') + (D.job_pending ? '<div class="m assistant"><div class="who">agent</div>thinking…</div>' : '') + '</div>' +
     (D.status === 'ready' || D.status === 'failed' ? '<form id="chat"><textarea name="message" placeholder="e.g. the 2021 show was at a different gallery; or: add my collaborator X"></textarea><button class="btn" type="submit">Send</button></form>' : '');
   const f = $('#chat'); if (f) f.onsubmit = async (e) => { e.preventDefault(); const t = f.message.value.trim(); if (!t) return; f.querySelector('button').disabled = true; const r = await api('POST', '/api/intake/drafts/' + ID + '/chat', { message: t }); if (!r.ok) { alert(r.json && r.json.message || 'error'); f.querySelector('button').disabled = false; return; } await load(); };
+  const ta = rail.querySelector('textarea'); if (ta && kept) ta.value = kept;
+  $('#closeagent').onclick = () => drawer(false);
   const log = rail.querySelector('.log'); if (log) log.scrollTop = log.scrollHeight;
 }
 function renderAll() { renderHead(); renderCards(); renderRail(); }
-function confirmModal() {
-  const open = leftOpenCids();
-  const acc = D.candidates.filter(c => c.state === 'accepted' && !open.has(c.cid)), yes = D.candidates.filter(c => c.kind === 'question' && c.question.answered_yes === true);
-  const n = (k) => acc.filter(c => c.kind === k).length;
-  $('#modalbox').innerHTML = '<div class="kicker">CONFIRM</div><p>' + n('node') + ' nodes · ' + n('edge') + ' relations · ' + n('image') + ' images · ' + n('patch') + ' corrections · ' + (n('ended') ? n('ended') + ' ended · ' : '') + yes.length + ' attested answers</p>' +
-    (acc.length || yes.length ? '<p>' + (D.trust_tier === 'auto' || D.trust_tier === 'reviewed' ? 'Goes live now, attributed to you as one batch.' : 'Enters curator review as one batch; you get a receipt either way.') + '</p>' : '<p>Nothing to add: your decisions are recorded, and the items you turned down leave the open list.</p>') +
-    (open.size ? '<p>' + open.size + ' item' + (open.size === 1 ? '' : 's') + ' you did not decide stay' + (open.size === 1 ? 's' : '') + ' open: another contributor can pick ' + (open.size === 1 ? 'it' : 'them') + ' up from the contribute page.</p>' : '') +
-    '<div class="actions"><button class="btn primary" id="go">Confirm</button> <button class="btn" id="cancel">Back</button></div>';
-  $('#modal').classList.add('open');
-  $('#cancel').onclick = () => $('#modal').classList.remove('open');
-  $('#go').onclick = async () => { $('#go').disabled = true; const r = await api('POST', '/api/intake/drafts/' + ID + '/confirm'); if (r.ok) location.href = '/batch/' + ID; else { alert(r.json && r.json.message || 'error'); $('#go').disabled = false; } };
+// The review step is the confirmation: Confirm there submits.
+async function confirmDraftNow() {
+  const b = $('#confirm'); b.disabled = true; b.textContent = 'Confirming…';
+  const r = await api('POST', '/api/intake/drafts/' + ID + '/confirm');
+  if (r.ok) { location.href = '/batch/' + ID; return; }
+  $('#confirmerr').innerHTML = '<div class="msg msg-err">' + esc(r.json && (r.json.message || r.json.error) || ('error ' + r.status)) + '</div>';
+  await load();
 }
 async function load() {
   const r = await api('GET', '/api/intake/drafts/' + ID);
