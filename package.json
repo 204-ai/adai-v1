@@ -21,6 +21,7 @@
     "image:apply-patch": "tsx src/cli/apply-image-patch.ts",
     "notify:digest": "tsx src/cli/notify-digest.ts",
     "invite": "tsx src/cli/invite.ts",
+    "intake:backfill-open": "tsx src/cli/backfill-open-items.ts",
     "intake:worker": "npm --prefix worker run start",
     "build": "tsc",
     "precompress": "node scripts/precompress.mjs public/field",

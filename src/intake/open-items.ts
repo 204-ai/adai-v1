@@ -80,10 +80,10 @@ export function openItemsOf(db: DatabaseSync, draftId: string): OpenItemRow[] {
   return db.prepare("SELECT * FROM intake_open_items WHERE draft_id = ? ORDER BY cid").all(draftId) as unknown as OpenItemRow[];
 }
 
-export function insertOpenItem(db: DatabaseSync, row: { draft_id: string; cid: string; kind: string; label: string; reason: OpenReason; subject_node_id: string | null }): void {
+export function insertOpenItem(db: DatabaseSync, row: { draft_id: string; cid: string; kind: string; label: string; reason: OpenReason; subject_node_id: string | null; created_at?: string }): void {
   db.prepare(
-    "INSERT OR IGNORE INTO intake_open_items (draft_id, cid, kind, label, reason, subject_node_id) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(row.draft_id, row.cid, row.kind, row.label.slice(0, 300), row.reason, row.subject_node_id);
+    "INSERT OR IGNORE INTO intake_open_items (draft_id, cid, kind, label, reason, subject_node_id, created_at) VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))"
+  ).run(row.draft_id, row.cid, row.kind, row.label.slice(0, 300), row.reason, row.subject_node_id, row.created_at ?? null);
 }
 
 /** Record a pick-up's decision on an item. False when someone decided it first. */

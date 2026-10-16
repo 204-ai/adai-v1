@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import { freshDb, insertNode } from "./helpers.js";
-import { createDraft, claimJob, finishPass, getDraft, runDraftTool, contributorPatchCandidate, confirmDraft, createPickupDraft, batchReceipt } from "../src/intake/draft.js";
+import { createDraft, claimJob, finishPass, getDraft, runDraftTool, contributorPatchCandidate, confirmDraft, createPickupDraft, batchReceipt, backfillOpenItems } from "../src/intake/draft.js";
 import { leftOpen, listOpenReads, openItemsOf } from "../src/intake/open-items.js";
 import { approveIntakeItem } from "../src/utils/review.js";
 import { validateCandidate, type Candidate } from "../src/intake/candidate.js";
@@ -170,6 +170,30 @@ describe("left open", () => {
     const qid = (db.prepare("SELECT id FROM intake_queue WHERE status = 'pending'").get() as any).id;
     approveIntakeItem(db, qid, "curator");
     assert.ok(db.prepare("SELECT 1 FROM nodes WHERE id = 'artwork:zoom'").get());
+  });
+});
+
+describe("backfill (drafts submitted before #77)", () => {
+  it("keeps exactly what Confirm would have kept, dated to the submit; idempotent; refuses unsubmitted and pick-up drafts", async () => {
+    const db = freshDb();
+    const ev3 = contributor(db, "EV3", "probationary");
+    const iri = contributor(db, "Iri", "auto");
+    const d = scottsRead(db, ev3);
+    await confirmDraft(db, d, ev3, { mirror });
+    const kept = openItemsOf(db, d.id).map(({ created_at: _c, ...r }) => r);
+    db.prepare("DELETE FROM intake_open_items").run();
+    db.prepare("UPDATE drafts SET submitted_at = '2026-10-14T12:09:00Z' WHERE id = ?").run(d.id);
+    assert.equal(backfillOpenItems(db, d.id, { dryRun: true }).length, 5);
+    assert.equal(openItemsOf(db, d.id).length, 0, "a dry run writes nothing");
+    backfillOpenItems(db, d.id);
+    backfillOpenItems(db, d.id);
+    const items = openItemsOf(db, d.id);
+    assert.deepEqual(items.map(({ created_at: _c, ...r }) => r), kept);
+    assert.ok(items.every((i) => i.created_at === "2026-10-14T12:09:00Z"));
+    const p = createPickupDraft(db, iri.id, d.id);
+    assert.throws(() => backfillOpenItems(db, p.id), (e: any) => e.code === "not_submitted");
+    db.prepare("UPDATE drafts SET status = 'submitted' WHERE id = ?").run(p.id);
+    assert.throws(() => backfillOpenItems(db, p.id), (e: any) => e.code === "pickup");
   });
 });
 

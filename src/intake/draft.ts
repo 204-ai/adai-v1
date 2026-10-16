@@ -47,7 +47,7 @@ import {
   type NodeCandidate,
   type EdgeSpec,
 } from "./candidate.js";
-import { leftOpen, cardDeps, openItemsOf, insertOpenItem, decideOpenItem } from "./open-items.js";
+import { leftOpen, cardDeps, openItemsOf, insertOpenItem, decideOpenItem, type OpenReason } from "./open-items.js";
 
 // ---- types ---------------------------------------------------------------
 
@@ -497,6 +497,31 @@ export function contributorPatchCandidate(
     touch(db, draft.id, { candidates: JSON.stringify(fresh.candidates) });
     return checked;
   });
+}
+
+/**
+ * Open items for a draft submitted before Confirm kept them (issue #77): its
+ * undecided cards, worked out exactly as Confirm does, dated to its submit.
+ * Idempotent; a pick-up draft is refused (its items live in its source).
+ */
+export function backfillOpenItems(db: DatabaseSync, draftId: string, opts: { dryRun?: boolean } = {}): Array<{ cid: string; kind: string; label: string; reason: OpenReason }> {
+  const draft = mustGetDraft(db, draftId);
+  if (draft.status !== "submitted") throw new DraftError(`draft ${draftId} is ${draft.status}, not submitted`, 409, "not_submitted");
+  if (draft.picked_from) throw new DraftError(`draft ${draftId} is a pick-up of ${draft.picked_from}; its items are kept there`, 409, "pickup");
+  const ref = draft.subject_node_id;
+  const subjectId = !ref ? null
+    : !isCidRef(ref) ? ref
+    : (() => { const n = draft.candidates.find((c) => c.cid === ref.slice(4)); return n && n.kind === "node" ? n.resolves_to ?? null : null; })();
+  const rows = [...leftOpen(draft.candidates)].map(([cid, reason]) => {
+    const c = draft.candidates.find((x) => x.cid === cid)!;
+    return { cid, kind: c.kind, label: candidateLabel(c, draft.candidates), reason };
+  });
+  if (!opts.dryRun) {
+    tx(db, () => {
+      for (const r of rows) insertOpenItem(db, { draft_id: draft.id, ...r, subject_node_id: subjectId, created_at: draft.submitted_at ?? undefined });
+    });
+  }
+  return rows;
 }
 
 // ---- memory across passes and drafts ------------------------------------------------
