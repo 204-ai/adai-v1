@@ -711,6 +711,25 @@ curl -s -X POST "$ADAI_BASE/api/v1/tokens/adai_abc12345/revoke" \
 Soft-delete: the row stays for audit, `revoked_at` gets set, the bearer
 hits 401 from then on.
 
+### 4.3b Link a token to the node it stands for
+
+An institution, collection or collective that posts through a token is a
+contributor *and* a node. Name the node, and every "contributed by" byline
+of its contributions links to it, its page says "contributes to the commons
+as …", and `/<type>/<slug>/contributions` lists what it contributed.
+
+```bash
+curl -s -X PATCH "$ADAI_BASE/api/v1/tokens/adai_abc12345" \
+  -H "Authorization: Bearer $ADAI_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"node": "institution:the-outlier-collection"}'      # null clears it
+```
+
+Or at mint: `"node": "<node id>"` in §4.1's body. The node must exist and
+not be retired. A revoked token keeps its link (rotating a credential does
+not change whose contributions they were); the newest token that names a
+node wins.
+
 ### 4.4 Work the review queue
 
 The JSON twin of the `/review` web page — same materialisation logic on

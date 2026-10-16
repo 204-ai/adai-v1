@@ -8,6 +8,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { htmlEscape } from "../templates.js";
 import { edgeLabel } from "./edge-labels.js";
+import { contributorNode } from "./contributor-node.js";
 
 export interface ContributionRow {
   title: string | null;
@@ -114,7 +115,9 @@ export function contributionByline(db: DatabaseSync, c: ContributionRow): string
   if (c.consent_attribution === "anonymous") parts.push("contributed anonymously");
   else if (c.submitted_by) {
     const named = db.prepare("SELECT name FROM contributors WHERE id = ?").get(c.submitted_by) as { name: string } | undefined;
-    parts.push(`contributed by ${htmlEscape(named?.name ?? c.submitted_by)}`);
+    const who = htmlEscape(named?.name ?? c.submitted_by);
+    const as = contributorNode(db, c.submitted_by);
+    parts.push(`contributed by ${as ? `<a href='/${encodeURIComponent(as.type)}/${encodeURIComponent(as.slug)}'>${who}</a>` : who}`);
   }
   const day = proseDate(c.created_at);
   if (day) parts.push(day);

@@ -71,6 +71,13 @@ function runMigrations(db: DatabaseSync) {
   } catch (e: any) {
     if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
   }
+  // contributor_tokens.node_id (Oct 2026): the node a token's contributor
+  // stands for (issue #70).
+  try {
+    db.exec("ALTER TABLE contributor_tokens ADD COLUMN node_id TEXT");
+  } catch (e: any) {
+    if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
+  }
 }
 
 export function getDb(): DatabaseSync {

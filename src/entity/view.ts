@@ -27,6 +27,7 @@ import { tripleKey } from "../utils/claims.js";
 import { edgeLabel } from "../utils/edge-labels.js";
 import { fieldPath } from "../utils/site.js";
 import { listOpenReads } from "../intake/open-items.js";
+import { contributorNode, contributorsAs, type StandsFor } from "../utils/contributor-node.js";
 
 export interface EntityNode {
   id: string;
@@ -593,6 +594,21 @@ function openItemsLink(db: DatabaseSync, node: EntityNode, viewer: EntityViewer)
   return `<a class="ev-prov-link" href="/contribute?open=${encodeURIComponent(reads[0]!.draft_id)}#open">${n} item${n === 1 ? "" : "s"} left open → pick up</a>`;
 }
 
+/** The nodes that contributors of this page stand for (issue #70), the page itself left out. */
+function contributedByNodes(db: DatabaseSync, node: EntityNode): StandsFor[] {
+  const by = db.prepare(
+    `SELECT DISTINCT s.submitted_by FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id
+      WHERE iq.target_node = ? AND iq.status = 'approved' AND s.status = 'active'
+        AND (s.consent_attribution IS NULL OR s.consent_attribution != 'anonymous')`
+  ).all(node.id) as Array<{ submitted_by: string | null }>;
+  const out = new Map<string, StandsFor>();
+  for (const r of by) {
+    const as = contributorNode(db, r.submitted_by);
+    if (as && as.id !== node.id) out.set(as.id, as);
+  }
+  return [...out.values()];
+}
+
 function provenance(db: DatabaseSync, node: EntityNode, meta: any, showcase: Showcase | null, viewer: EntityViewer): string {
   const links: string[] = [];
   if (showcase) {
@@ -607,7 +623,17 @@ function provenance(db: DatabaseSync, node: EntityNode, meta: any, showcase: Sho
       ? `<a class="ev-prov-link" href="${esc(href)}" target="_blank" rel="noopener">source: ${esc(src)} ↗</a>`
       : `<span class="ev-prov-tag">source: ${esc(src)}</span>`);
   }
+  // Contributors that are themselves nodes (issue #70): who posted this, and
+  // on that node's own page, that it contributes.
+  for (const as of contributedByNodes(db, node)) {
+    links.push(`<span class="ev-prov-tag">contributed by <a class="ev-prov-link" href="${nodePath(as)}">${esc(as.name)}</a></span>`);
+  }
   const base = nodePath(node);
+  const as = contributorsAs(db, node.id);
+  if (as.length) {
+    const n = as.reduce((a, c) => a + c.signals, 0);
+    links.push(`<a class="ev-prov-link" href="${base}/contributions">contributes to the commons as ${as.map((c) => esc(c.name)).join(", ")} · ${n} contribution${n === 1 ? "" : "s"}</a>`);
+  }
   links.push(`<a class="ev-prov-link" href="${base}/history">history</a>`);
   if (viewer.curator) links.push(`<a class="ev-prov-link" href="/record${base}">record</a>`);
   const open = openItemsLink(db, node, viewer);

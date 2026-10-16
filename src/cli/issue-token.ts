@@ -16,6 +16,9 @@
 //                          to mint contributor tokens and revoke any token).
 //                          Only the operator can mint admins — the HTTP admin
 //                          endpoint refuses scope='admin' in its payload.
+//   --node <node id>       the node the contributor stands for (issue #70), e.g.
+//                          "institution:the-outlier-collection": bylines of its
+//                          contributions link there. Later: PATCH /api/v1/tokens/:prefix
 //
 // On Fly: prefer `DB_PATH=/data/adai.db node /app/dist/cli/issue-token.js …`
 // or just run without DB_PATH — src/utils/db-path.ts will pick /data/adai.db
@@ -49,9 +52,10 @@ function main(): void {
   const create = args.create === true;
   const tier = (typeof args.tier === "string" ? args.tier : "probationary") as TrustTier;
   const scope: TokenScope = args.admin === true ? "admin" : "write";
+  const node = typeof args.node === "string" ? args.node : null;
 
   if (!contributorName) {
-    console.error("Usage: npm run token:issue -- --contributor <name> [--label <text>] [--create [--tier <tier>]] [--admin]");
+    console.error("Usage: npm run token:issue -- --contributor <name> [--label <text>] [--create [--tier <tier>]] [--admin] [--node <node id>]");
     process.exit(2);
   }
 
@@ -68,6 +72,7 @@ function main(): void {
       scope,
       tier,
       createIfMissing: create,
+      node,
     });
   } catch (e: any) {
     if (e instanceof MintError) {
@@ -84,6 +89,7 @@ function main(): void {
   console.error(`Issued ${result.scope} token for ${result.contributor_name} (trust_tier=${result.contributor_trust_tier})`);
   console.error(`  prefix: ${result.token_prefix}`);
   if (result.label) console.error(`  label:  ${result.label}`);
+  if (result.node_id) console.error(`  node:   ${result.node_id}`);
   console.error("");
   console.error("Raw token (will not be shown again):");
   process.stdout.write(result.raw_token + "\n");

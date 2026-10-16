@@ -183,7 +183,8 @@ CREATE TABLE IF NOT EXISTS contributor_tokens (
     scope           TEXT DEFAULT 'write',
     created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     last_used_at    TEXT,
-    revoked_at      TEXT
+    revoked_at      TEXT,
+    node_id         TEXT                            -- the node this token's contributor stands for (issue #70), e.g. an institution posting its collection
 );
 
 CREATE INDEX IF NOT EXISTS idx_contributor_tokens_contributor

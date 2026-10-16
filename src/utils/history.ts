@@ -20,6 +20,7 @@
 // and an anonymous one hides who.
 
 import type { DatabaseSync } from "node:sqlite";
+import { contributorNode, type StandsFor } from "./contributor-node.js";
 
 export interface HistorySource {
   signal_id: string;
@@ -34,6 +35,8 @@ export interface HistorySource {
   // URL intake: picked up from another read's left-open items (issue #77) —
   // the contributor who first proposed it, and that read.
   first_proposed?: { by: string | null; batch_id: string };
+  // The node the contributor stands for (issue #70): `by` links to it.
+  by_node?: { type: string; slug: string };
 }
 
 export type HistoryEvent =
@@ -102,6 +105,11 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
     }
     return sigCache.get(id);
   };
+  const standsCache = new Map<string, StandsFor | null>();
+  const standsFor = (by: string): StandsFor | null => {
+    if (!standsCache.has(by)) standsCache.set(by, contributorNode(db, by));
+    return standsCache.get(by)!;
+  };
   const sourceOf = (s: any): HistorySource | null => {
     if (!s) return null;
     const structural = s.consent_scope === "structural_only";
@@ -117,6 +125,8 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
     const prov = structural ? null : parse(s.provenance_chain);
     if (prov && typeof prov.proposed_as === "object" && prov.proposed_as) out.proposed_as = prov.proposed_as;
     if (prov?.picked_from && typeof prov.picked_from.draft_id === "string") out.first_proposed = { by: prov.picked_from.by ?? null, batch_id: prov.picked_from.draft_id };
+    const as = out.by ? standsFor(out.by) : null;
+    if (as) out.by_node = { type: as.type, slug: as.slug };
     return out;
   };
   const priorOf = (s: any, op: string): any => {

@@ -15,6 +15,8 @@ export interface MintOptions {
   scope?: TokenScope;            // default 'write'
   tier?: TrustTier;              // only used when create_if_missing creates a new row
   createIfMissing?: boolean;
+  /** The node the contributor stands for (issue #70): their bylines link to it. */
+  node?: string | null;
 }
 
 export interface MintResult {
@@ -26,6 +28,7 @@ export interface MintResult {
   scope: TokenScope;
   label: string | null;
   contributor_created: boolean;
+  node_id: string | null;
 }
 
 export class MintError extends Error {
@@ -70,14 +73,15 @@ export function mintToken(db: DatabaseSync, opts: MintOptions): MintResult {
     contributorCreated = true;
   }
 
+  const nodeId = opts.node ? checkTokenNode(db, opts.node) : null;
   const raw = `adai_${crypto.randomBytes(24).toString("hex")}`;
   const hash = crypto.createHash("sha256").update(raw).digest("hex");
   const prefix = raw.slice(0, 5 + 8); // 'adai_' + first 8 hex chars
 
   db.prepare(
-    `INSERT INTO contributor_tokens (token_hash, token_prefix, contributor_id, label, scope)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(hash, prefix, row.id, opts.label ?? null, scope);
+    `INSERT INTO contributor_tokens (token_hash, token_prefix, contributor_id, label, scope, node_id)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(hash, prefix, row.id, opts.label ?? null, scope, nodeId);
 
   return {
     raw_token: raw,
@@ -88,7 +92,39 @@ export function mintToken(db: DatabaseSync, opts: MintOptions): MintResult {
     scope,
     label: opts.label ?? null,
     contributor_created: contributorCreated,
+    node_id: nodeId,
   };
+}
+
+// --- The node a token stands for (issue #70) ----------------------------
+//
+// An institution or a collection that posts through a token is a
+// contributor AND a node; the token's node_id joins the two, like an
+// invite's self_node_id. Bylines of its contributions link to the node
+// (contributorNode in src/utils/contributor-node.ts).
+
+function checkTokenNode(db: DatabaseSync, nodeId: string): string {
+  const n = db.prepare("SELECT id, metadata FROM nodes WHERE id = ?").get(nodeId) as any;
+  if (!n) throw new MintError("no_such_node", `No node with id "${nodeId}".`, 404);
+  let retired = false;
+  try { retired = JSON.parse(n.metadata ?? "{}")?.retired === true; } catch { /* not retired */ }
+  if (retired) throw new MintError("node_retired", `Node "${nodeId}" is retired.`, 409);
+  return n.id;
+}
+
+/** Set (or, with null, clear) the node a token stands for. */
+export function setTokenNode(db: DatabaseSync, prefix: string, nodeId: string | null): { token_prefix: string; contributor_id: string; contributor_name: string; node_id: string | null; previous: string | null } {
+  const row = db
+    .prepare(
+      `SELECT t.token_prefix, t.node_id, c.id AS contributor_id, c.name AS contributor_name
+         FROM contributor_tokens t JOIN contributors c ON t.contributor_id = c.id
+        WHERE t.token_prefix = ?`
+    )
+    .get(prefix) as any;
+  if (!row) throw new MintError("no_such_token", `No token with prefix "${prefix}".`, 404);
+  const next = nodeId === null ? null : checkTokenNode(db, nodeId);
+  db.prepare("UPDATE contributor_tokens SET node_id = ? WHERE token_prefix = ?").run(next, prefix);
+  return { token_prefix: row.token_prefix, contributor_id: row.contributor_id, contributor_name: row.contributor_name, node_id: next, previous: row.node_id ?? null };
 }
 
 // --- Restore -----------------------------------------------------------
@@ -257,6 +293,7 @@ export interface ListedToken {
   created_at: string | null;
   last_used_at: string | null;
   revoked_at: string | null;
+  node_id: string | null;
 }
 
 export function listTokens(
@@ -275,7 +312,7 @@ export function listTokens(
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   return db
     .prepare(
-      `SELECT t.token_prefix, t.label, t.scope, t.created_at, t.last_used_at, t.revoked_at,
+      `SELECT t.token_prefix, t.label, t.scope, t.created_at, t.last_used_at, t.revoked_at, t.node_id,
               c.id AS contributor_id, c.name AS contributor_name, c.trust_tier AS contributor_trust_tier
          FROM contributor_tokens t
          JOIN contributors c ON t.contributor_id = c.id

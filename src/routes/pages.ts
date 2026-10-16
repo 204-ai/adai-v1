@@ -22,6 +22,7 @@ import { notesByTriple, publicNotesFor } from "../claim/notes.js";
 import { renderEntityView, nodePath, type EntityNode, type EntityViewer } from "../entity/view.js";
 import { entityPage } from "../entity/page.js";
 import { movedTo } from "../utils/moved.js";
+import { contributorsAs } from "../utils/contributor-node.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.join(__dirname, "..", "..");
@@ -88,7 +89,7 @@ const notFoundPage = () => htmlPage("Not Found", "<h2>Not Found</h2><p>No node w
 // src/utils/moved.ts) 301s to its current one, on every page that takes a
 // slug. Registered before those routes. The slug may hold a "/" when it
 // predates the current slugifier (`idle/interludes`).
-const MOVED_PATH = new RegExp(`^/(record/|field/|neighbours/)?(${NODE_ROUTE_TYPES.join("|")})/(.+?)(/history\\.json|/history|/data)?$`);
+const MOVED_PATH = new RegExp(`^/(record/|field/|neighbours/)?(${NODE_ROUTE_TYPES.join("|")})/(.+?)(/history\\.json|/history|/data|/contributions)?$`);
 router.get(MOVED_PATH, (req, res, next) => {
   const m = MOVED_PATH.exec(req.path);
   if (!m) return next();
@@ -613,7 +614,7 @@ function renderHistoryEvent(e: HistoryEvent): string {
   }
   const s = e.source;
   const meta: string[] = [];
-  if (e.by) meta.push(`by ${htmlEscape(e.by)}`);
+  if (e.by) meta.push(`by ${s?.by_node && s.by === e.by ? `<a href='/${encodeURIComponent(s.by_node.type)}/${encodeURIComponent(s.by_node.slug)}'>${htmlEscape(e.by)}</a>` : htmlEscape(e.by)}`);
   else if (s) meta.push("anonymous");
   if (s?.title) meta.push(htmlEscape(s.title));
   if (s?.source_url && /^https?:\/\//i.test(s.source_url)) meta.push(`<a href='${htmlEscape(s.source_url)}' target='_blank' rel='noopener'>source</a>`);
@@ -656,6 +657,44 @@ for (const t of ["practitioner", "artwork", "concept", "scene", "collective", "i
   router.get(`/${t}/:slug/history`, historyHandler);
   router.get(`/${t}/:slug/history.json`, historyJsonHandler);
 }
+
+// GET /:type/:slug/contributions — what a node contributed to the commons
+// through the contributors that stand for it (issue #70): an institution
+// posting its collection through a token. Consent-filtered like the record
+// view: anonymous and structural-only signals are not listed.
+function contributionsHandler(type: string) {
+  return (req: any, res: any) => {
+    const db = getDb();
+    const node = nodeAt(db, type, req.params.slug);
+    if (!node || node.type !== type) {
+      res.status(404).set(HTML_HEADERS).send(notFoundPage());
+      return;
+    }
+    const as = contributorsAs(db, node.id);
+    const page = nodePath(node);
+    let body = `<h2>Contributions: <a href='${page}'>${htmlEscape(node.name)}</a></h2>`;
+    if (!as.length) {
+      body += `<p class='meta'>${htmlEscape(node.name)} has not contributed to the commons as a contributor of its own.</p>`;
+      res.set(HTML_HEADERS).send(htmlPage(`${node.name} — contributions`, body, "", { fieldNode: node }));
+      return;
+    }
+    const keys = as.flatMap((c) => [c.id, c.name]);
+    const rows = db.prepare(
+      `SELECT s.title, s.content, s.source_url, s.source_type, s.submitted_by, s.created_at, s.consent_attribution, iq.proposed_nodes, iq.proposed_edges
+         FROM signals s LEFT JOIN intake_queue iq ON iq.signal_id = s.id
+        WHERE s.submitted_by IN (${keys.map(() => "?").join(", ")}) AND s.status = 'active'
+          AND (iq.id IS NULL OR iq.status = 'approved')
+          AND (s.consent_attribution IS NULL OR s.consent_attribution != 'anonymous')
+          AND (s.consent_scope IS NULL OR s.consent_scope != 'structural_only')
+        ORDER BY s.created_at DESC
+        LIMIT 500`
+    ).all(...keys) as unknown as ContributionRow[];
+    body += `<p class='meta'>${htmlEscape(node.name)} contributes to the commons as ${as.map((c) => htmlEscape(c.name)).join(", ")}. Newest first; what is still waiting for review is not listed.</p>`;
+    body += rows.length ? contributionCards(db, rows) : `<p class='meta'>Nothing yet.</p>`;
+    res.set(HTML_HEADERS).send(htmlPage(`${node.name} — contributions`, body, "", { fieldNode: node }));
+  };
+}
+for (const t of NODE_ROUTE_TYPES) router.get(`/${t}/:slug/contributions`, contributionsHandler(t));
 
 // GET /neighbours/:type/:slug — similarity browser. Shows the top-K cosine
 // neighbours of a node across any kind+candidate combination. Useful for

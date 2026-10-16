@@ -14,7 +14,7 @@ import multer from "multer";
 import { getDb } from "../db.js";
 import { JSON_HEADERS } from "../templates.js";
 import { requireToken, requireAdmin, isAutoMerge } from "../auth.js";
-import { mintToken, revokeTokenByPrefix, listTokens, MintError } from "../utils/token-mint.js";
+import { mintToken, revokeTokenByPrefix, listTokens, setTokenNode, MintError } from "../utils/token-mint.js";
 import { slugify, slugForCreate } from "../utils/slug.js";
 import {
   insertSignal,
@@ -899,6 +899,7 @@ router.post("/api/v1/tokens", requireAdmin, (req, res) => {
   const tier = typeof body.tier === "string" ? body.tier : undefined;
   const create_if_missing = body.create_if_missing === true;
   const requested_scope = typeof body.scope === "string" ? body.scope : "write";
+  const node = typeof body.node === "string" && body.node ? body.node : null;
 
   if (!contributor_name) {
     res.status(400).set(JSON_HEADERS).json({ error: "contributor_name is required" });
@@ -920,6 +921,7 @@ router.post("/api/v1/tokens", requireAdmin, (req, res) => {
       scope: "write",
       tier: tier as any,
       createIfMissing: create_if_missing,
+      node,
     });
     res.set(JSON_HEADERS).json({
       // The raw token is returned ONCE. The admin client is responsible for
@@ -934,6 +936,7 @@ router.post("/api/v1/tokens", requireAdmin, (req, res) => {
       },
       scope: result.scope,
       label: result.label,
+      node: result.node_id,
       contributor_created: result.contributor_created,
       minted_by: { id: req.contributor!.id, name: req.contributor!.name, token_prefix: req.contributor!.token_prefix },
     });
@@ -958,6 +961,28 @@ router.post("/api/v1/tokens/:prefix/revoke", requireAdmin, (req, res) => {
       revoked_at: r.revoked_at,
       revoked_by: { id: req.contributor!.id, name: req.contributor!.name, token_prefix: req.contributor!.token_prefix },
     });
+  } catch (e: any) {
+    if (e instanceof MintError) {
+      res.status(e.status).set(JSON_HEADERS).json({ error: e.code, detail: e.message });
+      return;
+    }
+    throw e;
+  }
+});
+
+// PATCH /api/v1/tokens/:prefix {"node": "<node id>" | null} — the node the
+// token's contributor stands for (issue #70): bylines of its contributions
+// link to it, and its page says it contributes. null clears it.
+router.patch("/api/v1/tokens/:prefix", requireAdmin, (req, res) => {
+  const db = getDb();
+  const body = req.body ?? {};
+  if (!("node" in body) || (body.node !== null && typeof body.node !== "string")) {
+    res.status(400).set(JSON_HEADERS).json({ error: "node is required: a node id, or null to clear it" });
+    return;
+  }
+  try {
+    const r = setTokenNode(db, String(req.params.prefix), body.node || null);
+    res.set(JSON_HEADERS).json({ ...r, set_by: { id: req.contributor!.id, name: req.contributor!.name, token_prefix: req.contributor!.token_prefix } });
   } catch (e: any) {
     if (e instanceof MintError) {
       res.status(e.status).set(JSON_HEADERS).json({ error: e.code, detail: e.message });

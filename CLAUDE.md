@@ -324,6 +324,11 @@ rollback-able. Format `[A-Za-z0-9][A-Za-z0-9._:-]{0,119}`.
 Admin endpoints (require `scope='admin'`, enforced by `requireAdmin`):
 - `GET/POST /api/v1/tokens`, `POST /api/v1/tokens/:prefix/revoke` — token mgmt
   (HTTP can only mint **write**-scope; admin tokens are operator-CLI-only)
+- `PATCH /api/v1/tokens/:prefix {"node": id|null}` — the node a token's
+  contributor stands for (`contributor_tokens.node_id`, issue #70; also
+  `token:issue --node`): "contributed by X" links to it, its page says
+  "contributes to the commons as X", `/<type>/<slug>/contributions` lists them
+  (`src/utils/contributor-node.ts`)
 - `GET /api/v1/review`, `POST /api/v1/review/:id/approve|reject`,
   `POST /api/v1/review/bulk` — JSON twin of the curator queue
 - `POST /api/v1/signals/:id/revoke` — status→revoked + supersede anchored edges
