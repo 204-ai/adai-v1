@@ -12,7 +12,7 @@ const result = (over: Partial<ConfirmResult> = {}): ConfirmResult => ({
   batch_id: draft.id, status: "review", intake_ids: [],
   created_nodes: ["a", "b", "c", "d", "e"], linked_nodes: ["f", "g", "h"], patched_nodes: [],
   edges: [1, 2, 3, 4].map(() => ({ source_id: "x", target_id: "y", edge_type: "CREATED_BY" })),
-  images: [], ended: [], skipped: [], ...over,
+  images: [], ended: [], skipped: [], left_open: 0, decided: 0, ...over,
 });
 
 describe("receipt email", () => {

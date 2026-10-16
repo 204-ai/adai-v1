@@ -167,6 +167,7 @@ export function receiptEmail(
   ];
   if (shown.length) blocks.push({ list: shown.map(([n, one, many]) => plural(n, one, many)) });
   if (result.skipped.length) blocks.push({ p: `${plural(result.skipped.length, "item", "items")} could not be added; the page below says why.` });
+  if (result.left_open) blocks.push({ p: `${plural(result.left_open, "item you did not decide stays", "items you did not decide stay")} open, so another contributor can pick ${result.left_open === 1 ? "it" : "them"} up.` });
   blocks.push({ link: live ? "View your contribution" : "View your contribution and its review status", url: receiptUrl });
   if (profileUrl) {
     blocks.push({ p: "You can also explore the existing record around your practice:" });

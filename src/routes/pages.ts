@@ -599,6 +599,7 @@ function renderHistoryEvent(e: HistoryEvent): string {
   if (s?.title) meta.push(htmlEscape(s.title));
   if (s?.source_url && /^https?:\/\//i.test(s.source_url)) meta.push(`<a href='${htmlEscape(s.source_url)}' target='_blank' rel='noopener'>source</a>`);
   if (s?.batch_id) meta.push(`batch: ${htmlEscape(s.batch_id)}`);
+  if (s?.first_proposed) meta.push(`first proposed by ${htmlEscape(s.first_proposed.by ?? "a contributor")} in <a href='/batch/${encodeURIComponent(s.first_proposed.batch_id)}'>an earlier read</a>`);
   if (s?.status && s.status !== "active") meta.push(`<span class='tag'>${htmlEscape(s.status)}</span>`);
   let html = `<div class='card'><p class='meta'>${day}</p>${what}`;
   if (meta.length) html += `<p class='meta'>${meta.join(" · ")}</p>`;

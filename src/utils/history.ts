@@ -31,6 +31,9 @@ export interface HistorySource {
   status: string | null;
   // URL intake: the contributor changed the card; this is what the reader proposed.
   proposed_as?: Record<string, unknown>;
+  // URL intake: picked up from another read's left-open items (issue #77) —
+  // the contributor who first proposed it, and that read.
+  first_proposed?: { by: string | null; batch_id: string };
 }
 
 export type HistoryEvent =
@@ -113,6 +116,7 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
     };
     const prov = structural ? null : parse(s.provenance_chain);
     if (prov && typeof prov.proposed_as === "object" && prov.proposed_as) out.proposed_as = prov.proposed_as;
+    if (prov?.picked_from && typeof prov.picked_from.draft_id === "string") out.first_proposed = { by: prov.picked_from.by ?? null, batch_id: prov.picked_from.draft_id };
     return out;
   };
   const priorOf = (s: any, op: string): any => {

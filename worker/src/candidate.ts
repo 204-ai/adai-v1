@@ -3,7 +3,7 @@
 
 export type Ref = string;
 export interface Evidence { page_url: string; quote: string }
-export type CandidateState = "proposed" | "accepted" | "rejected" | "context_only" | "answered";
+export type CandidateState = "proposed" | "accepted" | "rejected" | "context_only" | "answered" | "open";
 export type Origin = "site" | "graph" | "embedding" | "contributor";
 export type CandidateNodeType = "practitioner" | "artwork" | "project" | "institution" | "collective" | "concept" | "platform";
 export type SuggestableEdgeType =

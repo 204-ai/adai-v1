@@ -39,9 +39,11 @@ import {
   enqueueContinue,
   contributorPatchCandidate,
   confirmDraft,
+  createPickupDraft,
   batchReceipt,
   DraftError,
 } from "../intake/draft.js";
+import { listOpenReads } from "../intake/open-items.js";
 import { CandidateError } from "../intake/candidate.js";
 import { sendLoginEmail, sendReceiptEmail, sendAccessRequestEmail, sendAccessRequestDetailsEmail } from "../intake/mail.js";
 import { spawnAsync } from "../intake/spawn.js";
@@ -266,10 +268,28 @@ router.post("/api/intake/drafts/:id/confirm", requireContributor, async (req, re
     res.set(JSON_HEADERS).json(result);
     const email = emailFor(db, req.contributor!.id);
     const fresh = getDraft(db, d.id);
-    if (email && fresh) await sendReceiptEmail(db, email, req.contributor!.name, fresh, result);
+    // A pick-up that only turned items down added nothing to thank anyone for.
+    if (email && fresh && result.intake_ids.length) await sendReceiptEmail(db, email, req.contributor!.name, fresh, result);
   } catch (e) {
     if (!res.headersSent) fail(res, e);
     else console.error("[intake] receipt email failed:", (e as any)?.message ?? e);
+  }
+});
+
+// Left open (issue #77): reads with items nobody has decided yet, for any
+// invited contributor to pick up. ?node= narrows to one subject.
+router.get("/api/intake/open", requireContributor, (req, res) => {
+  const node = typeof req.query.node === "string" && req.query.node ? req.query.node : undefined;
+  res.set(JSON_HEADERS).json({ reads: listOpenReads(getDb(), { nodeId: node }) });
+});
+
+router.post("/api/intake/open/:draft_id/pickup", requireContributor, (req, res) => {
+  try {
+    if (!req.contributor!.name) throw new DraftError("set a display name first (POST /api/intake/me)", 409, "name_required");
+    const d = createPickupDraft(getDb(), req.contributor!.id, String(req.params.draft_id));
+    res.status(201).set(JSON_HEADERS).json({ draft_id: d.id, draft_url: `/draft/${d.id}`, items: d.candidates.length });
+  } catch (e) {
+    fail(res, e);
   }
 });
 

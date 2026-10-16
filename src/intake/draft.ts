@@ -15,7 +15,7 @@ import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { AuthedContributor } from "../auth.js";
 import { isAutoMerge } from "../auth.js";
-import { slugify } from "../utils/slug.js";
+import { slugify, legacySlugify } from "../utils/slug.js";
 import { nowIso, plusIso, todayUtc } from "../utils/time.js";
 import { checkUrlSyntax, SsrfError } from "../utils/ssrf.js";
 import {
@@ -46,6 +46,7 @@ import {
   type NodeCandidate,
   type EdgeSpec,
 } from "./candidate.js";
+import { leftOpen, cardDeps, openItemsOf, insertOpenItem, decideOpenItem } from "./open-items.js";
 
 // ---- types ---------------------------------------------------------------
 
@@ -126,6 +127,8 @@ export interface Draft {
   created_at: string;
   updated_at: string;
   submitted_at: string | null;
+  /** A pick-up of another draft's left-open items (issue #77): that draft. */
+  picked_from: string | null;
 }
 
 export class DraftError extends Error {
@@ -189,6 +192,7 @@ function rowToDraft(row: any): Draft {
     created_at: row.created_at,
     updated_at: row.updated_at,
     submitted_at: row.submitted_at ?? null,
+    picked_from: row.picked_from ?? null,
   };
 }
 
@@ -375,6 +379,87 @@ export function abandonDraft(db: DatabaseSync, draft: Draft): Draft {
   if (draft.status === "submitted") throw new DraftError("already submitted", 409, "submitted");
   touch(db, draft.id, { status: "abandoned", job: null });
   return getDraft(db, draft.id)!;
+}
+
+/**
+ * Pick up the items another read left open (issue #77): a new draft of the
+ * picker's holding copies of those cards, ready to decide — no reading pass,
+ * no email. An accepted card an item needs (the work an open relation is
+ * about) comes along as a link when the graph has it, else as a card to
+ * accept with it. Picking up the same read again returns the draft already
+ * open for it.
+ */
+export function createPickupDraft(db: DatabaseSync, contributorId: string, sourceId: string): Draft {
+  const source = getDraft(db, sourceId);
+  if (!source || source.status !== "submitted") throw new DraftError("no such read", 404, "not_found");
+  const rows = openItemsOf(db, source.id).filter((r) => !r.decided_at);
+  if (!rows.length) throw new DraftError("nothing is left open in this read", 409, "nothing_open");
+  const already = db
+    .prepare("SELECT id FROM drafts WHERE contributor_id = ? AND picked_from = ? AND status = 'ready' ORDER BY created_at DESC LIMIT 1")
+    .get(contributorId, source.id) as { id: string } | undefined;
+  if (already) return getDraft(db, already.id)!;
+  const active = db
+    .prepare("SELECT COUNT(*) AS n FROM drafts WHERE contributor_id = ? AND status IN ('queued','running','ready')")
+    .get(contributorId) as any;
+  if (active.n >= MAX_ACTIVE_DRAFTS()) {
+    throw new DraftError(`you already have ${active.n} drafts in progress — confirm or abandon one first`, 429, "too_many_active");
+  }
+
+  const nodeExists = (id: string) => !!db.prepare("SELECT 1 FROM nodes WHERE id = ?").get(id);
+  const ctx = { nodeExists, slugify };
+  const byCid = new Map(source.candidates.map((c) => [c.cid, c]));
+  const take = new Map(rows.map((r) => [r.cid, r]));
+  const subst = new Map<string, string>(); // "cid:c_03" → node id the graph has
+  const carry = new Set<string>();
+  for (const cid of take.keys()) {
+    const c = byCid.get(cid);
+    if (!c) continue;
+    for (const dep of cardDeps(c)) {
+      if (take.has(dep)) continue;
+      const d = byCid.get(dep);
+      if (!d || d.kind !== "node") continue;
+      const id = d.resolves_to ?? [`${d.node.type}:${slugify(d.node.name)}`, `${d.node.type}:${legacySlugify(d.node.name)}`].find(nodeExists);
+      if (id && nodeExists(id)) subst.set(`cid:${dep}`, id);
+      else carry.add(dep);
+    }
+  }
+  const order = (c: Candidate) => (c.kind === "node" ? 0 : 1);
+  const picked = source.candidates.filter((c) => take.has(c.cid) || carry.has(c.cid)).sort((a, b) => order(a) - order(b));
+  const cands: Candidate[] = [];
+  for (const c of picked) {
+    let json = JSON.stringify(c);
+    for (const [ref, id] of subst) json = json.split(JSON.stringify(ref)).join(JSON.stringify(id));
+    const raw = JSON.parse(json);
+    raw.state = "proposed";
+    raw.edited = false;
+    if (raw.kind === "node" && !raw.resolves_to) {
+      // Created since the read: the card now links to it.
+      const id = [`${raw.node.type}:${slugify(raw.node.name)}`, `${raw.node.type}:${legacySlugify(raw.node.name)}`].find(nodeExists);
+      if (id) { raw.resolves_to = id; raw.resolution = "exact"; }
+    }
+    try {
+      cands.push(validateCandidate(raw, cands, ctx));
+    } catch {
+      // The graph moved on (a node retired, a card it needs failed); the item
+      // stays open for a fresh read.
+    }
+  }
+  if (!cands.some((c) => take.has(c.cid))) throw new DraftError("nothing left open in this read can still be decided", 409, "nothing_open");
+
+  const subj = source.subject_node_id;
+  const subject = subj && isCidRef(subj) ? subst.get(subj) ?? (cands.some((c) => c.cid === subj.slice(4)) ? subj : null) : subj;
+  const by = (db.prepare("SELECT name FROM contributors WHERE id = ?").get(source.contributor_id) as any)?.name ?? "a contributor";
+  const n = cands.filter((c) => take.has(c.cid)).length;
+  const summary =
+    `Left open in ${by}'s read of ${source.source_domain} (${String(source.submitted_at ?? source.created_at).slice(0, 10)}): ` +
+    `${n} item${n === 1 ? "" : "s"} nobody has decided yet. Decide what you can — what you submit is yours, and ${by} is credited as the first to propose it. ` +
+    `Whatever you leave undecided stays open for the next person.`;
+  const id = `drf_${crypto.randomBytes(8).toString("hex")}`;
+  db.prepare(
+    `INSERT INTO drafts (id, contributor_id, source_url, source_domain, status, subject_node_id, candidates, pages, summary, notified_ready_at, picked_from)
+     VALUES (?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?)`
+  ).run(id, contributorId, source.source_url, source.source_domain, subject, JSON.stringify(cands), JSON.stringify(source.pages), summary, nowIso(), source.id);
+  return getDraft(db, id)!;
 }
 
 // What a card claims, without the review bookkeeping around it.
@@ -1008,6 +1093,10 @@ export interface ConfirmResult {
   images: Array<{ node_id: string; cdn_image_url: string }>;
   ended: string[];
   skipped: Array<{ cid: string; reason: string }>;
+  /** Cards kept open for another contributor to decide (issue #77). */
+  left_open: number;
+  /** A pick-up: the left-open items this Confirm decided. */
+  decided: number;
 }
 
 interface PlannedOp {
@@ -1023,6 +1112,10 @@ interface PlannedOp {
  * Turn accepted candidates into one attributed batch (batch_id = draft.id).
  * Images are mirrored to R2 BEFORE the transaction (content-addressed, so
  * a retry is harmless); everything else is one SQLite transaction.
+ *
+ * What the contributor did not decide stays open for someone else
+ * (src/intake/open-items.ts). A pick-up draft decides items of the draft it
+ * was picked from; one that only turns items down still confirms.
  */
 export async function confirmDraft(
   db: DatabaseSync,
@@ -1036,11 +1129,24 @@ export async function confirmDraft(
   const mirror = deps.mirror ?? mirrorImageFromUrl;
 
   const skipped: ConfirmResult["skipped"] = [];
-  const accepted = draft.candidates.filter((c) => c.state === "accepted");
-  const answeredYes = draft.candidates.filter(
+  // A pick-up: the items it carries from the draft it was picked from, and
+  // the ones another contributor has decided since (left out here).
+  const source = draft.picked_from ? getDraft(db, draft.picked_from) : null;
+  const sourceCids = new Set(source?.candidates.map((c) => c.cid) ?? []);
+  const items = new Map(source ? openItemsOf(db, source.id).map((r) => [r.cid, r]) : []);
+  const gone = new Set([...items.values()].filter((r) => r.decided_at && sourceCids.has(r.cid)).map((r) => r.cid));
+  for (const c of draft.candidates) if (gone.has(c.cid) && c.state === "accepted") skipped.push({ cid: c.cid, reason: "already decided by another contributor" });
+  const open = leftOpen(draft.candidates, gone);
+  const live = draft.candidates.filter((c) => !gone.has(c.cid) && !open.has(c.cid));
+  const accepted = live.filter((c) => c.state === "accepted");
+  const answeredYes = live.filter(
     (c): c is Extract<Candidate, { kind: "question" }> => c.kind === "question" && c.state === "answered" && c.question.answered_yes === true
   );
-  if (!accepted.length && !answeredYes.length) throw new DraftError("nothing accepted — accept at least one card", 400, "nothing_to_submit");
+  const decisions = live.filter((c) => items.has(c.cid) && !items.get(c.cid)!.decided_at);
+  if (!accepted.length && !answeredYes.length && !decisions.length) {
+    if (skipped.length) throw new DraftError("another contributor has decided these items since you picked them up — nothing is left to confirm", 409, "already_decided");
+    throw new DraftError("nothing accepted — accept at least one card", 400, "nothing_to_submit");
+  }
 
   // 1. Resolve refs. A node candidate contributes an id if accepted:
   //    resolves_to → link; else → deterministic create id.
@@ -1060,17 +1166,23 @@ export async function confirmDraft(
   const resolve = (ref: string, cid: string): string | null => {
     if (!isCidRef(ref)) return ref;
     const id = refToId.get(ref);
-    if (!id) skipped.push({ cid, reason: `depends on ${ref}, which was not accepted` });
+    if (!id) skipped.push({ cid, reason: gone.has(ref.slice(4)) ? `depends on ${ref}, which another contributor decided first` : `depends on ${ref}, which was not accepted` });
     return id ?? null;
   };
   // A read is a dated snapshot: every signal says which page it quotes, what
   // that page hashed to, and WHEN it was read — not only when it was submitted.
+  // picked_from: the card was first proposed in another contributor's read
+  // and left open there; the signal is the picker's, the first proposer is
+  // credited here (and in /history).
+  const pickedFrom = source
+    ? { draft_id: source.id, by: (db.prepare("SELECT name FROM contributors WHERE id = ?").get(source.contributor_id) as any)?.name ?? null }
+    : null;
   const prov = (c: Candidate) => {
     const url = c.kind === "image" ? c.image.page_url : c.evidence?.page_url;
     const page = pageEntry(draft, url);
     // proposed_as: the contributor changed this card before confirming; it
     // holds what the reader proposed, so the signal shows both.
-    return JSON.stringify({ draft_id: draft.id, cid: c.cid, origin: c.origin, page_sha256: page?.sha256 ?? null, page_fetched_at: page?.fetched_at ?? null, ...(c.proposed_as ? { proposed_as: c.proposed_as } : {}) });
+    return JSON.stringify({ draft_id: draft.id, cid: c.cid, origin: c.origin, page_sha256: page?.sha256 ?? null, page_fetched_at: page?.fetched_at ?? null, ...(c.proposed_as ? { proposed_as: c.proposed_as } : {}), ...(pickedFrom && sourceCids.has(c.cid) ? { picked_from: pickedFrom } : {}) });
   };
 
   const ops: PlannedOp[] = [];
@@ -1191,7 +1303,17 @@ export async function confirmDraft(
     endedResults.push(c.ended.edge_id);
   }
 
-  if (!ops.length) throw new DraftError("nothing could be submitted: " + skipped.map((s) => s.reason).join("; "), 400, "nothing_to_submit");
+  if (!ops.length && !decisions.length) throw new DraftError("nothing could be submitted: " + skipped.map((s) => s.reason).join("; "), 400, "nothing_to_submit");
+
+  // The read's subject, as a node id, for the page that lists its open items.
+  const subjectId = (() => {
+    const ref = draft.subject_node_id;
+    if (!ref) return null;
+    if (!isCidRef(ref)) return ref;
+    const n = draft.candidates.find((c) => c.cid === ref.slice(4));
+    return refToId.get(ref) ?? (n && n.kind === "node" ? n.resolves_to ?? null : null);
+  })();
+  const skippedCids = new Set(skipped.map((x) => x.cid));
 
   // 3. The transaction.
   const auto = isAutoMerge(contributor.trust_tier);
@@ -1204,6 +1326,26 @@ export async function confirmDraft(
     if (fresh.status !== "ready" || fresh.job || JSON.stringify(fresh.candidates) !== JSON.stringify(draft.candidates)) {
       throw new DraftError("draft changed while confirming — review the current cards and confirm again", 409, "conflict");
     }
+    // A pick-up decides each item once: whoever confirms first.
+    for (const c of decisions) {
+      // "skipped": accepted but it could not be added, or undecided but it
+      // needs a card the picker turned down.
+      const outcome = skippedCids.has(c.cid) || c.state === "proposed" || c.state === "open" ? "skipped" : c.state;
+      if (!decideOpenItem(db, source!.id, c.cid, contributor.id, draft.id, outcome)) {
+        throw new DraftError("another contributor decided some of these items while you were confirming — review the current cards and confirm again", 409, "conflict");
+      }
+    }
+    // Left open here: kept for the next person. In a pick-up, an item it
+    // carries that is left open again simply stays open where it is.
+    for (const [cid, reason] of open) {
+      if (sourceCids.has(cid)) continue;
+      const c = draft.candidates.find((x) => x.cid === cid)!;
+      insertOpenItem(db, { draft_id: draft.id, cid, kind: c.kind, label: candidateLabel(c, draft.candidates), reason, subject_node_id: subjectId });
+    }
+    if (!ops.length) {
+      touch(db, draft.id, { status: "submitted", intake_ids: JSON.stringify([]), submitted_at: nowIso(), error: null });
+      return;
+    }
 
     // Anchor signal for the whole draft — what the receipt and the review
     // queue point at.
@@ -1215,7 +1357,7 @@ export async function confirmDraft(
       source_type: "api_url_intake",
       batch_id: draft.id,
       source_origin: "url_intake",
-      provenance_chain: JSON.stringify({ draft_id: draft.id, summary: draft.summary }),
+      provenance_chain: JSON.stringify({ draft_id: draft.id, summary: draft.summary, ...(pickedFrom ? { picked_from: pickedFrom } : {}) }),
     });
 
     const queuedNodes: ProposedNodeOp[] = [];
@@ -1301,6 +1443,8 @@ export async function confirmDraft(
     images: imageResults,
     ended: endedResults,
     skipped,
+    left_open: [...open.keys()].filter((cid) => !sourceCids.has(cid) || items.has(cid)).length,
+    decided: decisions.length,
   };
 }
 
@@ -1331,15 +1475,27 @@ export function batchReceipt(db: DatabaseSync, batchId: string): Record<string, 
     .all(batchId) as any[];
   const statuses = new Set(intake.map((i) => i.status));
   let review_state: string;
-  if (signals.every((s) => s.status === "revoked")) review_state = "retired";
+  // A pick-up that only turned items down added nothing.
+  if (!signals.length) review_state = "nothing added";
+  else if (signals.every((s) => s.status === "revoked")) review_state = "retired";
   else if (statuses.size === 1 && statuses.has("approved")) review_state = "live";
   else if (statuses.has("approved")) review_state = "partially approved";
   else if (statuses.has("rejected") && !statuses.has("pending")) review_state = "rejected";
   else review_state = "pending";
-  const contributor = signals[0]?.submitted_by ?? null;
+  const nameOf = db.prepare("SELECT name FROM contributors WHERE id = ?");
+  const contributor = signals[0]?.submitted_by ?? (draft ? (nameOf.get(draft.contributor_id) as any)?.name ?? null : null);
+  // Left open here (issue #77), each with who decided it since, if anyone.
+  const left_open = draft ? openItemsOf(db, draft.id).map((r) => ({
+    label: r.label, kind: r.kind, reason: r.reason,
+    decided: r.decided_at ? { at: r.decided_at, by: (nameOf.get(r.decided_by ?? "") as any)?.name ?? null, outcome: r.outcome, in: r.decided_in } : null,
+  })) : [];
+  const source = draft?.picked_from ? getDraft(db, draft.picked_from) : null;
+  const picked_from = source ? { batch_id: source.id, source_domain: source.source_domain, by: (nameOf.get(source.contributor_id) as any)?.name ?? null } : null;
   return {
     batch_id: batchId,
     contributor,
+    left_open,
+    picked_from,
     source_url: draft?.source_url ?? null,
     source_domain: draft?.source_domain ?? null,
     submitted_at: draft?.submitted_at ?? signals[0]?.created_at ?? null,

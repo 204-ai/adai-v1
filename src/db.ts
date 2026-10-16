@@ -65,6 +65,12 @@ function runMigrations(db: DatabaseSync) {
       if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
     }
   }
+  // drafts.picked_from (Oct 2026): a pick-up of left-open items (issue #77).
+  try {
+    db.exec("ALTER TABLE drafts ADD COLUMN picked_from TEXT");
+  } catch (e: any) {
+    if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
+  }
 }
 
 export function getDb(): DatabaseSync {

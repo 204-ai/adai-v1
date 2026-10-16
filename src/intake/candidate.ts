@@ -19,11 +19,13 @@ export interface Evidence {
   quote: string; // <= 300 chars, verbatim
 }
 
-export type CandidateState = "proposed" | "accepted" | "rejected" | "context_only" | "answered";
+// "open": the contributor could not decide (issue #77). At Confirm it is kept
+// for another contributor to pick up, like a card still "proposed".
+export type CandidateState = "proposed" | "accepted" | "rejected" | "context_only" | "answered" | "open";
 export type Origin = "site" | "graph" | "embedding" | "contributor";
 
 export const CANDIDATE_STATES: ReadonlySet<string> = new Set([
-  "proposed", "accepted", "rejected", "context_only", "answered",
+  "proposed", "accepted", "rejected", "context_only", "answered", "open",
 ]);
 export const ORIGINS: ReadonlySet<string> = new Set(["site", "graph", "embedding", "contributor"]);
 
@@ -478,7 +480,7 @@ export function validateCandidate(
       const edge_type = str(raw.known.edge_type, "known.edge_type", 40);
       const other_id = raw.known.other_id ? checkRef(raw.known.other_id, "known.other_id") : undefined;
       if (other_id) cidRefOk(other_id, "known.other_id");
-      if (state === "accepted") throw new CandidateError("'known' cannot be accepted — A(DAI) already has it", "state");
+      if (state === "accepted" || state === "open") throw new CandidateError(`'known' cannot be ${state} — A(DAI) already has it`, "state");
       const known: KnownCandidate["known"] = { node_id, summary };
       if (edge_type) known.edge_type = edge_type;
       if (other_id) known.other_id = other_id;
@@ -540,7 +542,7 @@ export function applyContributorPatch(
   if (patch.state !== undefined) {
     const s = String(patch.state);
     if (!CANDIDATE_STATES.has(s)) throw new CandidateError(`state '${s}' is invalid`, "state");
-    if (c.kind === "known" && s === "accepted") throw new CandidateError("'known' cannot be accepted", "state");
+    if (c.kind === "known" && (s === "accepted" || s === "open")) throw new CandidateError(`'known' cannot be ${s}`, "state");
     if (c.kind === "question" && s === "accepted") throw new CandidateError("answer the question instead", "state");
     next.state = s as CandidateState;
   }

@@ -188,7 +188,7 @@ type Ref = string;                 // existing node id ('practitioner:casey reas
 
 interface Evidence { page_url: string; quote: string; }   // quote <= 300 chars, verbatim
 
-type CandidateState = 'proposed' | 'accepted' | 'rejected' | 'context_only' | 'answered';
+type CandidateState = 'proposed' | 'accepted' | 'rejected' | 'context_only' | 'answered' | 'open';  // 'open': "Leave open" (§10b)
 type Origin = 'site' | 'graph' | 'embedding' | 'contributor';
 
 interface CandidateBase {
@@ -403,7 +403,7 @@ Never from a site: `INFLUENCES`, `RESPONDS_TO`, `STYLE_KIN`, `VISUALLY_AFFINE`, 
 After the site pass, before `finish_pass`:
 
 1. **Already known**: for every resolved candidate, check whether the edge exists. If yes, convert to `known` ("A(DAI) has this, your site confirms it"). If the site disagrees on a fact, emit a `patch` with both values.
-2. **Shown together is not worked together — ask.** Pairs of artists who share shows, from this draft's own shows and from the graph; pairs sharing two or more shows first, then pairs already in A(DAI). Up to 10 `ask_contributor` per draft with `if_yes` COLLABORATES_WITH and a text naming the shows ("Did Molnár and Nake work together, or only show together — in 'A Legacy' and 'From Dots to Pixels'?"). The card's buttons read **Worked together** / **Only shown together** / **Don't know**; only the first creates an edge (the shared show is already PARTICIPATED_IN). Other shared shows become `known`. The summary lists the questions, or says why there are none.
+2. **Shown together is not worked together — ask.** Pairs of artists who share shows, from this draft's own shows and from the graph; pairs sharing two or more shows first, then pairs already in A(DAI). Up to 10 `ask_contributor` per draft with `if_yes` COLLABORATES_WITH and a text naming the shows ("Did Molnár and Nake work together, or only show together — in 'A Legacy' and 'From Dots to Pixels'?"). The card's buttons read **Worked together** / **Only shown together** / **Leave open** (§10b); only the first creates an edge (the shared show is already PARTICIPATED_IN). Other shared shows become `known`. The summary lists the questions, or says why there are none.
 3. **Sensed**: `get_neighbours` on the subject, `image_neighbours` on up to 10 proposed images. Close matches become `known`, or, if probably the same work, a `node` candidate with `resolves_to` and `resolution: 'fuzzy'` so the card asks "is this the same work?".
 4. Sensed things never become edge candidates. Only `known` or `question`.
 
@@ -426,6 +426,8 @@ After the site pass, before `finish_pass`:
 | POST | `/api/intake/drafts/:id/continue` | `{focus?}` sets `job = {kind: 'continue', message?}`, wakes worker. Same gates as chat. §6.2b. |
 | POST | `/api/intake/drafts/:id/abandon` | Any status but `submitted`. Clears the job; a worker mid-pass loses its claim (heartbeat → 409) and stops at its next turn. |
 | GET | `/api/intake/batches/:batch_id` | receipt JSON, owner or admin |
+| GET | `/api/intake/open` | reads with left-open items, newest first; `?node=` one subject (§10b) |
+| POST | `/api/intake/open/:draft_id/pickup` | `201 {draft_id, draft_url}`: a pick-up draft of the caller's; 409 `nothing_open` when all is decided |
 
 Pages: `GET /contribute` (email form, or list of own drafts + URL form when logged in), `GET /contribute/url` (alias), `GET /draft/:id`, `GET /batch/:batch_id` (public receipt).
 
@@ -451,13 +453,23 @@ Pages: `GET /contribute` (email form, or list of own drafts + URL form when logg
 
 `src/intake/draft.ts confirmDraft(db, draft, contributor)`. Single SQLite transaction. `batch_id = draft.id`.
 
-1. Collect `accepted` candidates and `answered` questions with `answered_yes`. Ignore the rest.
+1. Collect `accepted` candidates and `answered` questions with `answered_yes`. What was not decided stays open (§10b); the rest is ignored.
 2. Order: nodes (topological), images, patches, edges, question edges. Resolve `cid:` refs. Node ids are deterministic (`<type>:<slug>`), so refs resolve before materialisation, which is what makes the probationary path possible.
 3. Per op, one signal via `insertSignal`: `source_type = 'api_url_intake'`, `source_url = evidence.page_url`, `content = evidence.quote` (or the contributor's answer, `source_type = 'contributor_attested'`), `batch_id = draft.id`, `source_origin = 'url_intake'`, and `provenance_chain = JSON {draft_id, cid, origin, page_sha256, page_fetched_at}`. Accepted `ended` cards become `end_edge` ops (§6.2c). `insertSignal` currently hardcodes `source_origin='human_primary'` and has no `provenance_chain` arg; extend `CreateSignalArgs` with both as optionals (defaults unchanged). `signals` has no metadata column.
 4. Trust tier: `auto` / `reviewed` -> `insertIntake` approved + `materialise*` per op + `embedNodeAsync`. `probationary` -> one `intake_queue` row for the whole draft with `proposed_nodes[]` and `proposed_edges[]`, `kind='human_signal'`, `status='pending'`; `approveIntakeItem` already replays that shape. `attach_image` ops require `cdn_image_url` + `sha256` *before* they are queued and `approveIntakeItem` never touches R2, so confirm uploads to R2 for **both** tiers and stores the resulting `cdn_image_url` in the op. A rejected probationary draft leaves R2 objects behind; `cull_orphans.py` reaps them.
 5. Images through `src/utils/images.ts`.
 6. Set `intake_ids`, `submitted_at`, `status = 'submitted'`. Send the receipt email. Any throw rolls back and leaves the draft `ready` with `error`.
 7. If it is under a day, make `POST /api/v1/nodes|edges|images` call the same helpers `confirmDraft` uses. Otherwise leave them.
+
+## 10b. Left open (issue #77, October 2026)
+
+From Scott's first contribution: "There are lots of things that I didn't feel confident answering one way or another." He confirmed teh.kim with 26 of 29 relations undecided, and Confirm dropped them. Now nothing undecided is lost.
+
+- **What stays open** (`leftOpen` in `src/intake/open-items.ts`, mirrored on the draft page): a card still `proposed`, or marked **Leave open** (`state: 'open'`, any kind but `known`; on a question it replaces "Don't know"); and an *accepted* card that needs an open one (a relation whose new work was left open waits with it rather than being skipped). A card that needs a card the contributor turned down cannot stand and is not kept.
+- **Where**: one row per card in `intake_open_items` (local), keyed `(draft_id, cid)`, with a one-line label, the reason and the read's subject. The card itself stays in its submitted draft, which never changes. The receipt lists them ("Left open · N"), each with who has decided it since; the receipt email says how many stayed open.
+- **Who picks them up**: any invited contributor — a "Left open" list on `/contribute` (`GET /api/intake/open`, `?node=` per subject), and a "N items left open → pick up" link on the subject's page for signed-in contributors. **Pick up** (`POST /api/intake/open/:draft_id/pickup`) creates a draft of the picker's (`drafts.picked_from`), `ready` at once, no reading pass and no email, holding copies of the open cards; an accepted card an item needs comes along as a link when the graph has it (else as a card to accept with it, e.g. a probationary read still in review). Picking up the same read again returns that draft.
+- **Deciding**: the pick-up's Confirm is the normal one — the picker's name and tier, one batch. Each item is decided once (`decided_at/by/in`, `outcome`), first Confirm wins; an item someone decided meanwhile is skipped ("already decided by another contributor"). A pick-up may confirm only rejections (nothing added, receipt state "nothing added", no receipt email). What the picker leaves undecided stays open where it was.
+- **Credit**: the signal is the picker's; its `provenance_chain.picked_from = {draft_id, by}` names the first read and the contributor who proposed it, and `/history` shows "by Picker · first proposed by X in an earlier read".
 
 ## 11. Email
 
@@ -485,13 +497,13 @@ Logged out: email field, "Send me a link". After submit: "Check your inbox." Log
 
 Left 2/3 cards, right 1/3 chat rail (collapses below on narrow screens). Header: source URL, subject (resolved name with link, or "new practitioner: Name"), status pill, page count, "Confirm N items", "Abandon". While a job is pending the header shows "agent working" and the page polls.
 
-Cards grouped: Works, Shows and venues, People and organisations, Relations, Images, Corrections, Questions, Already in A(DAI). Each card: title + type badge; for `node` with `resolves_to`, "links to existing: Name" and a toggle "create new instead"; agent note; evidence quote in italics + page link; for `edge`, plain words ("Fidenza was exhibited at Bright Moments, 2021") with the raw type small; for `question`, yes / no + a text box for the answer; for `patch`, existing vs proposed side by side; for `image`, thumbnail + target. Buttons: Accept, Reject, Context only, Edit (inline: name, year, type, edge_type within the policy set). State colours: proposed grey, accepted green, rejected struck through, context only muted.
+Cards grouped: Works, Shows and venues, People and organisations, Relations, Images, Corrections, Questions, Already in A(DAI). Each card: title + type badge; for `node` with `resolves_to`, "links to existing: Name" and a toggle "create new instead"; agent note; evidence quote in italics + page link; for `edge`, plain words ("Fidenza was exhibited at Bright Moments, 2021") with the raw type small; for `question`, yes / no + a text box for the answer; for `patch`, existing vs proposed side by side; for `image`, thumbnail + target. Buttons: Accept, Reject, Leave open (§10b), Context only, Edit (inline: name, year, type, edge_type within the policy set). State colours: proposed grey, accepted green, rejected struck through, left open dotted amber, context only muted. A click shows the new state at once and locks the card ("saving…") until the server answers (issue #74).
 
 "Accept all source-backed" accepts every `origin: 'site'` candidate with `confidence !== 'low'`. Questions never bulk-accept.
 
 Chat rail: transcript, input, "send". After send the rail shows "thinking" and the page polls; the reply and any card changes arrive on the next poll. Keep draft edits optimistic in the DOM, the server is the source of truth on each poll.
 
-Confirm: modal with counts and the trust consequence in one line ("Goes live now" or "Enters curator review"), then POST, then redirect to `/batch/:id`.
+Confirm: modal with counts, the trust consequence in one line ("Goes live now" or "Enters curator review") and how many items stay open, then POST, then redirect to `/batch/:id`.
 
 ### `/batch/:batch_id` (public receipt)
 

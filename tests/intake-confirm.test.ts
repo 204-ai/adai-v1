@@ -246,7 +246,8 @@ describe("confirmDraft", () => {
     runDraftTool(db, d.id, "w1", "propose_node", { type: "artwork", name: "W", ...pg });
     runDraftTool(db, d.id, "w1", "propose_edge", { source: "cid:c_01", target: "practitioner:p", edge_type: "CREATED_BY", confidence: "high", ...pg });
     finishPass(db, d.id, "w1", { summary: "s" });
-    contributorPatchCandidate(db, getDraft(db, d.id)!, "c_02", { state: "accepted" }); // edge accepted, node not
+    contributorPatchCandidate(db, getDraft(db, d.id)!, "c_01", { state: "rejected" });
+    contributorPatchCandidate(db, getDraft(db, d.id)!, "c_02", { state: "accepted" }); // edge accepted, its node turned down
     await assert.rejects(confirmDraft(db, getDraft(db, d.id)!, c, { mirror }), (e: any) => e.code === "nothing_to_submit" && /not accepted/.test(e.message));
   });
 

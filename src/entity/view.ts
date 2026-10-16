@@ -26,6 +26,7 @@ import { notesByTriple, publicNotesFor, type RelationNote } from "../claim/notes
 import { tripleKey } from "../utils/claims.js";
 import { edgeLabel } from "../utils/edge-labels.js";
 import { fieldPath } from "../utils/site.js";
+import { listOpenReads } from "../intake/open-items.js";
 
 export interface EntityNode {
   id: string;
@@ -583,7 +584,16 @@ function listSection(label: string, items: Array<string | { year: string; title:
       </section>`;
 }
 
-function provenance(node: EntityNode, meta: any, showcase: Showcase | null, viewer: EntityViewer): string {
+/** Signed-in contributors: what reads about this page left open (issue #77). */
+function openItemsLink(db: DatabaseSync, node: EntityNode, viewer: EntityViewer): string | null {
+  if (!viewer.contributorId) return null;
+  const reads = listOpenReads(db, { nodeId: node.id, limit: 20 });
+  const n = reads.reduce((a, r) => a + r.items, 0);
+  if (!n) return null;
+  return `<a class="ev-prov-link" href="/contribute?open=${encodeURIComponent(reads[0]!.draft_id)}#open">${n} item${n === 1 ? "" : "s"} left open → pick up</a>`;
+}
+
+function provenance(db: DatabaseSync, node: EntityNode, meta: any, showcase: Showcase | null, viewer: EntityViewer): string {
   const links: string[] = [];
   if (showcase) {
     links.push(`<span class="ev-prov-tag">source_origin: ${esc(showcase.source_origin || "unknown")}</span>`);
@@ -600,6 +610,8 @@ function provenance(node: EntityNode, meta: any, showcase: Showcase | null, view
   const base = nodePath(node);
   links.push(`<a class="ev-prov-link" href="${base}/history">history</a>`);
   if (viewer.curator) links.push(`<a class="ev-prov-link" href="/record${base}">record</a>`);
+  const open = openItemsLink(db, node, viewer);
+  if (open) links.push(open);
   links.push(`<span class="ev-prov-tag">${CONTRIB_LINK}</span>`);
   return `
       <footer class="ev-provenance">
@@ -642,7 +654,7 @@ export function renderEntityView(db: DatabaseSync, node: EntityNode, viewer: Ent
         ${listSection("collections (editorial)", showcase?.collections ?? [])}
         ${listSection("exhibitions.selected (editorial)", showcase?.exhibitions_selected ?? [])}
         ${listSection("awards (editorial)", showcase?.awards ?? [])}
-        ${provenance(node, meta, showcase, viewer)}
+        ${provenance(db, node, meta, showcase, viewer)}
       </article>`;
 
   const year = node.type === "artwork" ? formatArtworkYearFromMetadata(meta) : null;

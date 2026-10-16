@@ -143,7 +143,7 @@ R2 backup bucket continuously.
 `node_claims` + `relation_notes` (claims, below), and
 the URL-intake set: `magic_links`, `contributor_sessions`, `contributor_emails`
 (email → contributor, `self_node_id`), `drafts` (doubles as the worker job
-queue), `intake_usage`. Email never lands in a CRR.
+queue), `intake_open_items` (cards left open at Confirm), `intake_usage`. Email never lands in a CRR.
 
 **Node types**: `artwork`, `practitioner`, `concept`, `classification_regime`,
 `collective`, `platform`, `institution` (schema reserves `scene`, `publication`,
@@ -249,6 +249,12 @@ Edge direction by node type is enforced for intake (`EDGE_DIRECTIONS` in
 several claims is shown once, "claimed by N sources", counted by distinct
 evidence origin — the evidence page's host, else the attesting person —
 not by contributor (`src/utils/claims.ts`); `/field` threads get heavier with N.
+
+What a contributor does not decide stays **open** at Confirm (`intake_open_items`,
+`src/intake/open-items.ts`): any invited contributor picks a read's open items up
+from `/contribute` (or the subject's page) into a draft of their own
+(`drafts.picked_from`) and decides them under their own name; the first proposer
+stays in provenance (`picked_from`) and `/history` (spec §10b).
 
 Sign-in is **invite-only** (`contributor_emails.invited_at`; admin
 `POST/GET /api/v1/invites`, `POST /api/v1/invites/revoke`); uninvited requests

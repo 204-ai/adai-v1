@@ -320,10 +320,31 @@ CREATE TABLE IF NOT EXISTS drafts (
     notified_ready_at TEXT,
     created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    submitted_at    TEXT
+    submitted_at    TEXT,
+    picked_from     TEXT                            -- a pick-up of another draft's left-open items: that draft's id
 );
 CREATE INDEX IF NOT EXISTS idx_drafts_contributor ON drafts(contributor_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_drafts_queue ON drafts(status, claimed_at);
+
+-- Cards a contributor left undecided at Confirm (issue #77), kept for another
+-- contributor to pick up. The card itself stays in its draft (submitted
+-- drafts never change); a pick-up copies it into a new draft of the picker's,
+-- and that draft's Confirm records the decision here. Local; never a CRR.
+CREATE TABLE IF NOT EXISTS intake_open_items (
+    draft_id        TEXT NOT NULL,                  -- the read the card was left open in
+    cid             TEXT NOT NULL,
+    kind            TEXT NOT NULL,
+    label           TEXT NOT NULL,                  -- one line, names not cids
+    reason          TEXT NOT NULL DEFAULT 'undecided', -- undecided | link_failed (the reader could not open the item's page)
+    subject_node_id TEXT,                           -- the read's subject, for its page
+    created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    decided_at      TEXT,
+    decided_by      TEXT,                           -- contributor id
+    decided_in      TEXT,                           -- the pick-up draft
+    outcome         TEXT,                           -- accepted | answered | rejected | context_only | skipped
+    PRIMARY KEY (draft_id, cid)
+);
+CREATE INDEX IF NOT EXISTS idx_open_items_open ON intake_open_items(decided_at, subject_node_id);
 
 -- Daily USD rollup for the intake worker, sibling of archivist_usage.
 CREATE TABLE IF NOT EXISTS intake_usage (

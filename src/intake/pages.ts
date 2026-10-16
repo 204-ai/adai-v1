@@ -40,6 +40,12 @@ const CSS = `
 #intake .card.rejected .title { text-decoration: line-through; }
 #intake .card.context_only { opacity: 0.7; border-style: dashed; }
 #intake .card.answered { border-color: #2a3a5a; }
+#intake .card.open { border-style: dotted; border-color: #5a4a1a; }
+#intake .card .actions .btn.held { background: #2a2416; border-color: #5a4a1a; color: #c4a944; }
+#intake .openreads { list-style: none; margin-top: 8px; max-width: 620px; }
+#intake .openreads li { border: 1px dashed #3a3220; padding: 10px 12px; margin-bottom: 8px; font-size: 12px; line-height: 1.55; }
+#intake .openreads li.hit { border-color: #c4a944; }
+#intake .openreads .btn { float: right; margin: 0 0 4px 8px; }
 #intake .card.busy { opacity: 0.6; }
 #intake .card.busy .actions::after { content: 'saving…'; color: #8a8a8c; font-size: 11px; margin-left: 4px; }
 #intake .card .title { color: #e8e6e1; font-size: 13px; }
@@ -155,6 +161,7 @@ async function urlForm(me) {
     '<p class="lede" style="margin-top:10px">Signed in as ' + esc(me.name) + ' &lt;' + esc(me.email) + '&gt; · tier ' + esc(me.trust_tier) + ' · <a href="#" id="out">sign out</a></p></form>' +
     (list.length ? '<ul class="drafts">' + list.map(d => '<li><span class="dom"><a href="/draft/' + esc(d.id) + '">' + esc(d.source_url) + '</a></span>' + pill(d.job_pending ? 'running' : d.status) + '<span>' + d.candidate_count + ' cards</span>' + (d.status === 'submitted' ? '<a href="/batch/' + esc(d.id) + '">receipt</a>' : '') + '</li>').join('') + '</ul>' : '');
   $('#out').onclick = async (e) => { e.preventDefault(); await api('POST', '/api/intake/logout'); load(); };
+  openReads();
   $('#u').onsubmit = async (e) => {
     e.preventDefault();
     const b = $('button', e.target); b.disabled = true;
@@ -164,6 +171,28 @@ async function urlForm(me) {
       app.innerHTML = '<div class="msg msg-ok">Processing ' + esc(dom) + '. This takes a few minutes. We will email you at ' + esc(me.email) + ' when the draft is ready.</div><p class="lede">Impatient? <a href="/draft/' + esc(r.json.draft_id) + '">Watch it happen.</a></p>';
     } else { b.disabled = false; alertMsg(r.json && r.json.message || ('error ' + r.status)); }
   };
+}
+// Left open (issue #77): what other reads could not decide, for anyone to pick up.
+async function openReads() {
+  const r = await api('GET', '/api/intake/open');
+  const reads = (r.json && r.json.reads) || [];
+  if (!reads.length) return;
+  const want = new URLSearchParams(location.search).get('open');
+  const sec = document.createElement('div');
+  sec.id = 'open';
+  sec.innerHTML = '<h3 class="kicker" style="margin-top:28px">LEFT OPEN · ' + reads.length + '</h3>' +
+    '<p class="lede">Items other contributors read but could not decide. Pick one up to decide what you can; what you submit is yours, and the first reader is credited for proposing it.</p>' +
+    '<ul class="openreads">' + reads.map(x => '<li class="' + (x.draft_id === want ? 'hit' : '') + '"><button class="btn" data-pick="' + esc(x.draft_id) + '">Pick up</button>' +
+      '<a href="' + esc(x.source_url) + '" target="_blank" rel="noopener">' + esc(x.source_domain) + '</a>' + (x.subject ? ' · ' + esc(x.subject.name || x.subject.id) : '') +
+      '<br>' + x.items + ' item' + (x.items === 1 ? '' : 's') + (x.links_to_recheck ? ' · ' + x.links_to_recheck + ' link' + (x.links_to_recheck === 1 ? '' : 's') + ' to re-check' : '') +
+      ' · left by ' + esc(x.left_by || 'a contributor') + ', ' + esc(String(x.left_at).slice(0, 10)) + ' · <a href="/batch/' + esc(x.draft_id) + '">receipt</a></li>').join('') + '</ul>';
+  app.appendChild(sec);
+  sec.querySelectorAll('[data-pick]').forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = 'opening…';
+    const p = await api('POST', '/api/intake/open/' + encodeURIComponent(b.dataset.pick) + '/pickup');
+    if (p.ok) location.href = p.json.draft_url; else { b.disabled = false; b.textContent = 'Pick up'; alertMsg(p.json && p.json.message || ('error ' + p.status)); }
+  });
+  const hit = sec.querySelector('li.hit'); if (hit) hit.scrollIntoView({ block: 'center' });
 }
 async function load() {
   const me = await api('GET', '/api/intake/me');
@@ -243,7 +272,7 @@ function cardBody(c) {
   if (c.kind === 'question') {
     const e = c.question.if_yes;
     return '<div class="title">' + esc(c.question.text) + '</div><div class="link">if yes: ' + refLink(e.source) + ' ' + esc(VERBS[e.edge_type] || e.edge_type) + ' ' + refLink(e.target) + '</div>' + (c.note ? '<div class="note">' + esc(c.note) + '</div>' : '') +
-      (c.question.answered_yes !== undefined ? '<div class="note">you said ' + (e.edge_type === 'COLLABORATES_WITH' ? (c.question.answered_yes ? 'they worked together' : 'only shown together') : (c.question.answered_yes ? 'yes' : 'no')) + (c.question.answer ? ': ' + esc(c.question.answer) : '') + '</div>' : c.state === 'context_only' ? '<div class="note">you don’t know — left out</div>' : '');
+      (c.question.answered_yes !== undefined ? '<div class="note">you said ' + (e.edge_type === 'COLLABORATES_WITH' ? (c.question.answered_yes ? 'they worked together' : 'only shown together') : (c.question.answered_yes ? 'yes' : 'no')) + (c.question.answer ? ': ' + esc(c.question.answer) : '') + '</div>' : c.state === 'context_only' ? '<div class="note">you don’t know — left out</div>' : c.state === 'open' ? '<div class="note">left open — another contributor can answer it</div>' : '');
   }
   if (c.kind === 'ended') {
     const e = c.ended;
@@ -263,7 +292,7 @@ function actions(c) {
     // "Did they work together, or show together?" — a shared show is already
     // in the graph (PARTICIPATED_IN); only "worked together" adds a relation.
     const collab = c.question.if_yes.edge_type === 'COLLABORATES_WITH';
-    return '<div class="actions"><button class="btn ' + (c.question.answered_yes === true ? 'on' : '') + '" data-a="yes">' + (collab ? 'Worked together' : 'Yes') + '</button><button class="btn ' + (c.question.answered_yes === false ? 'off' : '') + '" data-a="no">' + (collab ? 'Only shown together' : 'No') + '</button><button class="btn" data-a="skip">Don’t know</button><button class="btn" data-a="edit">Add a note</button></div>' +
+    return '<div class="actions"><button class="btn ' + (c.question.answered_yes === true ? 'on' : '') + '" data-a="yes">' + (collab ? 'Worked together' : 'Yes') + '</button><button class="btn ' + (c.question.answered_yes === false ? 'off' : '') + '" data-a="no">' + (collab ? 'Only shown together' : 'No') + '</button><button class="btn ' + (c.state === 'open' ? 'held' : '') + '" data-a="open" title="Not sure: keep it for another contributor to answer">Leave open</button><button class="btn" data-a="edit">Add a note</button></div>' +
       '<div class="edit"><textarea data-f="answer" placeholder="In your own words — this becomes the record.">' + esc(c.question.answer || '') + '</textarea><button class="btn" data-a="save">Save note</button></div>';
   }
   const s = c.state;
@@ -272,7 +301,25 @@ function actions(c) {
   else if (c.kind === 'edge') edit = '<select data-f="edge_type">' + EDGE_TYPES.map(t => '<option' + (t === c.edge.edge_type ? ' selected' : '') + '>' + t + '</option>').join('') + '</select><input data-f="event_time" placeholder="year" value="' + esc(c.edge.event_time || '') + '"><button class="btn" data-a="save">Save</button>';
   else if (c.kind === 'patch') edit = '<input data-f="proposed" value="' + esc(typeof c.patch.proposed === 'string' ? c.patch.proposed : JSON.stringify(c.patch.proposed)) + '"><button class="btn" data-a="save">Save</button>';
   else if (c.kind === 'image') edit = '<input data-f="alt" placeholder="caption" value="' + esc(c.image.alt || '') + '"><button class="btn" data-a="save">Save</button>';
-  return '<div class="actions"><button class="btn ' + (s === 'accepted' ? 'on' : '') + '" data-a="accepted">Accept</button><button class="btn ' + (s === 'rejected' ? 'off' : '') + '" data-a="rejected">Reject</button><button class="btn ' + (s === 'context_only' ? 'on' : '') + '" data-a="context_only">Context only</button>' + (edit ? '<button class="btn" data-a="edit">Edit</button>' : '') + '</div>' + (edit ? '<div class="edit">' + edit + '</div>' : '');
+  return '<div class="actions"><button class="btn ' + (s === 'accepted' ? 'on' : '') + '" data-a="accepted">Accept</button><button class="btn ' + (s === 'rejected' ? 'off' : '') + '" data-a="rejected">Reject</button><button class="btn ' + (s === 'open' ? 'held' : '') + '" data-a="open" title="Not sure: keep it for another contributor to decide">Leave open</button><button class="btn ' + (s === 'context_only' ? 'on' : '') + '" data-a="context_only">Context only</button>' + (edit ? '<button class="btn" data-a="edit">Edit</button>' : '') + '</div>' + (edit ? '<div class="edit">' + edit + '</div>' : '');
+}
+// What stays open at Confirm — the client copy of leftOpen() in
+// src/intake/open-items.ts; keep the two in step.
+function cardDeps(c) {
+  const refs = c.kind === 'edge' ? [c.edge.source, c.edge.target] : c.kind === 'image' ? [c.image.for] : c.kind === 'question' ? [c.question.if_yes.source, c.question.if_yes.target] : [];
+  return refs.filter(r => r && r.startsWith('cid:')).map(r => r.slice(4));
+}
+function ownOpen(c) { return c.kind !== 'known' && (c.state === 'proposed' || c.state === 'open'); }
+function leftOpenCids() {
+  const by = byCid(), open = new Set();
+  for (const c of D.candidates) if (c.kind === 'node' && ownOpen(c)) open.add(c.cid);
+  for (const c of D.candidates) {
+    if (c.kind === 'node' || c.kind === 'known') continue;
+    const ds = cardDeps(c).map(x => by[x]);
+    if (ds.some(d => !d || ((d.state === 'rejected' || d.state === 'context_only') && !open.has(d.cid)))) continue;
+    if (ownOpen(c) || (c.state === 'accepted' && ds.some(d => open.has(d.cid)))) open.add(c.cid);
+  }
+  return open;
 }
 function renderCards() {
   const groups = {};
@@ -281,8 +328,9 @@ function renderCards() {
   if (!D.candidates.length) { el.innerHTML = '<p class="progress">' + (D.job_pending ? 'The agent is reading the site. Cards appear here as it goes (' + D.pages.length + ' pages so far).' : (D.status === 'failed' ? 'Nothing could be read: ' + esc(D.error || '') : 'No candidates.')) + '</p>'; return; }
   el.innerHTML = (D.status === 'ready' ? '<div class="bulk"><button class="btn" id="acceptall">Accept all source-backed</button><span class="meta" id="counts"></span></div>' : '') +
     ORDER.filter(g => groups[g]).map(g => '<div class="group"><h3>' + esc(g) + ' · ' + groups[g].length + '</h3>' + groups[g].map(c => '<div class="card ' + esc(c.state) + '" data-cid="' + esc(c.cid) + '">' + cardBody(c) + actions(c) + '</div>').join('') + '</div>').join('');
-  const acc = D.candidates.filter(c => c.state === 'accepted').length, ans = D.candidates.filter(c => c.kind === 'question' && c.question.answered_yes === true).length;
-  if ($('#counts')) $('#counts').textContent = acc + ' accepted · ' + ans + ' answered yes';
+  const open = leftOpenCids();
+  const acc = D.candidates.filter(c => c.state === 'accepted' && !open.has(c.cid)).length, ans = D.candidates.filter(c => c.kind === 'question' && c.question.answered_yes === true).length;
+  if ($('#counts')) $('#counts').textContent = acc + ' accepted · ' + ans + ' answered yes · ' + open.size + ' left open';
   const ca = $('#acceptall'); if (ca) ca.onclick = acceptAll;
   el.querySelectorAll('.card').forEach(card => {
     card.querySelectorAll('[data-a]').forEach(b => b.onclick = () => act(card, b.dataset.a));
@@ -306,9 +354,8 @@ async function act(card, a) {
   if (a === 'edit') { card.querySelector('.edit').classList.toggle('open'); return; }
   if (card.classList.contains('busy')) return;
   let body = null, shown = null;
-  if (a === 'accepted' || a === 'rejected' || a === 'context_only') { shown = c.state === a ? 'proposed' : a; body = { state: shown }; }
+  if (a === 'accepted' || a === 'rejected' || a === 'context_only' || a === 'open') { shown = c.state === a ? 'proposed' : a; body = { state: shown }; }
   else if (a === 'yes' || a === 'no') { shown = 'answered'; body = { answered_yes: a === 'yes' }; }
-  else if (a === 'skip') { shown = 'context_only'; body = { state: shown }; }
   else if (a === 'unlink') body = { patch: { resolves_to: null } };
   else if (a === 'save') {
     const ed = card.querySelector('.edit'); const f = (n) => { const x = ed.querySelector('[data-f="' + n + '"]'); return x ? x.value : undefined; };
@@ -325,6 +372,7 @@ async function act(card, a) {
       const x = b.dataset.a;
       b.classList.toggle('on', x === a && (x === 'yes' || ((x === 'accepted' || x === 'context_only') && shown === x)));
       b.classList.toggle('off', x === a && (x === 'no' || (x === 'rejected' && shown === x)));
+      b.classList.toggle('held', x === a && x === 'open' && shown === x);
     });
   }
   setBusy(card, true);
@@ -347,11 +395,15 @@ async function acceptAll() {
   renderAll();
 }
 function renderHead() {
-  const acc = D.candidates.filter(c => c.state === 'accepted').length + D.candidates.filter(c => c.kind === 'question' && c.question.answered_yes === true).length;
+  const open = leftOpenCids();
+  const acc = D.candidates.filter(c => c.state === 'accepted' && !open.has(c.cid)).length + D.candidates.filter(c => c.kind === 'question' && c.question.answered_yes === true).length;
+  // A pick-up may confirm only "no"s: turning an item down is a decision too.
+  const decided = D.picked_from ? D.candidates.filter(c => !open.has(c.cid) && c.state !== 'proposed' && c.state !== 'open').length : acc;
   $('#dhead').innerHTML = '<span class="src">' + esc(D.source_url) + '</span>' +
+    (D.picked_from ? '<span>picked up from <a href="/batch/' + esc(D.picked_from) + '">an earlier read</a></span>' : '') +
     '<span>subject: ' + (D.subject_node_id ? refLink(D.subject_node_id) : '<span class="meta">none yet</span>') + '</span>' +
     pill(D.job_pending ? 'running' : D.status) + '<span>' + D.pages.length + ' pages</span><span class="spacer"></span>' +
-    (D.status === 'ready' ? '<button class="btn primary" id="confirm"' + (acc ? '' : ' disabled') + '>Confirm ' + acc + ' items</button>' : '') +
+    (D.status === 'ready' ? '<button class="btn primary" id="confirm"' + (decided ? '' : ' disabled') + '>Confirm ' + (D.picked_from ? decided + ' decisions' : acc + ' items') + '</button>' : '') +
     ((D.status === 'ready' || D.status === 'failed') && !D.job_pending ? '<button class="btn" id="more">Read more of the site</button>' : '') +
     (D.status !== 'submitted' && D.status !== 'abandoned' ? '<button class="btn" id="abandon">Abandon</button>' : '') +
     (D.status === 'submitted' ? '<a class="btn" href="/batch/' + esc(D.id) + '">Receipt</a>' : '');
@@ -394,10 +446,12 @@ function renderRail() {
 }
 function renderAll() { renderHead(); renderCards(); renderRail(); }
 function confirmModal() {
-  const acc = D.candidates.filter(c => c.state === 'accepted'), yes = D.candidates.filter(c => c.kind === 'question' && c.question.answered_yes === true);
+  const open = leftOpenCids();
+  const acc = D.candidates.filter(c => c.state === 'accepted' && !open.has(c.cid)), yes = D.candidates.filter(c => c.kind === 'question' && c.question.answered_yes === true);
   const n = (k) => acc.filter(c => c.kind === k).length;
   $('#modalbox').innerHTML = '<div class="kicker">CONFIRM</div><p>' + n('node') + ' nodes · ' + n('edge') + ' relations · ' + n('image') + ' images · ' + n('patch') + ' corrections · ' + (n('ended') ? n('ended') + ' ended · ' : '') + yes.length + ' attested answers</p>' +
-    '<p>' + (D.trust_tier === 'auto' || D.trust_tier === 'reviewed' ? 'Goes live now, attributed to you as one batch.' : 'Enters curator review as one batch; you get a receipt either way.') + '</p>' +
+    (acc.length || yes.length ? '<p>' + (D.trust_tier === 'auto' || D.trust_tier === 'reviewed' ? 'Goes live now, attributed to you as one batch.' : 'Enters curator review as one batch; you get a receipt either way.') + '</p>' : '<p>Nothing to add: your decisions are recorded, and the items you turned down leave the open list.</p>') +
+    (open.size ? '<p>' + open.size + ' item' + (open.size === 1 ? '' : 's') + ' you did not decide stay' + (open.size === 1 ? 's' : '') + ' open: another contributor can pick ' + (open.size === 1 ? 'it' : 'them') + ' up from the contribute page.</p>' : '') +
     '<div class="actions"><button class="btn primary" id="go">Confirm</button> <button class="btn" id="cancel">Back</button></div>';
   $('#modal').classList.add('open');
   $('#cancel').onclick = () => $('#modal').classList.remove('open');
@@ -417,6 +471,16 @@ load();`;
 }
 
 // ---- /batch/:id -------------------------------------------------------------------
+
+/** "Left open": what this read did not decide, and who has decided it since. */
+function leftOpenGroup(receipt: Record<string, any>): string {
+  const items = (receipt.left_open as any[] | undefined) ?? [];
+  if (!items.length) return "";
+  const still = items.filter((i) => !i.decided).length;
+  const OUTCOME: Record<string, string> = { accepted: "added", answered: "answered", rejected: "turned down", context_only: "kept as context", skipped: "could not be added" };
+  const row = (i: any) => `<div class="card${i.decided ? "" : " open"}"><div class="title">${htmlEscape(String(i.label))}${i.reason === "link_failed" ? '<span class="badge ai">link to re-check</span>' : ""}</div><div class="link">${i.decided ? `${htmlEscape(OUTCOME[i.decided.outcome] ?? String(i.decided.outcome))} by ${htmlEscape(String(i.decided.by ?? "a contributor"))} · ${htmlEscape(String(i.decided.at).slice(0, 10))}${i.decided.in ? ` · <a href="/batch/${htmlEscape(String(i.decided.in))}">receipt</a>` : ""}` : "open: any contributor can pick it up from <a href=\"/contribute#open\">contribute</a>"}</div></div>`;
+  return `<div class="group"><h3>Left open · ${items.length}${still !== items.length ? ` (${still} still open)` : ""}</h3>${items.map(row).join("")}</div>`;
+}
 
 export function batchPage(receipt: Record<string, any>, isOwner: boolean, adminEmails: string[], claimPrompt = ""): string {
   const VERBS: Record<string, string> = { CREATED_BY: "was created by", EXHIBITED_AT: "was exhibited at", HELD_BY: "is held by", PARTICIPATED_IN: "took part in", PRESENTED_BY: "was presented by", CURATED_BY: "was curated by", REPRESENTS: "represents", USES_TECHNIQUE: "uses the technique", EMBODIES: "embodies", BELONGS_TO: "belongs to", COLLABORATES_WITH: "collaborates with", INFLUENCES: "influences", RESPONDS_TO: "responds to" };
@@ -440,12 +504,14 @@ export function batchPage(receipt: Record<string, any>, isOwner: boolean, adminE
 <div class="kicker">RECEIPT · ${htmlEscape(String(receipt.batch_id))}</div>
 <h2>${htmlEscape(String(receipt.contributor ?? "A contributor"))} · ${htmlEscape(String(receipt.source_domain ?? ""))}</h2>
 <p class="lede">${readRange ? `Site read ${htmlEscape(readRange)} · ` : ""}Submitted ${htmlEscape(String(receipt.submitted_at ?? ""))} · state <span class="pill ${htmlEscape(String(receipt.review_state).replace(/ /g, "-"))}">${htmlEscape(String(receipt.review_state))}</span>${receipt.source_url ? ` · <a href="${htmlEscape(String(receipt.source_url))}" rel="noopener" target="_blank">source ↗</a>` : ""}${receipt.subject_node_id && !String(receipt.subject_node_id).startsWith("cid:") ? ` · subject ${link(String(receipt.subject_node_id))}` : ""}</p>
+${receipt.picked_from ? `<p class="lede">Picked up from <a href="/batch/${htmlEscape(String(receipt.picked_from.batch_id))}">${htmlEscape(String(receipt.picked_from.by ?? "a contributor"))}'s read of ${htmlEscape(String(receipt.picked_from.source_domain))}</a>: what it left open, decided here.</p>` : ""}
 ${claimPrompt}
 ${nodeSigs.length ? `<div class="group"><h3>Nodes · ${nodeSigs.length}</h3>${nodeSigs.map((s) => `<div class="card"><div class="title">${htmlEscape(String(s.title).replace(/^Create node: /, ""))}${s.status === "revoked" ? '<span class="badge">retired</span>' : ""}</div>${s.content ? `<div class="quote">“${htmlEscape(String(s.content).slice(0, 300))}”${s.source_url ? `<a href="${htmlEscape(String(s.source_url))}" target="_blank" rel="noopener">source ↗</a>` : ""}</div>` : ""}</div>`).join("")}</div>` : ""}
 ${edges.length ? `<div class="group"><h3>Relations · ${edges.length}</h3>${edges.map((e) => `<div class="card"><div class="title">${link(e.source_id)} ${htmlEscape(VERBS[e.edge_type] ?? e.edge_type)} ${link(e.target_id)}<span class="badge">${htmlEscape(e.edge_type)}</span>${e.live ? "" : '<span class="badge">superseded</span>'}</div></div>`).join("")}</div>` : ""}
 ${imgSigs.length ? `<div class="group"><h3>Images · ${imgSigs.length}</h3>${imgSigs.map((s) => { let c: any = {}; try { c = JSON.parse(s.content); } catch { /* */ } return `<div class="card"><div class="title">${c.node_id ? link(c.node_id) : ""}</div>${c.key ? `<img class="thumb" loading="lazy" crossorigin="anonymous" src="${htmlEscape(`${process.env.R2_PUBLIC_BASE ?? ""}/${c.key}`)}" alt="">` : ""}</div>`; }).join("")}</div>` : ""}
 ${patchSigs.length ? `<div class="group"><h3>Corrections · ${patchSigs.length}</h3>${patchSigs.map((s) => `<div class="card"><div class="title">${htmlEscape(String(s.title))}</div>${s.content ? `<div class="quote">“${htmlEscape(String(s.content).slice(0, 300))}”</div>` : ""}</div>`).join("")}</div>` : ""}
 ${endSigs.length ? `<div class="group"><h3>No longer listed · ${endSigs.length}</h3>${endSigs.map((s) => `<div class="card"><div class="title">${htmlEscape(String(s.title).replace(/^End edge /, ""))}</div>${s.content ? `<div class="quote">${htmlEscape(String(s.content).slice(0, 400))}${s.source_url ? `<a href="${htmlEscape(String(s.source_url))}" target="_blank" rel="noopener">source ↗</a>` : ""}</div>` : ""}</div>`).join("")}${endedEdges.length ? `<p class="lede">${endedEdges.length} relation(s) now historical — kept, with the date they ended.</p>` : ""}</div>` : ""}
+${leftOpenGroup(receipt)}
 ${(receipt.intake as any[]).some((i) => i.status !== "approved") ? `<div class="group"><h3>Review</h3>${(receipt.intake as any[]).map((i) => `<div class="card"><div class="title">${htmlEscape(i.status)}${i.reviewed_at ? ` · ${htmlEscape(i.reviewed_at)}` : ""}</div>${i.rejection_reason ? `<div class="note">${htmlEscape(i.rejection_reason)}</div>` : ""}</div>`).join("")}</div>` : ""}
 ${isOwner ? `<div class="group"><h3>Source material</h3><ul class="ledger">${(receipt.pages as any[]).map((p) => `<li>${htmlEscape(p.final_url)} · read ${htmlEscape(String(p.fetched_at ?? "").slice(0, 16).replace("T", " "))} · ${htmlEscape(String(p.status))} · ${p.chars} chars · ${htmlEscape(String(p.sha256).slice(0, 12))}</li>`).join("") || "<li>none recorded</li>"}</ul>
 <p class="lede" style="margin-top:14px">Something wrong? <a href="${mailto}">Ask a curator to retire this batch</a>. Corrections stay bi-temporal: nothing is deleted.</p></div>` : ""}`;
