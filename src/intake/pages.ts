@@ -40,6 +40,8 @@ const CSS = `
 #intake .card.rejected .title { text-decoration: line-through; }
 #intake .card.context_only { opacity: 0.7; border-style: dashed; }
 #intake .card.answered { border-color: #2a3a5a; }
+#intake .card.busy { opacity: 0.6; }
+#intake .card.busy .actions::after { content: 'saving…'; color: #8a8a8c; font-size: 11px; margin-left: 4px; }
 #intake .card .title { color: #e8e6e1; font-size: 13px; }
 #intake .card .badge { display: inline-block; font-size: 10px; color: #7eb8da; background: #1a1a2e; padding: 0 6px; border-radius: 3px; margin-left: 6px; vertical-align: middle; }
 #intake .card .badge.ai { color: #c4a944; background: #2a2416; }
@@ -292,30 +294,55 @@ async function patch(cid, body) {
   const i = D.candidates.findIndex(c => c.cid === cid); if (i >= 0) D.candidates[i] = r.json.candidate;
   return true;
 }
+// A card answers the click at once (issue #74): the new state shows and its
+// buttons lock while the PATCH is in flight; a refusal puts the card back.
+function setBusy(card, on) {
+  card.classList.toggle('busy', on);
+  card.querySelectorAll('button, input, select, textarea').forEach(b => { b.disabled = on; });
+  const cb = $('#confirm'); if (cb && on) cb.disabled = true; // renderAll re-enables it
+}
 async function act(card, a) {
   const cid = card.dataset.cid; const c = byCid()[cid];
   if (a === 'edit') { card.querySelector('.edit').classList.toggle('open'); return; }
-  if (a === 'accepted' || a === 'rejected' || a === 'context_only') { if (await patch(cid, { state: c.state === a ? 'proposed' : a })) renderAll(); return; }
-  if (a === 'yes' || a === 'no') { if (await patch(cid, { answered_yes: a === 'yes' })) renderAll(); return; }
-  if (a === 'skip') { if (await patch(cid, { state: 'context_only' })) renderAll(); return; }
-  if (a === 'unlink') { if (await patch(cid, { patch: { resolves_to: null } })) renderAll(); return; }
-  if (a === 'save') {
+  if (card.classList.contains('busy')) return;
+  let body = null, shown = null;
+  if (a === 'accepted' || a === 'rejected' || a === 'context_only') { shown = c.state === a ? 'proposed' : a; body = { state: shown }; }
+  else if (a === 'yes' || a === 'no') { shown = 'answered'; body = { answered_yes: a === 'yes' }; }
+  else if (a === 'skip') { shown = 'context_only'; body = { state: shown }; }
+  else if (a === 'unlink') body = { patch: { resolves_to: null } };
+  else if (a === 'save') {
     const ed = card.querySelector('.edit'); const f = (n) => { const x = ed.querySelector('[data-f="' + n + '"]'); return x ? x.value : undefined; };
-    let body = {};
     if (c.kind === 'node') body = { patch: { name: f('name'), type: f('type'), metadata: f('year') ? { year: f('year') } : {} } };
     else if (c.kind === 'edge') body = { patch: { edge_type: f('edge_type'), event_time: f('event_time') || '' } };
     else if (c.kind === 'patch') body = { patch: { proposed: f('proposed') } };
     else if (c.kind === 'image') body = { patch: { alt: f('alt') } };
     else if (c.kind === 'question') body = { answer: f('answer') };
-    if (await patch(cid, body)) renderAll();
   }
+  if (!body) return;
+  if (shown) {
+    card.classList.remove(c.state); card.classList.add(shown);
+    card.querySelectorAll('.actions [data-a]').forEach(b => {
+      const x = b.dataset.a;
+      b.classList.toggle('on', x === a && (x === 'yes' || ((x === 'accepted' || x === 'context_only') && shown === x)));
+      b.classList.toggle('off', x === a && (x === 'no' || (x === 'rejected' && shown === x)));
+    });
+  }
+  setBusy(card, true);
+  await patch(cid, body);
+  renderAll();
 }
 async function acceptAll() {
-  for (const c of D.candidates) {
-    // Ending a relation is always a deliberate, one-by-one decision.
-    if (c.origin !== 'site' || c.kind === 'question' || c.kind === 'known' || c.kind === 'ended' || c.state !== 'proposed') continue;
-    if (c.kind === 'edge' && c.edge.confidence === 'low') continue;
-    await patch(c.cid, { state: 'accepted' });
+  // Ending a relation is always a deliberate, one-by-one decision.
+  const todo = D.candidates.filter(c => !(c.origin !== 'site' || c.kind === 'question' || c.kind === 'known' || c.kind === 'ended' || c.state !== 'proposed' || (c.kind === 'edge' && c.edge.confidence === 'low')));
+  const b = $('#acceptall'); if (b) b.disabled = true;
+  const n = $('#counts');
+  let done = 0;
+  for (const c of todo) {
+    if (n) n.textContent = 'accepting ' + (++done) + ' of ' + todo.length + '…';
+    const card = document.querySelector('.card[data-cid="' + c.cid + '"]'); if (card) setBusy(card, true);
+    const ok = await patch(c.cid, { state: 'accepted' });
+    if (card) { setBusy(card, false); if (ok) { card.classList.remove('proposed'); card.classList.add('accepted'); } }
+    if (!ok) break;
   }
   renderAll();
 }
