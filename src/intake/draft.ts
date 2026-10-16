@@ -38,6 +38,7 @@ import {
   applyContributorPatch,
   nextCid,
   isCidRef,
+  linkUnchecked,
   CandidateError,
   MAX_CANDIDATES,
   MAX_PAGES,
@@ -430,7 +431,9 @@ export function createPickupDraft(db: DatabaseSync, contributorId: string, sourc
     let json = JSON.stringify(c);
     for (const [ref, id] of subst) json = json.split(JSON.stringify(ref)).join(JSON.stringify(id));
     const raw = JSON.parse(json);
-    raw.state = "proposed";
+    // A link nobody has re-checked starts rejected again, as it did for the
+    // first reader; everything else waits for a decision.
+    raw.state = take.get(c.cid)?.reason === "link_failed" && raw.link_check ? "rejected" : "proposed";
     raw.edited = false;
     if (raw.kind === "node" && !raw.resolves_to) {
       // Created since the read: the card now links to it.
@@ -568,7 +571,8 @@ export function priorContext(db: DatabaseSync, draft: Draft): PriorContext {
     own++;
     for (const c of d.candidates) {
       if (c.kind === "image" || c.kind === "known") continue;
-      if (c.state === "rejected" || c.state === "context_only") rejected.add(candidateLabel(c, d.candidates));
+      // A card that started rejected because its link failed is nobody's "no".
+      if ((c.state === "rejected" && !linkUnchecked(c)) || c.state === "context_only") rejected.add(candidateLabel(c, d.candidates));
       else if (d.status === "submitted" && c.state === "accepted") submitted.add(candidateLabel(c, d.candidates));
     }
   }
@@ -616,6 +620,7 @@ function endableEdge(db: DatabaseSync, draft: Draft, edgeId: string): { edge_typ
 function refusedByContributor(next: Candidate, cands: Candidate[]): Candidate | null {
   for (const c of cands) {
     if (c.state !== "rejected" && c.state !== "context_only") continue;
+    if (linkUnchecked(c)) continue; // rejected by the reader, not by the contributor
     if (c.kind === "edge" && next.kind === "edge") {
       if (c.edge.edge_type === next.edge.edge_type && c.edge.source === next.edge.source && c.edge.target === next.edge.target) return c;
     } else if (c.kind === "image" && next.kind === "image") {
@@ -889,7 +894,9 @@ export function runDraftTool(
 
     const add = (raw: Record<string, unknown>): Candidate => {
       if (cands.length >= MAX_CANDIDATES) throw new CandidateError(`draft already has ${MAX_CANDIDATES} candidates — prefer fewer, stronger ones`);
-      const c = validateCandidate({ ...raw, cid: nextCid(cands), state: "proposed", edited: false }, cands, ctx);
+      // A card whose own page failed to open starts rejected (issue #75): an
+      // untouched one stays open for a re-check at Confirm.
+      const c = validateCandidate({ ...raw, cid: nextCid(cands), state: raw.link_check ? "rejected" : "proposed", edited: false }, cands, ctx);
       representsNeedsMoreThanAName(c, cands);
       quoteNamesTheParty(db, c, cands);
       const no = refusedByContributor(c, cands);
@@ -925,9 +932,10 @@ export function runDraftTool(
           node: { type: input.type, name: input.name, metadata: input.metadata ?? {}, aliases: input.page_url ? [{ source: "web", external_id: input.page_url }] : [] },
           resolves_to: input.resolves_to ?? null,
           resolution: input.resolution,
+          link_check: input.link_check,
         }) as NodeCandidate;
         touch(db, draftId, { candidates: JSON.stringify(cands) });
-        return { ok: true, cid: c.cid, ref: `cid:${c.cid}`, resolves_to: c.resolves_to, would_create: c.resolves_to ? null : `${c.node.type}:${slugify(c.node.name)}` };
+        return { ok: true, cid: c.cid, ref: `cid:${c.cid}`, resolves_to: c.resolves_to, would_create: c.resolves_to ? null : `${c.node.type}:${slugify(c.node.name)}`, ...(c.link_check ? { state: c.state } : {}) };
       }
       case "propose_edge": {
         const c = add({
@@ -936,9 +944,10 @@ export function runDraftTool(
           note: input.note,
           evidence: evidenceFrom(input),
           edge: { source: input.source, target: input.target, edge_type: input.edge_type, event_time: input.event_time, confidence: input.confidence ?? "medium" },
+          link_check: input.link_check,
         });
         touch(db, draftId, { candidates: JSON.stringify(cands) });
-        return { ok: true, cid: c.cid };
+        return { ok: true, cid: c.cid, ...(c.link_check ? { state: c.state } : {}) };
       }
       case "propose_image": {
         const c = add({
@@ -946,6 +955,7 @@ export function runDraftTool(
           origin: input.origin ?? "site",
           note: input.note,
           image: { for: input.for, image_url: input.image_url, page_url: input.page_url, alt: input.alt, width: input.width, height: input.height },
+          link_check: input.link_check,
         });
         touch(db, draftId, { candidates: JSON.stringify(cands) });
         return { ok: true, cid: c.cid };
@@ -1005,7 +1015,7 @@ export function runDraftTool(
         const idx = cands.findIndex((c) => c.cid === cid);
         if (idx < 0) throw new CandidateError(`no candidate ${cid}`);
         const cur = cands[idx]!;
-        if (cur.edited || cur.state !== "proposed") {
+        if (cur.edited || (cur.state !== "proposed" && !linkUnchecked(cur))) {
           throw new CandidateError(`${cid} was touched by the contributor and cannot be updated`);
         }
         const patch = isObj(input.patch) ? input.patch : {};
@@ -1015,7 +1025,8 @@ export function runDraftTool(
         // Merge-patch, but state/edited/cid are the contributor's, not the agent's.
         const merged: any = { ...cur };
         for (const [k, v] of Object.entries(patch)) {
-          if (k === "state" || k === "edited" || k === "cid" || k === "kind") continue;
+          // link_check comes from the worker's fetch record on proposal only.
+          if (k === "state" || k === "edited" || k === "cid" || k === "kind" || k === "link_check") continue;
           merged[k] = isObj(v) && isObj((cur as any)[k]) ? { ...(cur as any)[k], ...v } : v;
         }
         const others = cands.filter((c) => c.cid !== cid);
@@ -1031,7 +1042,7 @@ export function runDraftTool(
         const idx = cands.findIndex((c) => c.cid === cid);
         if (idx < 0) throw new CandidateError(`no candidate ${cid}`);
         const cur = cands[idx]!;
-        if (cur.edited || cur.state !== "proposed") throw new CandidateError(`${cid} was touched by the contributor and cannot be removed`);
+        if (cur.edited || (cur.state !== "proposed" && !linkUnchecked(cur))) throw new CandidateError(`${cid} was touched by the contributor and cannot be removed`);
         const ref = `cid:${cid}`;
         const dependents = cands.filter((c) => JSON.stringify(c).includes(`"${ref}"`) && c.cid !== cid);
         if (dependents.length) throw new CandidateError(`${cid} is referenced by ${dependents.map((c) => c.cid).join(", ")}; remove those first`);

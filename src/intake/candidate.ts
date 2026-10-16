@@ -104,6 +104,22 @@ export interface CandidateBase {
   // validateCandidate drops it, so the worker can never supply one. Confirm
   // copies it into the signal's provenance: what was proposed vs. what landed.
   proposed_as?: Record<string, unknown>;
+  // The reader could not open the item's own page (issue #75). Set by the
+  // worker from its own fetch record, never from the model's word; such a
+  // card starts rejected and, untouched, stays open for a re-check.
+  link_check?: LinkCheck;
+}
+
+export interface LinkCheck {
+  url: string;
+  status: number | null; // the HTTP status, or null when nothing answered
+  reason: "http" | "dns" | "timeout" | "unreachable";
+  checked_at: string;
+}
+
+/** A card that starts rejected because its link failed, and that nobody has decided since. */
+export function linkUnchecked(c: Candidate): boolean {
+  return !!c.link_check && c.state === "rejected" && !c.edited;
 }
 
 export interface NodeCandidate extends CandidateBase {
@@ -291,6 +307,18 @@ function checkOrgKinds(metadata: Record<string, unknown>, origin: Origin): void 
   }
 }
 
+const LINK_REASONS = new Set(["http", "dns", "timeout", "unreachable"]);
+
+function checkLinkCheck(v: unknown): LinkCheck {
+  if (!isObj(v)) throw new CandidateError("link_check must be an object", "link_check");
+  const url = checkUrl(v.url, "link_check.url");
+  const status = typeof v.status === "number" && Number.isInteger(v.status) && v.status >= 100 && v.status <= 599 ? v.status : null;
+  const reason = String(v.reason ?? "");
+  if (!LINK_REASONS.has(reason)) throw new CandidateError(`link_check.reason must be one of ${[...LINK_REASONS].join(", ")}`, "link_check.reason");
+  const checked_at = str(v.checked_at, "link_check.checked_at", 40, { required: true })!;
+  return { url, status, reason: reason as LinkCheck["reason"], checked_at };
+}
+
 // ---- the validator -----------------------------------------------------
 
 /**
@@ -322,6 +350,10 @@ export function validateCandidate(
   const base: CandidateBase = { cid, state, origin, edited };
   if (note) base.note = note;
   if (raw.evidence !== undefined && raw.evidence !== null) base.evidence = checkEvidence(raw.evidence);
+  if (raw.link_check !== undefined && raw.link_check !== null) {
+    if (kind !== "node" && kind !== "edge" && kind !== "image") throw new CandidateError("link_check is for node, edge and image cards", "link_check");
+    base.link_check = checkLinkCheck(raw.link_check);
+  }
 
   // Every ref must point somewhere real: a node candidate in this draft
   // (cid:) or an existing node in the graph. Without the graph check an

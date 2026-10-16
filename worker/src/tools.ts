@@ -22,6 +22,9 @@ const evidenceProps = {
   page_url: { type: "string", description: "The page the quote comes from (final URL as fetched)." },
   quote: { type: "string", description: "Verbatim sentence(s) from the page that support this, <= 300 chars." },
 };
+const linkProp = {
+  link_url: { type: "string", description: "The item's own page (the work's page a listing links to) when you tried to open it with fetch_page and it failed. The card then starts rejected and goes to the re-check list for another contributor. Only pages that really failed count." },
+};
 
 export const TOOLS: Tool[] = [
   {
@@ -116,6 +119,7 @@ export const TOOLS: Tool[] = [
         resolves_to: { type: "string", description: "Existing node id this is (from resolve_entity)." },
         resolution: { type: "string", enum: ["exact", "alias", "fuzzy"] },
         note: { type: "string", description: "One line for the contributor: why this card exists." },
+        ...linkProp,
       },
       required: ["type", "name", "page_url", "quote"],
     },
@@ -133,6 +137,7 @@ export const TOOLS: Tool[] = [
         confidence: { type: "string", enum: ["high", "medium", "low"] },
         ...evidenceProps,
         note: { type: "string" },
+        ...linkProp,
       },
       required: ["source", "target", "edge_type", "confidence", "page_url", "quote"],
     },
@@ -142,7 +147,7 @@ export const TOOLS: Tool[] = [
     description: "Propose an image from the page for a node (existing id or cid).",
     input_schema: {
       type: "object",
-      properties: { for: { type: "string" }, image_url: { type: "string" }, page_url: { type: "string" }, alt: { type: "string" }, note: { type: "string" } },
+      properties: { for: { type: "string" }, image_url: { type: "string" }, page_url: { type: "string" }, alt: { type: "string" }, note: { type: "string" }, ...linkProp },
       required: ["for", "image_url", "page_url"],
     },
   },
@@ -226,7 +231,67 @@ export interface ToolContext {
   subjectChecked?: boolean;
   /** Text of every page read this pass, by URL — quotes are checked against it. */
   pageText?: Map<string, string>;
+  /** Pages that could not be opened this pass, by URL (issue #75). */
+  linkFailures?: Map<string, LinkFailure>;
   getDraft?: typeof getDraft;
+  // Injected in tests.
+  fetchPage?: typeof fetchPage;
+  draftTool?: typeof draftTool;
+  addPage?: typeof addPage;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** What the reader saw when it tried a page: an HTTP error, or no answer at all. */
+export interface LinkFailure {
+  url: string;
+  status: number | null;
+  reason: "http" | "dns" | "timeout" | "unreachable";
+  checked_at: string;
+}
+
+// Worth one more try: the network, not the page (Scott's teh.kim read lost
+// two fxhash works to a DNS lookup that failed from the worker).
+const TRANSIENT = /ENOTFOUND|EAI_AGAIN|getaddrinfo|ERR_NAME_NOT_RESOLVED|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ERR_CONNECTION|ERR_TIMED_OUT|socket hang up|timeout/i;
+export const RETRY_DELAY_MS = 2000;
+
+function failureReason(msg: string): LinkFailure["reason"] {
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo|ERR_NAME_NOT_RESOLVED/i.test(msg)) return "dns";
+  if (/timeout|ETIMEDOUT|ERR_TIMED_OUT/i.test(msg)) return "timeout";
+  return "unreachable";
+}
+
+/**
+ * fetch_page with one retry for a transient failure (a network error, or a
+ * 5xx answer), and a record of what still failed: an HTTP error page (4xx /
+ * 5xx — refusals like 403/429 are thrown as FetchRefused and are not
+ * "broken") or no answer. Policy refusals are never retried or recorded.
+ */
+async function fetchWithRetry(ctx: ToolContext, url: string, view: boolean): Promise<Awaited<ReturnType<typeof fetchPage>>> {
+  const fetcher = ctx.fetchPage ?? fetchPage;
+  const sleep = ctx.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const record = (f: Omit<LinkFailure, "url" | "checked_at">) => {
+    if (!ctx.linkFailures) ctx.linkFailures = new Map();
+    ctx.linkFailures.set(normUrl(url), { url, ...f, checked_at: new Date().toISOString() });
+  };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const p = await fetcher(url, ctx.policy, { view });
+      if (p.status >= 500 && attempt === 0) {
+        if (!sameSite(url, ctx.policy.rootUrl)) ctx.policy.offsiteFetched--; // the retry counts once
+        await sleep(RETRY_DELAY_MS);
+        continue;
+      }
+      if (p.status >= 400) record({ status: p.status, reason: "http" });
+      else ctx.linkFailures?.delete(normUrl(url));
+      return p;
+    } catch (e: any) {
+      if (e instanceof FetchRefused) throw e;
+      const msg = String(e?.message ?? e);
+      if (attempt === 0 && TRANSIENT.test(msg)) { await sleep(RETRY_DELAY_MS); continue; }
+      record({ status: null, reason: failureReason(msg) });
+      throw e;
+    }
+  }
 }
 
 /** Artwork cards (not rejected) that no live edge touches — a work linked to nothing. */
@@ -308,11 +373,11 @@ export async function runTool(ctx: ToolContext, name: string, input: Record<stri
   if (name === "fetch_page") {
     const url = typeof input.url === "string" ? input.url : "";
     try {
-      const p = await fetchPage(url, ctx.policy, { view: input.view === true });
+      const p = await fetchWithRetry(ctx, url, input.view === true);
       // Same-site pages count against the page cap; off-site ones are
       // counted against their own cap inside fetchPage.
       if (sameSite(url, ctx.policy.rootUrl)) ctx.policy.pagesFetched++;
-      await addPage(ctx.draftId, { url: p.url, final_url: p.final_url, title: p.title, status: p.status, chars: p.chars, sha256: p.sha256, via: p.via });
+      await (ctx.addPage ?? addPage)(ctx.draftId, { url: p.url, final_url: p.final_url, title: p.title, status: p.status, chars: p.chars, sha256: p.sha256, via: p.via });
       rememberPage(ctx, p);
       const rendered = renderPage(p, ctx.prior?.get(p.final_url) ?? ctx.prior?.get(p.url));
       if (input.view === true) {
@@ -343,7 +408,14 @@ export async function runTool(ctx: ToolContext, name: string, input: Record<stri
       const problem = text !== undefined ? checkQuote(text, input.quote, input.page_url) : null;
       if (problem) return { content: JSON.stringify({ error: "quote_not_on_page", message: problem, field: "quote" }), is_error: true };
     }
-    const r = await draftTool(ctx.draftId, name, input);
+    // A card about a page that failed carries what the reader saw; only the
+    // worker's own record counts, never the model's word for it.
+    const { link_url, link_check: _ignored, ...rest } = input;
+    const failed = typeof link_url === "string" ? ctx.linkFailures?.get(normUrl(link_url)) : undefined;
+    const r = await (ctx.draftTool ?? draftTool)(ctx.draftId, name, failed ? { ...rest, link_check: failed } : rest);
+    if (typeof link_url === "string" && !failed && r.ok) {
+      return { content: JSON.stringify({ ...(r.result as object), note: `link_url ${link_url} did not fail this pass, so the card starts as proposed` }), is_error: false };
+    }
     return { content: JSON.stringify(r.result), is_error: !r.ok };
   }
   return { content: JSON.stringify({ error: `unknown tool ${name}` }), is_error: true };

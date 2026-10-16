@@ -92,6 +92,7 @@ Rules
 5. ${RELATION_POLICY}
 6. ${DISCOVERY_ROUTINE}
 7. Anything behind a login, a paywall, or marked private is off limits. Do not try to bypass it; note it in your summary.
+7b. A page that fails (404, or no answer after the automatic retry) is not evidence and says nothing against the item: when a work the site lists links to its own page and that page failed, you may still propose the work from the listing's quote, and pass the failed page as link_url. Such cards start rejected with a "couldn't open the link" badge and go to a re-check list for another contributor. Do not retry a failed link yourself, and name the failed links in your summary.
 8. Prefer solid candidates over weak ones, always — but HOW the solid ones get chosen matters as much: they must be spread over what the site holds, not drawn from the first pages you happened to open. Size follows the site: a solo portfolio is often 20–40 cards, a gallery programme can be well over 100 (the draft holds up to 300). Minor pages (news snippets, generic about text) are context — read them, do not mine them.
 8a. ${SURVEY_ROUTINE}
 8c. ${READING_A_PAGE}

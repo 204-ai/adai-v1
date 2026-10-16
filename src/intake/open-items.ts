@@ -14,7 +14,7 @@
 // under the picker's own name and tier, the first proposer in provenance.
 
 import type { DatabaseSync } from "node:sqlite";
-import { isCidRef, type Candidate } from "./candidate.js";
+import { isCidRef, linkUnchecked, type Candidate } from "./candidate.js";
 
 export type OpenReason = "undecided" | "link_failed";
 
@@ -33,6 +33,9 @@ const TURNED_DOWN = new Set(["rejected", "context_only"]);
 function ownReason(c: Candidate): OpenReason | null {
   if (c.kind === "known") return null;
   if (c.state === "proposed" || c.state === "open") return "undecided";
+  // Started rejected because the reader could not open its page (#75), and
+  // nobody has decided it since: it waits for someone to re-check the link.
+  if (linkUnchecked(c)) return "link_failed";
   return null;
 }
 

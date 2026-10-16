@@ -9,7 +9,7 @@ import { freshDb, insertNode } from "./helpers.js";
 import { createDraft, claimJob, finishPass, getDraft, runDraftTool, contributorPatchCandidate, confirmDraft, createPickupDraft, batchReceipt } from "../src/intake/draft.js";
 import { leftOpen, listOpenReads, openItemsOf } from "../src/intake/open-items.js";
 import { approveIntakeItem } from "../src/utils/review.js";
-import type { Candidate } from "../src/intake/candidate.js";
+import { validateCandidate, type Candidate } from "../src/intake/candidate.js";
 import type { AuthedContributor } from "../src/auth.js";
 
 process.env.SESSION_SECRET ??= "test-secret-at-least-16-chars";
@@ -222,5 +222,62 @@ describe("left open over HTTP", () => {
       await new Promise<void>((r, j) => server.close((e) => (e ? j(e) : r())));
       db.close();
     }
+  });
+});
+
+describe("a link the reader could not open (#75)", () => {
+  const failed = { url: "https://www.fxhash.xyz/generative/20567", status: null, reason: "dns", checked_at: "2026-10-14T11:40:00Z" };
+  function read(db: ReturnType<typeof freshDb>, who: AuthedContributor) {
+    insertNode(db, "practitioner:kim", "practitioner", "Kim");
+    const d = createDraft(db, who.id, "https://teh.example/");
+    claimJob(db, "w1");
+    const r1 = runDraftTool(db, d.id, "w1", "propose_node", { type: "artwork", name: "ZOOM", ...pg, link_check: failed }) as any; // c_01
+    runDraftTool(db, d.id, "w1", "propose_edge", { source: "cid:c_01", target: "practitioner:kim", edge_type: "CREATED_BY", confidence: "high", ...pg, link_check: failed }); // c_02
+    runDraftTool(db, d.id, "w1", "propose_node", { type: "artwork", name: "monogrid", ...pg, link_check: { ...failed, url: "https://feralfile.example/x", status: 404, reason: "http" } }); // c_03
+    runDraftTool(db, d.id, "w1", "propose_node", { type: "artwork", name: "PXLDEX", ...pg }); // c_04
+    runDraftTool(db, d.id, "w1", "set_subject", { node_id: "practitioner:kim" });
+    return { d, r1 };
+  }
+
+  it("starts rejected, stays the worker's to update, and does not bind it like a contributor's no", () => {
+    const db = freshDb();
+    const { d, r1 } = read(db, contributor(db, "EV3", "auto"));
+    assert.equal(r1.state, "rejected");
+    const cards = getDraft(db, d.id)!.candidates;
+    assert.deepEqual(cards.map((c) => c.state), ["rejected", "rejected", "rejected", "proposed"]);
+    assert.deepEqual(cards[0]!.link_check, failed);
+    // the agent may still update it, but never invent or change a link_check
+    runDraftTool(db, d.id, "w1", "update_candidate", { cid: "c_03", patch: { note: "listed on the home page", link_check: { ...failed, reason: "timeout" } } });
+    assert.equal(getDraft(db, d.id)!.candidates[2]!.link_check!.reason, "http");
+    // proposing the same relation again is not refused as "the contributor said no"
+    runDraftTool(db, d.id, "w1", "remove_candidate", { cid: "c_02" });
+    runDraftTool(db, d.id, "w1", "propose_edge", { source: "cid:c_01", target: "practitioner:kim", edge_type: "CREATED_BY", confidence: "high", ...pg }); // c_05
+    // only node, edge and image cards carry one
+    assert.throws(() => validateCandidate({ cid: "c_09", kind: "known", origin: "graph", known: { node_id: "practitioner:kim", summary: "k" }, link_check: failed }, []), /link_check is for node, edge and image/);
+    assert.throws(() => validateCandidate({ cid: "c_09", kind: "node", node: { type: "artwork", name: "Y" }, evidence: pg, link_check: { ...failed, reason: "vibes" } }, []), /link_check.reason/);
+  });
+
+  it("untouched, it goes to the re-check list; a contributor's own Reject is final; a picker's Accept decides it", async () => {
+    const db = freshDb();
+    const ev3 = contributor(db, "EV3", "auto");
+    const iri = contributor(db, "Iri", "auto");
+    const { d } = read(db, ev3);
+    finishPass(db, d.id, "w1", { summary: "s" });
+    const patch = (id: string, cid: string, x: any) => contributorPatchCandidate(db, getDraft(db, id)!, cid, x);
+    patch(d.id, "c_03", { state: "rejected" }); // EV3 checked: monogrid really is not there
+    patch(d.id, "c_04", { state: "accepted" });
+    const r = await confirmDraft(db, getDraft(db, d.id)!, ev3, { mirror });
+    assert.equal(r.left_open, 2);
+    assert.deepEqual(openItemsOf(db, d.id).map((i) => [i.cid, i.reason]), [["c_01", "link_failed"], ["c_02", "link_failed"]]);
+    assert.equal(listOpenReads(db)[0]!.links_to_recheck, 2);
+
+    const p = createPickupDraft(db, iri.id, d.id);
+    assert.deepEqual(p.candidates.map((c) => [c.cid, c.state, !!c.link_check]), [["c_01", "rejected", true], ["c_02", "rejected", true]]);
+    patch(p.id, "c_01", { state: "accepted" }); // Iri opened the link: it works
+    patch(p.id, "c_02", { state: "accepted" });
+    const r2 = await confirmDraft(db, getDraft(db, p.id)!, iri, { mirror });
+    assert.equal(r2.decided, 2);
+    assert.deepEqual(r2.created_nodes, ["artwork:zoom"]);
+    assert.equal(listOpenReads(db).length, 0);
   });
 });

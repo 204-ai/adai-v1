@@ -11,7 +11,8 @@ export type SuggestableEdgeType =
   | "REPRESENTS" | "USES_TECHNIQUE" | "EMBODIES" | "BELONGS_TO" | "COLLABORATES_WITH";
 export type Confidence = "high" | "medium" | "low";
 
-export interface CandidateBase { cid: string; state: CandidateState; origin: Origin; evidence?: Evidence; note?: string; edited: boolean }
+export interface LinkCheck { url: string; status: number | null; reason: "http" | "dns" | "timeout" | "unreachable"; checked_at: string }
+export interface CandidateBase { cid: string; state: CandidateState; origin: Origin; evidence?: Evidence; note?: string; edited: boolean; link_check?: LinkCheck }
 export interface EdgeSpec { source: Ref; target: Ref; edge_type: SuggestableEdgeType | "INFLUENCES" | "RESPONDS_TO"; event_time?: string; confidence: Confidence }
 export interface NodeCandidate extends CandidateBase { kind: "node"; node: { type: CandidateNodeType; name: string; metadata: Record<string, unknown>; aliases: Array<{ source: "web"; external_id: string }> }; resolves_to: string | null; resolution: "exact" | "alias" | "fuzzy" | "none" }
 export interface EdgeCandidate extends CandidateBase { kind: "edge"; edge: EdgeSpec & { edge_type: SuggestableEdgeType } }

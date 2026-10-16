@@ -248,6 +248,15 @@ function evidence(c) {
   if (!c.evidence) return '';
   return '<div class="quote">“' + esc(c.evidence.quote) + '”<a href="' + esc(c.evidence.page_url) + '" target="_blank" rel="noopener">source ↗</a></div>';
 }
+// The reader could not open this item's own page (issue #75): the card
+// starts rejected and, if nobody decides it, stays open for a re-check.
+function linkUnchecked(c) { return !!c.link_check && c.state === 'rejected' && !c.edited; }
+function linkNote(c) {
+  const l = c.link_check; if (!l) return '';
+  const why = l.status ? 'HTTP ' + l.status : l.reason === 'dns' ? 'the address did not resolve' : l.reason === 'timeout' ? 'it timed out' : 'nothing answered';
+  return '<div class="link"><span class="badge ai">couldn’t open the link</span> <a href="' + esc(l.url) + '" target="_blank" rel="noopener">' + esc(l.url.replace('https://', '').replace('http://', '').slice(0, 60)) + ' ↗</a> (' + esc(why) + ')' +
+    (linkUnchecked(c) ? ' — starts rejected; if you leave it, it stays open for someone to re-check. Open the link yourself and accept if it is right.' : '') + '</div>';
+}
 function originBadge(c) { return c.origin === 'embedding' ? '<span class="badge ai">sensed</span>' : c.origin === 'graph' ? '<span class="badge">graph</span>' : ''; }
 function cardBody(c) {
   if (c.kind === 'node') {
@@ -255,15 +264,15 @@ function cardBody(c) {
       (c.resolves_to ? '<div class="link">links to existing: ' + refLink(c.resolves_to) + ' <span class="meta">(' + esc(c.resolution) + ')</span></div>' : '<div class="link">new ' + esc(c.node.type) + '</div>') +
       (c.node.metadata && Array.isArray(c.node.metadata.kind) ? '<div class="link">' + c.node.metadata.kind.map(k => '<span class="badge">' + esc(k) + '</span>').join(' ') + (c.node.metadata.kind_source ? ' <span class="meta">“' + esc(c.node.metadata.kind_source.quote) + '”</span>' : '') + '</div>' : '') +
       (c.node.metadata && (c.node.metadata.year || c.node.metadata.summary || c.node.metadata.description) ? '<div class="note">' + esc([c.node.metadata.year, c.node.metadata.summary || c.node.metadata.description].filter(Boolean).join(' · ')).slice(0, 300) + '</div>' : '') +
-      (c.note ? '<div class="note">' + esc(c.note) + '</div>' : '') + evidence(c);
+      (c.note ? '<div class="note">' + esc(c.note) + '</div>' : '') + evidence(c) + linkNote(c);
   }
   if (c.kind === 'edge') {
     return '<div class="title">' + refLink(c.edge.source) + ' ' + esc(VERBS[c.edge.edge_type] || c.edge.edge_type.toLowerCase()) + ' ' + refLink(c.edge.target) + (c.edge.event_time ? ', ' + esc(c.edge.event_time) : '') + '<span class="badge">' + esc(c.edge.edge_type) + '</span>' + originBadge(c) + '</div>' +
-      '<div class="link">confidence ' + esc(c.edge.confidence) + '</div>' + (c.note ? '<div class="note">' + esc(c.note) + '</div>' : '') + evidence(c);
+      '<div class="link">confidence ' + esc(c.edge.confidence) + '</div>' + (c.note ? '<div class="note">' + esc(c.note) + '</div>' : '') + evidence(c) + linkNote(c);
   }
   if (c.kind === 'image') {
     return '<div class="title">image for ' + refLink(c.image.for) + '</div><a href="' + esc(c.image.image_url) + '" target="_blank" rel="noopener"><img class="thumb" loading="lazy" src="' + esc(c.image.image_url) + '" alt="' + esc(c.image.alt || '') + '"></a>' +
-      (c.image.alt ? '<div class="note">' + esc(c.image.alt) + '</div>' : '') + '<div class="link"><a href="' + esc(c.image.page_url) + '" target="_blank" rel="noopener">page ↗</a></div>';
+      (c.image.alt ? '<div class="note">' + esc(c.image.alt) + '</div>' : '') + '<div class="link"><a href="' + esc(c.image.page_url) + '" target="_blank" rel="noopener">page ↗</a></div>' + linkNote(c);
   }
   if (c.kind === 'patch') {
     return '<div class="title">' + refLink(c.patch.node_id) + ' · ' + esc(c.patch.key) + '</div><div class="diff"><div><div class="k">A(DAI) has</div>' + esc(JSON.stringify(c.patch.existing)) + '</div><div><div class="k">site says</div>' + esc(JSON.stringify(c.patch.proposed)) + '</div></div>' +
@@ -301,7 +310,7 @@ function actions(c) {
   else if (c.kind === 'edge') edit = '<select data-f="edge_type">' + EDGE_TYPES.map(t => '<option' + (t === c.edge.edge_type ? ' selected' : '') + '>' + t + '</option>').join('') + '</select><input data-f="event_time" placeholder="year" value="' + esc(c.edge.event_time || '') + '"><button class="btn" data-a="save">Save</button>';
   else if (c.kind === 'patch') edit = '<input data-f="proposed" value="' + esc(typeof c.patch.proposed === 'string' ? c.patch.proposed : JSON.stringify(c.patch.proposed)) + '"><button class="btn" data-a="save">Save</button>';
   else if (c.kind === 'image') edit = '<input data-f="alt" placeholder="caption" value="' + esc(c.image.alt || '') + '"><button class="btn" data-a="save">Save</button>';
-  return '<div class="actions"><button class="btn ' + (s === 'accepted' ? 'on' : '') + '" data-a="accepted">Accept</button><button class="btn ' + (s === 'rejected' ? 'off' : '') + '" data-a="rejected">Reject</button><button class="btn ' + (s === 'open' ? 'held' : '') + '" data-a="open" title="Not sure: keep it for another contributor to decide">Leave open</button><button class="btn ' + (s === 'context_only' ? 'on' : '') + '" data-a="context_only">Context only</button>' + (edit ? '<button class="btn" data-a="edit">Edit</button>' : '') + '</div>' + (edit ? '<div class="edit">' + edit + '</div>' : '');
+  return '<div class="actions"><button class="btn ' + (s === 'accepted' ? 'on' : '') + '" data-a="accepted">Accept</button><button class="btn ' + (s === 'rejected' && !linkUnchecked(c) ? 'off' : '') + '" data-a="rejected">Reject</button><button class="btn ' + (s === 'open' ? 'held' : '') + '" data-a="open" title="Not sure: keep it for another contributor to decide">Leave open</button><button class="btn ' + (s === 'context_only' ? 'on' : '') + '" data-a="context_only">Context only</button>' + (edit ? '<button class="btn" data-a="edit">Edit</button>' : '') + '</div>' + (edit ? '<div class="edit">' + edit + '</div>' : '');
 }
 // What stays open at Confirm — the client copy of leftOpen() in
 // src/intake/open-items.ts; keep the two in step.
@@ -309,7 +318,7 @@ function cardDeps(c) {
   const refs = c.kind === 'edge' ? [c.edge.source, c.edge.target] : c.kind === 'image' ? [c.image.for] : c.kind === 'question' ? [c.question.if_yes.source, c.question.if_yes.target] : [];
   return refs.filter(r => r && r.startsWith('cid:')).map(r => r.slice(4));
 }
-function ownOpen(c) { return c.kind !== 'known' && (c.state === 'proposed' || c.state === 'open'); }
+function ownOpen(c) { return c.kind !== 'known' && (c.state === 'proposed' || c.state === 'open' || linkUnchecked(c)); }
 function leftOpenCids() {
   const by = byCid(), open = new Set();
   for (const c of D.candidates) if (c.kind === 'node' && ownOpen(c)) open.add(c.cid);
@@ -354,7 +363,7 @@ async function act(card, a) {
   if (a === 'edit') { card.querySelector('.edit').classList.toggle('open'); return; }
   if (card.classList.contains('busy')) return;
   let body = null, shown = null;
-  if (a === 'accepted' || a === 'rejected' || a === 'context_only' || a === 'open') { shown = c.state === a ? 'proposed' : a; body = { state: shown }; }
+  if (a === 'accepted' || a === 'rejected' || a === 'context_only' || a === 'open') { shown = c.state === a && !linkUnchecked(c) ? 'proposed' : a; body = { state: shown }; }
   else if (a === 'yes' || a === 'no') { shown = 'answered'; body = { answered_yes: a === 'yes' }; }
   else if (a === 'unlink') body = { patch: { resolves_to: null } };
   else if (a === 'save') {
@@ -398,7 +407,7 @@ function renderHead() {
   const open = leftOpenCids();
   const acc = D.candidates.filter(c => c.state === 'accepted' && !open.has(c.cid)).length + D.candidates.filter(c => c.kind === 'question' && c.question.answered_yes === true).length;
   // A pick-up may confirm only "no"s: turning an item down is a decision too.
-  const decided = D.picked_from ? D.candidates.filter(c => !open.has(c.cid) && c.state !== 'proposed' && c.state !== 'open').length : acc;
+  const decided = D.picked_from ? D.candidates.filter(c => !open.has(c.cid) && c.state !== 'proposed' && c.state !== 'open' && !linkUnchecked(c)).length : acc;
   $('#dhead').innerHTML = '<span class="src">' + esc(D.source_url) + '</span>' +
     (D.picked_from ? '<span>picked up from <a href="/batch/' + esc(D.picked_from) + '">an earlier read</a></span>' : '') +
     '<span>subject: ' + (D.subject_node_id ? refLink(D.subject_node_id) : '<span class="meta">none yet</span>') + '</span>' +
@@ -477,7 +486,7 @@ function leftOpenGroup(receipt: Record<string, any>): string {
   const items = (receipt.left_open as any[] | undefined) ?? [];
   if (!items.length) return "";
   const still = items.filter((i) => !i.decided).length;
-  const OUTCOME: Record<string, string> = { accepted: "added", answered: "answered", rejected: "turned down", context_only: "kept as context", skipped: "could not be added" };
+  const OUTCOME: Record<string, string> = { accepted: "added", answered: "answered", rejected: "turned down", context_only: "kept as context", skipped: "dropped" };
   const row = (i: any) => `<div class="card${i.decided ? "" : " open"}"><div class="title">${htmlEscape(String(i.label))}${i.reason === "link_failed" ? '<span class="badge ai">link to re-check</span>' : ""}</div><div class="link">${i.decided ? `${htmlEscape(OUTCOME[i.decided.outcome] ?? String(i.decided.outcome))} by ${htmlEscape(String(i.decided.by ?? "a contributor"))} · ${htmlEscape(String(i.decided.at).slice(0, 10))}${i.decided.in ? ` · <a href="/batch/${htmlEscape(String(i.decided.in))}">receipt</a>` : ""}` : "open: any contributor can pick it up from <a href=\"/contribute#open\">contribute</a>"}</div></div>`;
   return `<div class="group"><h3>Left open · ${items.length}${still !== items.length ? ` (${still} still open)` : ""}</h3>${items.map(row).join("")}</div>`;
 }
