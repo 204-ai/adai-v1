@@ -53,7 +53,7 @@ src/
                             ssrf (the one fetch guard), images (image_url → R2),
                             mail (Resend / stdout transport), …
   cli/                    — operator CLIs (token issue/revoke/restore, rename,
-                            notify-digest, apply-image-patch, invite)
+                            notify-digest, apply-image-patch, invite, backfill-open-items)
 worker/                   — the intake worker (own package + Playwright image,
                             Fly app adai-intake-worker; never opens the DB —
                             talks HTTP to /internal/intake/* only)
