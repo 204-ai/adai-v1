@@ -468,7 +468,7 @@ Sending domain: fragcolor.com is already verified on Resend (the digest sends fr
 Three messages, all short:
 
 1. **Login**: "Your A(DAI) sign-in link" with the 15 min link. One sentence: "If you did not ask for this, ignore it."
-2. **Draft ready**: "Your draft from {domain} is ready" with the summary the agent wrote, counts (works, shows, people, questions), and a 7-day magic link to `/draft/:id`. Also sent when a pass fails with no candidates: "We could not read {domain}" with the error in plain words and a reply-to.
+2. **Draft ready**: "Your draft from {domain} is ready": the subject's name, the counts as bullets (questions waiting, works, shows and venues, people, relations, images, already in A(DAI)) and a 7-day magic link to `/draft/:id`. Not the agent's summary: it runs to a page, and it is on the draft page (issue #73). Also sent when a pass fails with no candidates: "We could not read {domain}" with the error in plain words and a reply-to.
 3. **Receipt**: "Received: {n} items from {domain}" with the outcome (live or in review), links to the batch page and to the subject's profile.
 
 Chat replies do not email. The contributor is on the page when they chat.

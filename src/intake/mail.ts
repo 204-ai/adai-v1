@@ -58,30 +58,19 @@ export async function sendAccessRequestDetailsEmail(email: string, name: string,
   for (const to of admins) await send(to, `A(DAI) access request: ${name} <${email}>`, text);
 }
 
-export function candidateCounts(d: Draft): { works: number; shows: number; people: number; images: number; questions: number; known: number } {
-  let works = 0, shows = 0, people = 0, images = 0, questions = 0, known = 0;
+export function candidateCounts(d: Draft): { works: number; shows: number; people: number; relations: number; images: number; questions: number; known: number } {
+  let works = 0, shows = 0, people = 0, relations = 0, images = 0, questions = 0, known = 0;
   for (const c of d.candidates) {
     if (c.kind === "node") {
       if (c.node.type === "artwork") works++;
       else if (c.node.type === "project" || c.node.type === "institution") shows++;
       else people++;
-    } else if (c.kind === "image") images++;
+    } else if (c.kind === "edge") relations++;
+    else if (c.kind === "image") images++;
     else if (c.kind === "question") questions++;
     else if (c.kind === "known") known++;
   }
-  return { works, shows, people, images, questions, known };
-}
-
-export async function sendDraftReadyEmail(db: DatabaseSync, email: string, draft: Draft): Promise<void> {
-  const link = issueMagicLink(db, { email, purpose: "draft_ready", redirect: `/draft/${draft.id}` });
-  const c = candidateCounts(draft);
-  const text =
-    `Your draft from ${draft.source_domain} is ready.\n\n` +
-    (draft.summary ? `${draft.summary}\n\n` : "") +
-    `${c.works} works · ${c.shows} shows and venues · ${c.people} people and organisations · ${c.images} images · ${c.known} already in A(DAI) · ${c.questions} questions for you\n\n` +
-    `Review and confirm what you want to submit:\n${link.url}\n\n` +
-    `Nothing goes into A(DAI) until you press Confirm. The link signs you in and is valid for 7 days.`;
-  await send(email, `Your draft from ${draft.source_domain} is ready`, text);
+  return { works, shows, people, relations, images, questions, known };
 }
 
 export async function sendDraftFailedEmail(db: DatabaseSync, email: string, draft: Draft): Promise<void> {
@@ -117,6 +106,42 @@ function blocksToHtml(blocks: Block[]): string {
 }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+// Bullets, not the reader's summary (issue #73): the email only has to get
+// the contributor to the page; the summary and every card are there.
+export function draftReadyEmail(draft: Draft, subjectName: string | null, url: string): { subject: string; text: string; html: string } {
+  const c = candidateCounts(draft);
+  const lines: Array<[number, string, string]> = [
+    [c.questions, "question waiting for you", "questions waiting for you"],
+    [c.works, "work", "works"],
+    [c.shows, "show or venue", "shows and venues"],
+    [c.people, "person or organisation", "people and organisations"],
+    [c.relations, "relation", "relations"],
+    [c.images, "image", "images"],
+    [c.known, "thing A(DAI) already has", "things A(DAI) already has"],
+  ];
+  const blocks: Block[] = [
+    { p: `Your draft from ${draft.source_domain}${subjectName ? ` (${subjectName})` : ""} is ready:` },
+    { list: lines.filter(([n]) => n > 0).map(([n, one, many]) => plural(n, one, many)) },
+    { link: "Review it", url },
+    { p: "Nothing goes into A(DAI) until you press Confirm. The link signs you in and is valid for 7 days." },
+  ];
+  return { subject: `Your draft from ${draft.source_domain} is ready`, text: blocksToText(blocks), html: blocksToHtml(blocks) };
+}
+
+export async function sendDraftReadyEmail(db: DatabaseSync, email: string, draft: Draft): Promise<void> {
+  const link = issueMagicLink(db, { email, purpose: "draft_ready", redirect: `/draft/${draft.id}` });
+  const ref = draft.subject_node_id;
+  let subjectName: string | null = null;
+  if (ref?.startsWith("cid:")) {
+    const n = draft.candidates.find((x) => x.cid === ref.slice(4));
+    subjectName = n && n.kind === "node" ? n.node.name : null;
+  } else if (ref) {
+    subjectName = (db.prepare("SELECT name FROM nodes WHERE id = ?").get(ref) as { name: string } | undefined)?.name ?? null;
+  }
+  const m = draftReadyEmail(draft, subjectName, link.url);
+  await send(email, m.subject, m.text, m.html);
+}
 
 export function receiptEmail(
   name: string, draft: Draft, result: ConfirmResult, receiptUrl: string, profileUrl: string | null,

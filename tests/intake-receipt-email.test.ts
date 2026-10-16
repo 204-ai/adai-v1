@@ -4,7 +4,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { receiptEmail } from "../src/intake/mail.js";
+import { receiptEmail, draftReadyEmail } from "../src/intake/mail.js";
 import type { ConfirmResult, Draft } from "../src/intake/draft.js";
 
 const draft = { id: "drf_0123456789abcdef", source_domain: "annaridler.com" } as Draft;
@@ -35,5 +35,28 @@ describe("receipt email", () => {
     assert.match(m.text, /now part of the public record/);
     assert.match(m.text, /you submitted 2 additions:\n\n- 1 new record for works, people, or exhibitions\n- 1 image\n/);
     assert.doesNotMatch(m.text, /connections|Explore your practice|review status/);
+  });
+});
+
+describe("draft ready email", () => {
+  it("is bullet points and the link, not the reader's summary (#73)", () => {
+    const d = {
+      id: "drf_1", source_domain: "teh.kim", summary: "Subject: Kim Asendorf … a very long coverage report …".repeat(40),
+      candidates: [
+        { kind: "node", node: { type: "artwork" } }, { kind: "node", node: { type: "artwork" } },
+        { kind: "node", node: { type: "project" } }, { kind: "edge" }, { kind: "edge" }, { kind: "edge" },
+        { kind: "question" }, { kind: "known" },
+      ],
+    } as unknown as Draft;
+    const m = draftReadyEmail(d, "Kim Asendorf", "https://x/auth/t");
+    assert.equal(m.subject, "Your draft from teh.kim is ready");
+    assert.doesNotMatch(m.text, /coverage report/);
+    assert.equal(m.text,
+      "Your draft from teh.kim (Kim Asendorf) is ready:\n\n" +
+      "- 1 question waiting for you\n- 2 works\n- 1 show or venue\n- 3 relations\n- 1 thing A(DAI) already has\n\n" +
+      "Review it:\nhttps://x/auth/t\n\n" +
+      "Nothing goes into A(DAI) until you press Confirm. The link signs you in and is valid for 7 days.");
+    assert.match(m.html, /<li>2 works<\/li>/);
+    assert.match(m.html, /<a href="https:\/\/x\/auth\/t">Review it<\/a>/);
   });
 });
