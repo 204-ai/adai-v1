@@ -1,5 +1,6 @@
 // Admin-side correction primitives for the /api/v1 surface: revoke a signal,
-// retire a node, retire a whole batch, list batches.
+// retire a node, retire a whole batch, list batches; and for the operator
+// CLIs, merge a duplicate node into another and rewrite a node's slug.
 //
 // NONE of these delete anything. The schema's correction model is:
 //   edges   → bi-temporal supersession (valid_until + invalidated_by)
@@ -21,6 +22,8 @@
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { mergeMetadata, priorValues, recordPrior } from "./contribution.js";
+import { keepOldSlug } from "./moved.js";
+import { slugify } from "./slug.js";
 
 export class AdminActionError extends Error {
   constructor(
@@ -488,4 +491,216 @@ export function listBatches(
     last_at: r.last_at ?? null,
     intake: intakeByBatch.get(r.batch_id) ?? {},
   }));
+}
+
+// ---------- merge a duplicate node (issue #69) -------------------------------
+
+export interface MergeNodesResult {
+  from: string;
+  into: string;
+  dry_run?: boolean;
+  /** Live relations of the duplicate, moved onto the kept node (old → new edge id). */
+  edges_moved: Array<{ old: string; new: string }>;
+  /** Live relations ended without a copy: between the two nodes, or one the kept node already has from the same source. */
+  edges_ended: string[];
+  /** Metadata keys the kept node lacked, copied from the duplicate. */
+  keys_copied: string[];
+  /** Keys both have with different values: the kept node's value stays. */
+  keys_kept: string[];
+  aliases_moved: Array<{ source: string; external_id: string }>;
+  /** Pending review items that name the duplicate (left as they are; a curator sees them). */
+  pending_mentions: number;
+  admin_signal_id: string | null;
+}
+
+// Keys that describe the node's own state, never copied across.
+const NOT_COPIED = new Set(["retired", "retired_at", "retired_by", "retired_reason", "merged_into", "claimed"]);
+
+/**
+ * Merge `fromId` into `intoId`: one page for one person. Every live relation
+ * of the duplicate is re-made on the kept node with its original source,
+ * contributor, confidence and event time, and the old one is superseded by
+ * it (bi-temporally — nothing is deleted). Metadata the kept node lacks is
+ * copied (never overwritten; the before-image is kept). The duplicate's
+ * external identities (node_aliases) move over, so a later import resolves
+ * to the kept node. The duplicate is retired with `merged_into`, and its
+ * address 301s to the kept node (src/utils/moved.ts). One admin signal
+ * anchors it all.
+ *
+ * Refused when the two differ in type, either is retired, or the duplicate
+ * has a claim — a claimed page is someone's, and that is a person's call.
+ */
+export function mergeNodes(
+  db: DatabaseSync,
+  fromId: string,
+  intoId: string,
+  opts: { reason: string; by: string; dryRun?: boolean }
+): MergeNodesResult {
+  if (fromId === intoId) throw new AdminActionError(400, "same_node", "a node cannot be merged into itself");
+  const get = (id: string) => db.prepare("SELECT id, type, slug, metadata, updated_by FROM nodes WHERE id = ?").get(id) as any;
+  const from = get(fromId);
+  const into = get(intoId);
+  if (!from) throw new AdminActionError(404, "node_not_found", `no node with id ${fromId}`);
+  if (!into) throw new AdminActionError(404, "node_not_found", `no node with id ${intoId}`);
+  if (from.type !== into.type) throw new AdminActionError(400, "type_mismatch", `${fromId} is ${from.type}, ${intoId} is ${into.type}`);
+  const meta = (n: any) => { try { return JSON.parse(n.metadata ?? "{}") ?? {}; } catch { return {}; } };
+  const fromMeta = meta(from);
+  const intoMeta = meta(into);
+  if (fromMeta.retired === true) throw new AdminActionError(409, "already_retired", `${fromId} is retired`);
+  if (intoMeta.retired === true) throw new AdminActionError(409, "target_retired", `${intoId} is retired`);
+  const claims = db.prepare("SELECT COUNT(*) AS n FROM node_claims WHERE node_id = ? AND status IN ('approved', 'pending')").get(fromId) as any;
+  if (Number(claims?.n ?? 0) > 0) throw new AdminActionError(409, "claimed", `${fromId} has a claim; settle it before merging`);
+
+  const edges = db.prepare(
+    "SELECT * FROM edges WHERE (source_id = ? OR target_id = ?) AND valid_until IS NULL ORDER BY id"
+  ).all(fromId, fromId) as any[];
+  const swap = (id: string) => (id === fromId ? intoId : id);
+  const plan = edges.map((e) => {
+    const source = swap(e.source_id);
+    const target = swap(e.target_id);
+    if (source === target) return { e, source, target, existing: null as string | null, loop: true };
+    const existing = db.prepare(
+      "SELECT id FROM edges WHERE source_id = ? AND target_id = ? AND edge_type = ? AND created_by IS ? AND valid_until IS NULL"
+    ).get(source, target, e.edge_type, e.created_by) as any;
+    return { e, source, target, existing: existing?.id ?? null, loop: false };
+  });
+  const keysCopied = Object.keys(fromMeta).filter((k) => !NOT_COPIED.has(k) && !(k in intoMeta));
+  const keysKept = Object.keys(fromMeta).filter((k) => !NOT_COPIED.has(k) && k in intoMeta && JSON.stringify(fromMeta[k]) !== JSON.stringify(intoMeta[k]));
+  const aliases = db.prepare("SELECT source, external_id FROM node_aliases WHERE node_id = ? ORDER BY source, external_id").all(fromId) as any[];
+  const like = `%${JSON.stringify(fromId).slice(1, -1)}%`;
+  const pending = db.prepare(
+    "SELECT COUNT(*) AS n FROM intake_queue WHERE status = 'pending' AND (target_node = ? OR proposed_nodes LIKE ? OR proposed_edges LIKE ?)"
+  ).get(fromId, like, like) as any;
+
+  const result: MergeNodesResult = {
+    from: fromId,
+    into: intoId,
+    edges_moved: [],
+    edges_ended: plan.filter((p) => p.loop || p.existing).map((p) => p.e.id),
+    keys_copied: keysCopied,
+    keys_kept: keysKept,
+    aliases_moved: aliases.map((a) => ({ source: a.source, external_id: a.external_id })),
+    pending_mentions: Number(pending?.n ?? 0),
+    admin_signal_id: null,
+  };
+  if (opts.dryRun) {
+    result.dry_run = true;
+    result.edges_moved = plan.filter((p) => !p.loop && !p.existing).map((p) => ({ old: p.e.id, new: "(new)" }));
+    return result;
+  }
+
+  return withTx(db, () => {
+    const anchor = insertAdminSignal(db, {
+      by: opts.by,
+      title: `Merge node: ${fromId} into ${intoId}`,
+      content: {
+        action: "merge_node",
+        from: fromId,
+        into: intoId,
+        reason: opts.reason,
+        aliases_moved: result.aliases_moved,
+        keys_copied: keysCopied,
+        keys_kept: keysKept,
+      },
+    });
+    for (const p of plan) {
+      if (p.loop || p.existing) {
+        db.prepare(`UPDATE edges SET valid_until = ${NOW_SQL}, invalidated_by = ? WHERE id = ?`).run(p.existing ?? anchor, p.e.id);
+        continue;
+      }
+      const newId = `${p.source}--${p.e.edge_type}--${p.target}--${p.e.created_by ?? "unknown"}--merged-${crypto.randomBytes(4).toString("hex")}`;
+      db.prepare(
+        `INSERT INTO edges (id, source_id, target_id, edge_type, signal_id, confidence, charge, created_at, created_by,
+                            event_time, valid_from, valid_until, invalidated_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ${NOW_SQL}, ?, ?, ${NOW_SQL}, NULL, NULL)`
+      ).run(newId, p.source, p.target, p.e.edge_type, p.e.signal_id ?? null, p.e.confidence ?? null, p.e.charge ?? null, p.e.created_by ?? null, p.e.event_time ?? null);
+      db.prepare(`UPDATE edges SET valid_until = ${NOW_SQL}, invalidated_by = ? WHERE id = ?`).run(newId, p.e.id);
+      result.edges_moved.push({ old: p.e.id, new: newId });
+    }
+    if (keysCopied.length) {
+      recordPrior(db, anchor, { op: "merge_node", node_id: intoId, updated_by: into.updated_by ?? null, before: priorValues(intoMeta, keysCopied) });
+      const patch: Record<string, unknown> = {};
+      for (const k of keysCopied) patch[k] = fromMeta[k];
+      db.prepare("UPDATE nodes SET metadata = ?, updated_by = ? WHERE id = ?").run(JSON.stringify(mergeMetadata(intoMeta, patch)), `api-${opts.by}`, intoId);
+    }
+    db.prepare("UPDATE node_aliases SET node_id = ? WHERE node_id = ?").run(intoId, fromId);
+    const retire = { retired: true, retired_at: isoNow(), retired_by: opts.by, retired_reason: opts.reason, merged_into: intoId };
+    recordPrior(db, anchor, { op: "retire_node", node_id: fromId, updated_by: from.updated_by ?? null, before: priorValues(fromMeta, Object.keys(retire)) });
+    db.prepare("UPDATE nodes SET metadata = ?, updated_by = ? WHERE id = ?").run(JSON.stringify(mergeMetadata(fromMeta, retire)), `api-${opts.by}`, fromId);
+    result.admin_signal_id = anchor;
+    return result;
+  });
+}
+
+// ---------- rewrite slugs to the current slugifier (issue #67) ----------------
+
+export interface SlugRename {
+  id: string;
+  type: string;
+  name: string;
+  old: string;
+  new: string;
+}
+
+export interface SlugMigrationResult {
+  dry_run?: boolean;
+  renamed: SlugRename[];
+  /** Slugs whose new form another node of the same type already has: left as they are. */
+  collisions: Array<SlugRename & { taken_by: string }>;
+  admin_signal_id: string | null;
+}
+
+// A source suffix the import pipelines appended to keep same-named works
+// apart (`--fxhash-113`, `--va-o239531`, `--superrare-1-0x…-2133`): kept.
+const SOURCE_SUFFIX = /--((?:artblocks|fxhash|superrare|va)-[a-z0-9-]+)$/;
+
+/** The slug a node would get today: slugify(name), with its source suffix kept. */
+export function currentSlugFor(oldSlug: string, name: string): string {
+  const suffix = SOURCE_SUFFIX.exec(oldSlug)?.[1];
+  const head = slugify(name);
+  return suffix ? `${head}--${suffix}` : head;
+}
+
+/**
+ * Rewrite every slug with characters outside [a-z0-9-] to the current
+ * slugifier's (`currentSlugFor`). Node ids never change — they are opaque
+ * keys — only the address does, and the old one keeps working: a
+ * node_aliases(source='slug') row 301s it (src/utils/moved.ts). One admin
+ * signal anchors the run and holds each old slug as a before-image.
+ */
+export function migrateSlugs(db: DatabaseSync, opts: { by: string; dryRun?: boolean; only?: string[] }): SlugMigrationResult {
+  const rows = db.prepare("SELECT id, type, name, slug, updated_by FROM nodes WHERE slug GLOB '*[^a-z0-9-]*' ORDER BY type, slug").all() as any[];
+  const wanted = opts.only ? new Set(opts.only) : null;
+  const taken = db.prepare("SELECT id FROM nodes WHERE type = ? AND slug = ? AND id != ?");
+  const renamed: SlugRename[] = [];
+  const collisions: SlugMigrationResult["collisions"] = [];
+  const claimedNew = new Map<string, string>(); // type/slug → id, within this run
+  for (const r of rows) {
+    if (wanted && !wanted.has(r.id)) continue;
+    const next = currentSlugFor(r.slug, r.name ?? r.slug);
+    if (!next || next === r.slug) continue;
+    const item = { id: r.id, type: r.type, name: r.name, old: r.slug, new: next };
+    const other = (taken.get(r.type, next, r.id) as any)?.id ?? claimedNew.get(`${r.type}/${next}`);
+    if (other) {
+      collisions.push({ ...item, taken_by: other });
+      continue;
+    }
+    claimedNew.set(`${r.type}/${next}`, r.id);
+    renamed.push(item);
+  }
+  if (opts.dryRun || !renamed.length) return { dry_run: opts.dryRun || undefined, renamed, collisions, admin_signal_id: null };
+  return withTx(db, () => {
+    const anchor = insertAdminSignal(db, {
+      by: opts.by,
+      title: `Rewrite ${renamed.length} slug${renamed.length === 1 ? "" : "s"} to the current slugifier`,
+      content: { action: "migrate_slugs", renamed: renamed.map(({ id, old, new: n }) => ({ id, old, new: n })) },
+    });
+    const updatedBy = new Map(rows.map((r) => [r.id, r.updated_by ?? null]));
+    for (const r of renamed) {
+      recordPrior(db, anchor, { op: "rename_slug", node_id: r.id, updated_by: updatedBy.get(r.id) ?? null, before: { slug: r.old } });
+      db.prepare("UPDATE nodes SET slug = ? WHERE id = ?").run(r.new, r.id);
+      keepOldSlug(db, r.type, r.old, r.id);
+    }
+    return { renamed, collisions, admin_signal_id: anchor };
+  });
 }

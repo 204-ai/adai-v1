@@ -53,7 +53,8 @@ src/
                             ssrf (the one fetch guard), images (image_url → R2),
                             mail (Resend / stdout transport), …
   cli/                    — operator CLIs (token issue/revoke/restore, rename,
-                            notify-digest, apply-image-patch, invite, backfill-open-items)
+                            notify-digest, apply-image-patch, invite, backfill-open-items,
+                            merge-nodes, migrate-slugs)
 worker/                   — the intake worker (own package + Playwright image,
                             Fly app adai-intake-worker; never opens the DB —
                             talks HTTP to /internal/intake/* only)
@@ -335,6 +336,17 @@ get `metadata.retired` and drop out of listings while staying reachable by URL.
 Every correction inserts an anchoring admin signal (`source_type='api_admin'`)
 that superseded edges reference via `invalidated_by`. SKILL.md §4.4–4.7 + §6
 document the workflow.
+
+**Duplicates and old addresses** (operator CLIs). `npm run node:merge -- --from
+<id> --into <id> --reason "…" [--dry-run]` (`mergeNodes`) re-makes the
+duplicate's live relations on the kept node (same source, contributor, event
+time; the old ones superseded), copies metadata the kept node lacks, moves its
+`node_aliases`, and retires it with `metadata.merged_into`; refuses a claimed
+duplicate. `npm run slugs:migrate -- [--dry-run]` (`migrateSlugs`) rewrites
+slugs that predate the current slugifier (source suffix kept, ids unchanged).
+Either way the old address **301s** to the current one on every page that
+takes a slug (`src/utils/moved.ts`; a rewritten slug is kept as
+`node_aliases(source='slug', external_id='<type>/<old slug>')`).
 
 **Every node write keeps its before-image.** Metadata is overwritten in place,
 so each patch / image attach / retire appends what it replaced to the causing

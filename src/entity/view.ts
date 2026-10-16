@@ -255,7 +255,7 @@ function metadataRows(db: DatabaseSync, node: EntityNode, meta: any, showcase: S
   if (str(meta.status)) rows.push(["status", esc(String(meta.status))]);
   const web = [info.url, meta.homepage, meta.website, meta.url].find(isHttp);
   if (web) rows.push(["web", `<a href="${esc(web)}" target="_blank" rel="noopener">${esc(web.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/$/, ""))} ↗</a>`]);
-  for (const a of db.prepare("SELECT source, external_id FROM node_aliases WHERE node_id = ? AND source != 'handle' ORDER BY source").all(node.id) as any[]) {
+  for (const a of db.prepare("SELECT source, external_id FROM node_aliases WHERE node_id = ? AND source NOT IN ('handle', 'slug') ORDER BY source").all(node.id) as any[]) {
     const label = ALIAS_LABEL[a.source] ?? a.source;
     const id = esc(String(a.external_id));
     rows.push([esc(label), a.source === "wikidata" ? `<a href="https://www.wikidata.org/wiki/${encodeURIComponent(a.external_id)}" target="_blank" rel="noopener">${id} ↗</a>` : id]);

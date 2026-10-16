@@ -22,6 +22,8 @@
     "notify:digest": "tsx src/cli/notify-digest.ts",
     "invite": "tsx src/cli/invite.ts",
     "intake:backfill-open": "tsx src/cli/backfill-open-items.ts",
+    "node:merge": "tsx src/cli/merge-nodes.ts",
+    "slugs:migrate": "tsx src/cli/migrate-slugs.ts",
     "intake:worker": "npm --prefix worker run start",
     "build": "tsc",
     "precompress": "node scripts/precompress.mjs public/field",

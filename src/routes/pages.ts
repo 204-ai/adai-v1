@@ -21,6 +21,7 @@ import { accessClaimCards, accessClaimCount, claimReviewCards, curatorSignIn, ob
 import { notesByTriple, publicNotesFor } from "../claim/notes.js";
 import { renderEntityView, nodePath, type EntityNode, type EntityViewer } from "../entity/view.js";
 import { entityPage } from "../entity/page.js";
+import { movedTo } from "../utils/moved.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.join(__dirname, "..", "..");
@@ -82,6 +83,22 @@ function viewerOf(db: any, req: any): EntityViewer {
 }
 
 const notFoundPage = () => htmlPage("Not Found", "<h2>Not Found</h2><p>No node with that slug.</p>");
+
+// A node's old address (a rewritten slug, or a duplicate merged into it —
+// src/utils/moved.ts) 301s to its current one, on every page that takes a
+// slug. Registered before those routes. The slug may hold a "/" when it
+// predates the current slugifier (`idle/interludes`).
+const MOVED_PATH = new RegExp(`^/(record/|field/|neighbours/)?(${NODE_ROUTE_TYPES.join("|")})/(.+?)(/history\\.json|/history|/data)?$`);
+router.get(MOVED_PATH, (req, res, next) => {
+  const m = MOVED_PATH.exec(req.path);
+  if (!m) return next();
+  let slug: string;
+  try { slug = decodeURIComponent(m[3]!); } catch { return next(); }
+  const to = movedTo(getDb(), m[2]!, slug);
+  if (!to) return next();
+  const q = req.originalUrl.indexOf("?");
+  res.redirect(301, `/${m[1] ?? ""}${encodeURIComponent(to.type)}/${encodeURIComponent(to.slug)}${m[4] ?? ""}${q >= 0 ? req.originalUrl.slice(q) : ""}`);
+});
 
 // GET /:type/:slug — the entity view (src/entity/view.ts), the designed page
 // of a node: what invitations link to and search engines index. The same
@@ -565,6 +582,8 @@ const HISTORY_OP_LABEL: Record<string, string> = {
   attach_image: "image attached",
   retire_node: "retired",
   apply_image_patch: "image resized",
+  merge_node: "merged with a duplicate",
+  rename_slug: "address changed",
 };
 
 function renderHistoryEvent(e: HistoryEvent): string {

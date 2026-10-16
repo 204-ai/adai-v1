@@ -40,7 +40,7 @@ export type HistoryEvent =
   | {
       kind: "metadata";
       at: string | null;
-      op: string; // patch_node | attach_image | retire_node | apply_image_patch
+      op: string; // patch_node | attach_image | retire_node | apply_image_patch | merge_node | rename_slug
       changes: Array<{ key: string; before: unknown; after: unknown }>;
       before_recorded: boolean;
       by: string | null;
@@ -187,7 +187,7 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
     const changes = r.keys.map((key) => {
       const next = raws.slice(i + 1).find((n) => n.keys.includes(key));
       const after = !next
-        ? current[key] // last write to this key: what it holds now
+        ? (r.op === "rename_slug" && key === "slug" ? node.slug : current[key]) // last write to this key: what it holds now
         : next.prior?.before
           ? next.prior.before[key] // what the next write replaced
           : r.set?.[key]; // next write predates before-images: what this one set
