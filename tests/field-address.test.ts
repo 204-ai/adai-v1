@@ -55,6 +55,7 @@ function harness(start: string) {
       setLoc();
     },
     back: () => go(-1),
+    go: (d: number) => go(d),
     forward: () => go(1),
   };
   const win = {
@@ -69,7 +70,9 @@ function harness(start: string) {
   // the screen: what is focused, which profile is open
   const screen = { focusId: null as string | null, profileId: null as string | null };
   const applied: any[] = [];
+  let interrupted = 0;
   const addr = ctx.window.ADAI_FIELD_ADDRESS.create({
+    interrupted: () => { interrupted++; },
     win,
     settleMs: 1e9,
     nodeFor: (id: string) => NODES[id] ?? null,
@@ -86,6 +89,7 @@ function harness(start: string) {
   const flush = () => { while (timers.length) timers.shift()!(); };
   return {
     addr, screen, applied, flush,
+    get interrupted() { return interrupted; },
     get url() { return entries[index].url; },
     get length() { return entries.length; },
     get index() { return index; },
@@ -119,8 +123,10 @@ it("field address: a deep link settles in place; focusing and opening a profile 
   assert.equal(h.url, MAPAN);
   assert.equal(h.length, 2);
 
-  // closing it goes back to the address it was opened over — no extra step
-  h.set("institution:the outlier collection", null);
+  // its close button goes back to the address it was opened over — no extra step
+  h.screen.profileId = null;
+  h.addr.profileDismissed();
+  h.flush();
   assert.equal(h.url, OUTLIER);
   assert.equal(h.index, 0);
   assert.equal(h.screen.profileId, null);
@@ -186,4 +192,91 @@ it("field address: legacy ?node= and a replayed reading settle without extra ste
   const before = h.applied.length;
   h.addr.onPopState({ state: null });
   assert.equal(h.applied.length, before);
+});
+
+it("field address: dismissing a profile reached from another profile's link goes back to where the chain began", () => {
+  const h = harness(OUTLIER);
+  h.addr.expect(h.addr.urlFor("institution:the outlier collection"));
+  h.addr.landing();
+  h.set("institution:the outlier collection");
+  // the Outlier's profile, over its own focus: no step
+  h.set("institution:the outlier collection", "institution:the outlier collection");
+  assert.equal(h.length, 1);
+
+  // a relation link in that profile, in the overlay's real order:
+  // field.zoomTo(Mapan) first, then open(Mapan) — one coalesced pass
+  h.screen.focusId = "practitioner:william mapan";
+  h.addr.changed();
+  h.screen.profileId = "practitioner:william mapan";
+  h.addr.changed();
+  h.flush();
+  assert.equal(h.url, MAPAN);
+  assert.equal(h.length, 2);
+
+  // and on to a third profile from there
+  h.screen.focusId = "artwork:anticyclone";
+  h.screen.profileId = "artwork:anticyclone";
+  h.addr.changed();
+  h.flush();
+  assert.equal(h.length, 3);
+
+  // the close button: focus is Anticyclone now, yet the address goes back
+  // to the Outlier, focused there, profile closed
+  h.screen.profileId = null;
+  h.addr.profileDismissed();
+  h.flush();
+  assert.equal(h.url, OUTLIER);
+  assert.equal(h.index, 0);
+  assert.equal(h.screen.profileId, null);
+  assert.equal(h.screen.focusId, "institution:the outlier collection");
+  assert.equal(h.length, 3, "nothing pushed: Forward still leads into the profiles");
+
+  // Forward restores Mapan's profile, then Anticyclone's
+  h.forward();
+  assert.equal(h.url, MAPAN);
+  assert.equal(h.screen.profileId, "practitioner:william mapan");
+  h.forward();
+  assert.equal(h.screen.profileId, "artwork:anticyclone");
+
+  // "view in field" (not a dismissal) settles where the field is: Anticyclone
+  h.screen.profileId = null;
+  h.addr.changed();
+  h.flush();
+  assert.equal(h.url, "/field/artwork/anticyclone");
+  assert.equal(h.index, 2);
+  assert.equal(h.screen.profileId, null);
+});
+
+it("field address: a dismissal with nothing pushed just closes in place", () => {
+  const h = harness(MAPAN);
+  h.set("practitioner:william mapan");
+  h.set("practitioner:william mapan", "practitioner:william mapan");
+  h.screen.profileId = null;
+  h.addr.profileDismissed();
+  h.flush();
+  assert.equal(h.url, MAPAN);
+  assert.equal(h.length, 1);
+});
+
+it("field address: Back during a replayed reading drops its batch; only the owner ends it", () => {
+  const h = harness("/field");
+  const batch = h.addr.beginBatch();
+  h.set("institution:the outlier collection");
+  h.set("practitioner:william mapan");
+  assert.equal(h.length, 2, "a reading is one step");
+  h.back();
+  assert.equal(h.interrupted, 1, "the field is told, so the replay stops");
+  assert.equal(h.url, "/field");
+  assert.equal(h.screen.focusId, null);
+  h.addr.endBatch(batch); // the stale owner's end is harmless
+  assert.equal(h.length, 2);
+  h.forward();
+  assert.equal(h.url, MAPAN, "Forward still holds the reading's end");
+  // a new batch is not ended by the old token
+  const b2 = h.addr.beginBatch();
+  h.addr.endBatch(batch);
+  h.set("artwork:anticyclone");
+  h.set("institution:the outlier collection");
+  assert.equal(h.length, 3, "still batched: one step for the second reading");
+  h.addr.endBatch(b2);
 });

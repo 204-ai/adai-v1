@@ -1614,39 +1614,53 @@
   // Replay a path: walk node-by-node with zoomToNode + a tiny pause between
   // hops so each transition can finish. Snapshot mode skips the chain and
   // just jumps to the endpoint.
+  // A replay is one navigation among others: starting one, Back/Forward, or
+  // any focus change that is not the replay's own hop supersedes it. Each
+  // replay holds a generation and stops as soon as it is no longer current.
+  function cancelReplay(bundle) {
+    bundle.replayGen = (bundle.replayGen || 0) + 1;
+    return bundle.replayGen;
+  }
+
   async function replayPath(graph, bundle, path, opts = {}) {
     if (!Array.isArray(path) || path.length === 0) return;
     const w = window.innerWidth;
     const h = window.innerHeight;
+    const gen = cancelReplay(bundle);
+    const current = () => bundle.replayGen === gen;
     if (opts.snapshot) {
       // Build history with everything up to last; jump to last.
       const target = path[path.length - 1];
       bundle.history = path.slice(0, -1).map(id => ({ level: 'node', focusedId: id }));
       // First entry should be the 30k root
       bundle.history.unshift({ level: '30k', focusedId: null });
-      zoomToNode(graph, bundle, target, w, h, { noPush: true });
+      zoomToNode(graph, bundle, target, w, h, { noPush: true, fromReplay: true });
       return;
     }
     // Replay: step-by-step. Transition each hop, then dwell so the viewer
     // can read where they've landed before the next move. Skip the dwell
     // on the very last hop — they've arrived. The address follows each hop
     // in place: a replayed reading is one history step (issue #85).
-    bundle.address?.beginBatch();
+    const batch = bundle.address?.beginBatch();
     try {
       for (let i = 0; i < path.length; i++) {
         const id = path[i];
         const isLast = i === path.length - 1;
         while (bundle.transitioning) {
           await new Promise(r => setTimeout(r, 60));
+          if (!current()) return;
         }
-        zoomToNode(graph, bundle, id, w, h);
+        if (!current()) return;
+        zoomToNode(graph, bundle, id, w, h, { fromReplay: true });
         // wait the transition itself
         await new Promise(r => setTimeout(r, CFG.ZOOM_TRANSITION_MS + 60));
+        if (!current()) return;
         // then a longer dwell so the viewer can read this node
         if (!isLast) await new Promise(r => setTimeout(r, CFG.REPLAY_DWELL_MS));
       }
     } finally {
-      bundle.address?.endBatch();
+      // Only this replay's own batch (a popstate already dropped it).
+      bundle.address?.endBatch(batch);
     }
   }
 
@@ -2177,6 +2191,7 @@
 
   function zoomBack(graph, bundle, canvasW, canvasH) {
     if (bundle.transitioning) return;
+    cancelReplay(bundle);
     if (!bundle.viewLevel || bundle.viewLevel === '30k') return;
     if (bundle.viewLevel === 'field-focus' || bundle.viewLevel === 'field-reveal') {
       clearInPlaceFocus(bundle, graph);
@@ -3068,6 +3083,7 @@
   function focusNodeInPlace(graph, bundle, nodeId, opts = {}) {
     const node = graph.byId.get(nodeId);
     if (!node) return;
+    if (!opts.fromReplay && !opts.fromReveal) cancelReplay(bundle);
     // Every node is placed in the field now, so the focus always renders here.
     // (If a node ever lacked a dot, inPlaceFocusPoint centres it rather than
     // falling back to any legacy view.)
@@ -3106,6 +3122,7 @@
   function revealNodeInPlace(graph, bundle, nodeId, opts = {}) {
     const node = graph.byId.get(nodeId);
     if (!node) return;
+    if (!opts.fromReplay) cancelReplay(bundle);
     // Streaming-safety (see focusNodeInPlace): off-field nodes can't anchor the
     // reveal animation, so skip straight to the focus path, which falls back to
     // the legacy zoom view for them.
@@ -3147,6 +3164,7 @@
   }
 
   function clearInPlaceFocus(bundle, graph) {
+    cancelReplay(bundle);
     clearFieldReveal(bundle);
     hideEdgeAttrib();
     bundle.fieldFocusBlend = null;
@@ -3541,6 +3559,8 @@
         return { focusId: bundle.focusedId || null, profileId: ev?.isOpen ? (ev.currentId || null) : null };
       },
       idFromLocation: () => deepLinkTarget().id,
+      // Back/Forward is a navigation: a reading still replaying stops there.
+      interrupted: () => cancelReplay(bundle),
       apply: ({ id, profile, focus }) => {
         const ev = window.ADAI_ENTITY_VIEW;
         if (profile && id) {
@@ -3552,11 +3572,19 @@
         else if (!profile && bundle.focusedId) bundle.zoomToHome();
       },
     }) || null;
-    window.addEventListener('adai:entity-view', () => bundle.address?.changed());
+    window.addEventListener('adai:entity-view', (e) => {
+      const d = e.detail || {};
+      if (!d.open && d.reason === 'dismiss') bundle.address?.profileDismissed();
+      else bundle.address?.changed();
+    });
 
-    // If the URL has ?reading=..., auto-replay it on load.
-    const urlPath = readingFromUrl();
-    if (urlPath && urlPath.length > 0) {
+    // If the URL has ?reading=..., auto-replay it on load. A reading is the
+    // page's one initial navigation: a shared reading also carries the node
+    // path it was shared from (buildShareUrl keeps the pathname), and neither
+    // that deep link nor "open on yourself" may jump in on top of the replay.
+    const urlPath = (readingFromUrl() || []).filter((id) => graph.byId.has(id));
+    const replayingOnLoad = urlPath.length > 0;
+    if (replayingOnLoad) {
       // The page lands on the reading: its replay is this entry, not a new step.
       bundle.address?.landing(urlPath.length * (CFG.ZOOM_TRANSITION_MS + CFG.REPLAY_DWELL_MS) + 2000);
       // Clear the param so reload doesn't replay again, but keep the URL clean.
@@ -3593,7 +3621,7 @@
       return { wanted, id: graph.byId.has(wanted) ? wanted : null };
     }
 
-    const deepLink = deepLinkTarget();
+    const deepLink = replayingOnLoad ? { wanted: null, id: null } : deepLinkTarget();
     if (deepLink.wanted) {
       const targetId = deepLink.id;
       if (targetId) {
@@ -3700,7 +3728,7 @@
         try { stored = localStorage.getItem('adai-lens'); } catch { /* storage blocked */ }
         setLens(params.get('lens') === '1' || stored === '1');
         // Open on yourself, unless the link names another node or replays a reading.
-        if (!named && !params.get('reading')) {
+        if (!named && !replayingOnLoad) {
           bundle.address?.landing();
           setTimeout(() => {
             if (window.ADAI_FIELD_STUDY?.zoomToNode?.(L.self)) return;

@@ -10,12 +10,20 @@
  *
  * Whenever that changes, the address follows with a history step (pushState);
  * when it does not (the same node re-focused, its profile opened over it) the
- * entry's state is updated in place and no duplicate step is added. Closing a
- * profile whose step we pushed goes BACK to the address it was opened over,
- * so open/close is one step, as Back/Forward are. popstate re-applies an
- * entry (focus + profile) through `apply` without pushing again.
+ * entry's state is updated in place and no duplicate step is added.
  *
- * Every entry we write carries { adai: 'field', id, profile, focus, prev }.
+ * Profiles chain: opening one, then another from its links, are steps; each
+ * profile entry remembers the field address the chain started from (`base`)
+ * and how many steps it is from there (`depth`). Dismissing the profile (its
+ * close button: `profileDismissed`) goes BACK those steps, to that address
+ * and its focus, with the profile closed — whatever the field focused in
+ * between — so Forward brings the profile back. Other ways of closing
+ * ("view in field", Esc) settle where the field now is. popstate re-applies
+ * an entry (focus + profile) through `apply` without pushing again, and
+ * tells the field (`interrupted`) so a running reading replay stops.
+ *
+ * Every entry we write carries { adai: 'field', id, profile, focus, prev,
+ * pushed, base, depth }.
  * Other query parameters (lens, seed, …) and the hash are kept; the legacy
  * ?node= and the one-shot ?reading= are dropped once the address is ours.
  *
@@ -48,6 +56,8 @@
     let landingUntil = 0;    // writes before this replace instead of push
     let batch = null;        // { wrote } — a replayed reading is ONE step
     let timer = null;
+    let dismiss = false;     // the next sync follows an explicit profile dismissal
+    let restoring = null;    // { focus }: the base a dismissal is going back to
 
     function currentUrl() {
       const l = win.location;
@@ -75,6 +85,30 @@
 
     const same = (a, b) => !!a && !!b && a.id === b.id && a.profile === b.profile && a.focus === b.focus;
 
+    /** The state to write for `want`. `pushing`: a new entry after `cur`. */
+    function entry(want, prevState, cur, pushing) {
+      const ours = prevState && prevState.adai === 'field';
+      const chained = ours && prevState.profile && prevState.base;
+      const st = {
+        adai: 'field', ...want,
+        prev: pushing ? cur : ours ? prevState.prev ?? null : null,
+        pushed: pushing ? true : ours ? !!prevState.pushed : false,
+      };
+      if (want.profile) {
+        if (chained) {
+          st.base = prevState.base;
+          st.depth = (prevState.depth || 0) + (pushing ? 1 : 0);
+        } else if (pushing) {
+          st.base = { url: cur, focus: ours ? prevState.focus ?? null : o.idFromLocation(win.location) };
+          st.depth = 1;
+        } else {
+          st.base = { url: cur, focus: want.focus };
+          st.depth = 0;
+        }
+      }
+      return st;
+    }
+
     function sync() {
       timer = null;
       const want = wanted();
@@ -88,26 +122,29 @@
       const cur = currentUrl();
       const prevState = win.history.state;
       const ours = prevState && prevState.adai === 'field';
+      // The profile's close button: back to where the profile chain began.
+      if (dismiss) {
+        dismiss = false;
+        if (!want.profile && ours && prevState.profile && prevState.pushed && prevState.base && prevState.depth > 0) {
+          restoring = { focus: prevState.base.focus ?? null };
+          pending = { url: prevState.base.url, until: now() + settleMs };
+          win.history.go(-prevState.depth);
+          return;
+        }
+      }
       if (url === cur) {
         if (!ours || !same(prevState, want)) {
-          win.history.replaceState({ adai: 'field', ...want, prev: ours ? prevState.prev ?? null : null, pushed: ours ? !!prevState.pushed : false }, '', url);
+          win.history.replaceState(entry(want, prevState, cur, false), '', url);
         }
-        return;
-      }
-      // A profile we pushed, closed back onto the address it was opened over:
-      // step back rather than add a step (popstate then finds it all in place).
-      if (ours && prevState.pushed && prevState.profile && !want.profile && prevState.prev === url && !batch) {
-        pending = { url, until: now() + settleMs };
-        win.history.back();
         return;
       }
       const replace = now() < landingUntil || (batch && batch.wrote);
       if (batch) batch.wrote = true;
       if (replace) {
         landingUntil = 0;
-        win.history.replaceState({ adai: 'field', ...want, prev: ours ? prevState.prev ?? null : null, pushed: ours ? !!prevState.pushed : false }, '', url);
+        win.history.replaceState(entry(want, prevState, cur, false), '', url);
       } else {
-        win.history.pushState({ adai: 'field', ...want, prev: cur, pushed: true }, '', url);
+        win.history.pushState(entry(want, prevState, cur, true), '', url);
       }
     }
 
@@ -120,7 +157,12 @@
     function onPopState(e) {
       const st = e && e.state;
       let target;
-      if (st && st.adai === 'field') {
+      if (o.interrupted) o.interrupted();
+      if (restoring) {
+        // Our own step back from a dismissed profile: its base, profile closed.
+        target = { id: restoring.focus, profile: false, focus: restoring.focus };
+        restoring = null;
+      } else if (st && st.adai === 'field') {
         target = { id: st.id ?? null, profile: !!st.profile, focus: st.focus ?? (st.profile ? null : st.id ?? null) };
       } else {
         // An entry we did not write: the landing page, or a #hash step.
@@ -152,9 +194,12 @@
       landing(ms = settleMs) { landingUntil = now() + ms; },
       /** Hold the address where it is until the screen reaches `url` (or a timeout). */
       expect(url, ms = settleMs) { pending = { url, until: now() + ms }; },
-      /** A replayed reading: its first write is a step, the rest follow in place. */
-      beginBatch() { batch = { wrote: false }; },
-      endBatch() { batch = null; changed(); },
+      /** The profile was closed by its own close button (not "view in field", not Esc). */
+      profileDismissed() { dismiss = true; changed(); },
+      /** A replayed reading: its first write is a step, the rest follow in place.
+       *  Returns the batch; only that batch's owner ends it (a popstate drops it). */
+      beginBatch() { batch = { wrote: false }; return batch; },
+      endBatch(token) { if (token && token !== batch) return; batch = null; changed(); },
       urlFor,
     };
   }
