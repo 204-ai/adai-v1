@@ -394,14 +394,18 @@ file** (no cr-sqlite needed) with only the five CRR tables plus a `meta` table.
 The privacy boundary is the projection: public signals only, decided per batch and
 operation (a probationary URL-intake batch stays out while its review is pending
 or rejected); structural_only / revoked keep the row without words; anonymous
-ones lose every correlation handle (batch id, provenance, structured content;
-edges' `created_by` and ids re-minted, references followed); node metadata is an
-allowlist of what the entity view shows, minus any value a restricted or
-non-public contribution wrote; `updated_by` only when the latest writer is
+ones lose every correlation handle (batch id, provenance; edges' `created_by`
+and ids re-minted, references followed); signal content is prose only — structured
+(JSON) bodies (API payloads, admin records with before-images) become at most
+`{op, node_id?, edge_id?}`; node metadata is a typed, recursive allowlist of what
+the entity view shows (key works as `{title, year, description}`, no
+`image_provenance`, the upstream `image_url` only without a mirror copy), minus
+any value a restricted or non-public contribution wrote; URLs lose userinfo and
+signed-looking query parameters; `updated_by` only when the latest writer is
 public and attributed; contributors only when named publicly, counters recomputed,
 no trust tiers; references to records not in the file are NULL. A central
-sanitiser (emails, common key shapes) runs over every value as defence in depth
-only. No local tables, no embeddings; images stay on the public R2 URLs. Publishing:
+sanitiser (emails, common key shapes) runs over every value, every serialised JSON
+string and every `meta` value as defence in depth only. No local tables, no embeddings; images stay on the public R2 URLs. Publishing:
 `.github/workflows/snapshot-publish.yml` (dispatch-only until the licence statement
 is decided) uploads to the public bucket under `snapshots/` — outside the
 `images/` prefix `cull_orphans.py` works on.

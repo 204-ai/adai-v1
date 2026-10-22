@@ -247,7 +247,7 @@ it("metadata: a public projection; values written by a structural_only, revoked 
   }
 });
 
-it("a contributor both attributed and anonymous: no correlation handle, no person-wide labels, edge ids in kept JSON follow", () => {
+it("a contributor both attributed and anonymous: no correlation handle, no person-wide labels, edge ids in a summary follow", () => {
   const db = fixture();
   db.prepare("INSERT INTO contributors (id, name, trust_tier) VALUES ('c-mixed', 'Mixed Person', 'reviewed')").run();
   const sig = db.prepare(`INSERT INTO signals (id, title, content, submitted_by, consent_attribution, batch_id, provenance_chain, source_type, created_at, confidence)
@@ -278,7 +278,7 @@ it("a contributor both attributed and anonymous: no correlation handle, no perso
     assert.deepEqual([a.submitted_by, a.batch_id, a.provenance_chain, a.content], ["anonymous", null, null, null]);
     const e = out.prepare("SELECT id, created_by FROM edges WHERE signal_id = 'm-anon'").get() as any;
     assert.equal(e.created_by, "anonymous");
-    assert.equal(JSON.parse((out.prepare("SELECT content FROM signals WHERE id = 'm-sup'").get() as any).content).supersedes_edge_id, e.id, "the kept JSON follows the re-minted id");
+    assert.deepEqual(JSON.parse((out.prepare("SELECT content FROM signals WHERE id = 'm-sup'").get() as any).content), { op: "api_edge", edge_id: e.id }, "structured content → a summary whose edge id follows the re-minted id");
     assert.equal((out.prepare("SELECT updated_by FROM nodes WHERE id = 'concept:mixed'").get() as any).updated_by, null, "last written anonymously: omitted, though the person is public");
     assert.equal((out.prepare("SELECT invalidated_by FROM edges WHERE id = 'e-inv'").get() as any).invalidated_by, null, "a reference to a record not in the file is NULL");
     assert.equal((out.prepare("SELECT signal_id FROM edges WHERE id = 'e-inv'").get() as any).signal_id, "s-pub");
@@ -332,6 +332,153 @@ it("the source: read-only, never written; --out can never be the source (path or
     d.close();
     assert.ok(statSync(join(dir, "out.sqlite")).size > 0);
     assert.deepEqual(readdirSync(dir).filter((n) => n.endsWith(".tmp")), [], "no temp file left behind");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- second review round ------------------------------------------------------------------
+
+const textsOf = (dir: string, path: string) => [readFileSync(path), ...readdirSync(join(dir, "jsonl")).map((f) => readFileSync(join(dir, "jsonl", f)))].map((b) => b.toString("latin1"));
+
+it("metadata: typed and recursive — nested secrets, wrong types, unrendered sections and upstream image provenance dropped", () => {
+  const db = fixture();
+  const node = db.prepare("INSERT INTO nodes (id, type, name, slug, metadata, updated_by) VALUES (?, ?, ?, ?, ?, 'contributor:migration')");
+  node.run("practitioner:nested", "practitioner", "Nested", "nested", JSON.stringify({
+    summary: { text: "OBJSUMMARY" },                       // an object where a string is documented
+    kind: ["gallery", { secret: "KINDOBJ" }, 3],
+    year_start: 2019, year_ongoing: "yes",
+    cdn_image_url: "https://pub.r2.dev/images/aa/aa.png",
+    image_url: "https://upstream.example/img.png?X-Amz-Signature=UPSTREAMSIG",
+    image_provenance: { fetched_from: "PROVSECRET", by: "Hidden Person" },
+    website: "https://studio.example/works?page=2&X-Amz-Credential=AMZCRED&token=URLTOKEN#frag",
+    homepage: "https://user:URLPASSWORD@studio.example/",
+    claimed: { at: "2026-10-01T00:00:00Z", handle: "nested", by: ["Nested", { email: "CLAIMOBJ" }] },
+    full_profile: {
+      basic_info: { location: "Basel", url: "javascript:alert(1)", active_years: 2010, phone: "PHONESECRET" },
+      practice_description: { practice_summary: "Glitch as care.", medium: ["MEDIUMLIST"], methodology: "METHODSECRET" },
+      commons_orientation: { commons_summary: "COMMONSSECRET" },
+      key_works: { works: [
+        { title: "First", year: 2020, description: "A work.", private_note: "WORKNOTE", collector: { name: "COLLECTOR" } },
+        { title: { x: "TITLEOBJ" } },
+        "not an object",
+      ], curator_notes: "KEYWORKSNOTE" },
+    },
+  }));
+  // no full_profile: the top-level sections the view falls back to, projected the same way
+  node.run("artwork:toplevel", "artwork", "Top", "toplevel", JSON.stringify({
+    image_url: "https://cdn.example/a.jpg?w=550&s=IMGIXSIG",
+    key_works: { works: [{ title: "Only", year: "1999", private_note: "TOPWORKNOTE" }] },
+    basic_info: { active_years: "1990s", internal: "TOPINTERNAL" },
+  }));
+  const dir = mkdtempSync(join(tmpdir(), "adai-snap-"));
+  try {
+    const path = join(dir, "s.sqlite");
+    buildSnapshot(db, path, { jsonlDir: join(dir, "jsonl") });
+    for (const text of textsOf(dir, path)) {
+      for (const sec of ["OBJSUMMARY", "KINDOBJ", "UPSTREAMSIG", "upstream.example", "PROVSECRET", "AMZCRED", "URLTOKEN", "URLPASSWORD", "CLAIMOBJ",
+        "PHONESECRET", "MEDIUMLIST", "METHODSECRET", "COMMONSSECRET", "WORKNOTE", "COLLECTOR", "TITLEOBJ", "KEYWORKSNOTE", "IMGIXSIG", "TOPWORKNOTE", "TOPINTERNAL"]) {
+        assert.ok(!text.includes(sec), `"${sec}" leaked`);
+      }
+    }
+    const out = new DatabaseSync(path);
+    const meta = (id: string) => JSON.parse((out.prepare("SELECT metadata FROM nodes WHERE id = ?").get(id) as any).metadata);
+    assert.deepEqual(meta("practitioner:nested"), {
+      kind: ["gallery"],
+      year_start: 2019,
+      cdn_image_url: "https://pub.r2.dev/images/aa/aa.png",
+      website: "https://studio.example/works?page=2",
+      claimed: { at: "2026-10-01T00:00:00Z", handle: "nested", by: ["Nested"] },
+      full_profile: {
+        basic_info: { location: "Basel", active_years: 2010 },
+        practice_description: { practice_summary: "Glitch as care." },
+        key_works: { works: [{ title: "First", year: 2020, description: "A work." }] },
+      },
+    });
+    assert.deepEqual(meta("artwork:toplevel"), {
+      image_url: "https://cdn.example/a.jpg?w=550", // no mirror copy: the upstream link stands in, unsigned
+      key_works: { works: [{ title: "Only", year: "1999" }] },
+      basic_info: { active_years: "1990s" },
+    });
+    out.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("signal content: prose only — real API payloads and a batch retirement's before-images never pass", () => {
+  const db = fixture();
+  const sig = db.prepare("INSERT INTO signals (id, title, content, submitted_by, consent_attribution, consent_scope, status, source_type, batch_id) VALUES (?, ?, ?, 'Artist A', 'attributed', 'full_commons', 'active', ?, ?)");
+  const approve = db.prepare("INSERT INTO intake_queue (id, signal_id, submitted_by, trust_tier, status, kind) VALUES (?, ?, 'Artist A', 'auto', 'approved', 'human_signal')");
+  // POST /api/v1/nodes stores the whole payload (contributor-api.ts)
+  sig.run("api-create", "Create node: artwork:Hidden", JSON.stringify({ type: "artwork", name: "Hidden", slug: "hidden", metadata: { summary: "x", private_note: "CREATESECRET" }, aliases: [{ source: "web", external_id: "https://private.example/ALIASSECRET" }] }), "api_node", null);
+  approve.run("qa1", "api-create");
+  // PATCH /api/v1/nodes/:id stores the whole patch
+  sig.run("api-patch", "Patch node metadata: artwork:work-1", JSON.stringify({ node_id: "artwork:work-1", patch: { description: "PATCHSECRET" } }), "api_node", null);
+  approve.run("qa2", "api-patch");
+  // a structural_only patch whose value a later batch retirement copies into its own (full-consent) admin signal
+  sig.run("restricted-patch", "Patch", JSON.stringify({ node_id: "artwork:work-1", patch: { summary: "RESTRICTEDVALUE" } }), "api_node", "b-restricted");
+  db.prepare("UPDATE signals SET consent_scope = 'structural_only' WHERE id = 'restricted-patch'").run();
+  approve.run("qa3", "restricted-patch");
+  db.prepare("INSERT INTO signals (id, title, content, submitted_by, source_type, status) VALUES ('admin-retire', 'Retire batch: b-restricted', ?, 'api-Op', 'api_admin', 'active')")
+    .run(JSON.stringify({ action: "retire_batch", batch_id: "b-restricted", reason: "asked",
+      patches_to_review: [{ op: "patch_node", node_id: "artwork:work-1", signal_id: "restricted-patch", before: { summary: "RESTRICTEDBEFORE" } }] }));
+  // a revoked signal's value inside an admin revoke record
+  db.prepare("INSERT INTO signals (id, title, content, submitted_by, source_type, status) VALUES ('admin-revoke', 'Revoke signal: s-revoked', ?, 'api-Op', 'api_admin', 'active')")
+    .run(JSON.stringify({ action: "revoke_signal", signal_id: "s-revoked", reason: "REVOKEREASON", echo: "REVOKEDSECRET" }));
+  const dir = mkdtempSync(join(tmpdir(), "adai-snap-"));
+  try {
+    const path = join(dir, "s.sqlite");
+    buildSnapshot(db, path, { jsonlDir: join(dir, "jsonl") });
+    for (const text of textsOf(dir, path)) {
+      for (const sec of ["CREATESECRET", "ALIASSECRET", "PATCHSECRET", "RESTRICTEDVALUE", "RESTRICTEDBEFORE", "REVOKEREASON", "REVOKEDSECRET", "patches_to_review"]) {
+        assert.ok(!text.includes(sec), `"${sec}" leaked`);
+      }
+    }
+    const out = new DatabaseSync(path);
+    const content = (id: string) => (out.prepare("SELECT content FROM signals WHERE id = ?").get(id) as any)?.content;
+    assert.deepEqual(JSON.parse(content("api-create")), { op: "api_node" });
+    assert.deepEqual(JSON.parse(content("api-patch")), { op: "api_node", node_id: "artwork:work-1" });
+    assert.equal(content("restricted-patch"), null, "structural_only: no words, no summary");
+    assert.deepEqual(JSON.parse(content("admin-retire")), { op: "retire_batch" });
+    assert.deepEqual(JSON.parse(content("admin-revoke")), { op: "revoke_signal" });
+    assert.equal(content("s-pub"), "Public words.", "prose stays");
+    out.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("URLs and the final sanitiser pass: signed queries and userinfo gone, real queries kept, every JSON string and meta value swept", async () => {
+  const { publicUrl } = await import("../src/snapshot/build.js");
+  assert.equal(publicUrl("https://www.fondation-langlois.org/html/e/page.php?NumPage=279"), "https://www.fondation-langlois.org/html/e/page.php?NumPage=279");
+  assert.equal(publicUrl("https://books.google.com/books/about/K.html?id=eebWBQAAQBAJ"), "https://books.google.com/books/about/K.html?id=eebWBQAAQBAJ");
+  assert.equal(publicUrl("https://b.s3.amazonaws.com/k.png?X-Amz-Algorithm=a&X-Amz-Signature=b&X-Amz-Expires=3600"), "https://b.s3.amazonaws.com/k.png");
+  assert.equal(publicUrl("https://x.example/p?token=abc&expires=1&Signature=z&lang=en"), "https://x.example/p?lang=en");
+  assert.equal(publicUrl("https://user:pw@x.example/"), null);
+  assert.equal(publicUrl("javascript:alert(1)"), null);
+  assert.equal(publicUrl("ftp://x.example/"), null);
+
+  const db = fixture();
+  db.prepare("INSERT INTO nodes (id, type, name, slug, metadata, updated_by) VALUES ('concept:keys', 'concept', 'Keys', 'keys', ?, 'contributor:migration')")
+    .run(JSON.stringify({ summary: 'config {"token": "ZZZZZZZZZZZZZZZZZZZZ"} and mail me@private.test' }));
+  db.prepare("UPDATE signals SET source_url = 'https://x.example/doc?X-Amz-Signature=SRCSIG&page=3', provenance_chain = ? WHERE id = 's-pub'")
+    .run(JSON.stringify({ source: "https://user:PROVPASS@x.example/?sig=PROVSIG", page_sha256: "abc" }));
+  const dir = mkdtempSync(join(tmpdir(), "adai-snap-"));
+  try {
+    const path = join(dir, "s.sqlite");
+    buildSnapshot(db, path, { jsonlDir: join(dir, "jsonl"), source: "https://ops:METAPASS@adai.example/?token=METATOKEN" });
+    for (const text of textsOf(dir, path)) {
+      for (const sec of ["ZZZZZZZZZZZZZZZZZZZZ", "me@private.test", "SRCSIG", "PROVPASS", "PROVSIG", "METAPASS", "METATOKEN"]) assert.ok(!text.includes(sec), `"${sec}" leaked`);
+    }
+    const out = new DatabaseSync(path);
+    const m = JSON.parse((out.prepare("SELECT metadata FROM nodes WHERE id = 'concept:keys'").get() as any).metadata);
+    assert.match(m.summary, /\[redacted\]/, "still valid JSON after the sweep");
+    const s = out.prepare("SELECT source_url, provenance_chain FROM signals WHERE id = 's-pub'").get() as any;
+    assert.equal(s.source_url, "https://x.example/doc?page=3");
+    assert.deepEqual(JSON.parse(s.provenance_chain), { page_sha256: "abc" }, "a provenance source with userinfo is dropped");
+    assert.equal((out.prepare("SELECT value FROM meta WHERE key = 'source'").get() as any).value, "https://adai-basel.fly.dev/");
+    out.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

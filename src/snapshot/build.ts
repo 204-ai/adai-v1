@@ -23,8 +23,12 @@
 //     operations. Claimants' objections and unpublished notes stay out too.
 //   - structural_only: the fact stays; title, summary, content, source_url
 //     and provenance go;
-//   - anonymous: submitted_by 'anonymous'; batch id, provenance and any
-//     structured (JSON) content go — they are correlation handles;
+//   - content is prose only. Structured (JSON) content — API request bodies,
+//     operation records with before-images or review payloads — never
+//     passes: an attributed one becomes a tiny summary {op, node_id?,
+//     edge_id?} naming only records in the file; an anonymous one is NULL;
+//   - anonymous: submitted_by 'anonymous'; batch id and provenance go —
+//     they are correlation handles;
 //   - revoked: the row stays (status shown, as /history does), its words,
 //     source and provenance go;
 //   - processing_trace is never exported; provenance_chain keeps only
@@ -32,10 +36,12 @@
 //     for attributed signals) — never draft ids, reader summaries or who
 //     picked what up; `confidence` values that are trust tiers go.
 //
-// Nodes: metadata is a projection — an allowlist of what the public entity
-// view shows (descriptions, location / dates / medium, websites, kind, the
-// image URLs and their provenance, the claim as {at, handle, by}, retired
-// as a bare flag), and of those keys only values no structural_only,
+// Nodes: metadata is a typed, recursive projection — an allowlist of what
+// the public entity view shows, each key with its shape (descriptions,
+// location / dates / medium, websites, kind, the mirror image URL — the
+// upstream one only when there is no mirror copy — the claim as {at,
+// handle, by}, retired as a bare flag, the profile sections it renders,
+// key works as {title, year, description}), and of those keys only values no structural_only,
 // revoked or non-public contribution ever wrote (traced through the review
 // operations that set them and the before-images on signals). updated_by is
 // kept only when the latest contribution that wrote the node is public and
@@ -43,9 +49,13 @@
 //
 // Edges: created_by follows the edge's own signal (anonymous → 'anonymous');
 // an id embedding a hidden writer label is re-minted (random) and every
-// reference to it follows — invalidated_by, and edge ids inside retained
-// JSON content. References to records not in the file (a signal left out)
-// are cleared to NULL.
+// reference to it follows (invalidated_by, a summary's edge_id). References
+// to records not in the file (a signal left out) are cleared to NULL.
+//
+// URLs (sources, websites, images, provenance): http(s) only, no userinfo,
+// signed-looking query parameters (X-Amz-*, signature, token, expires, …)
+// removed. The sanitiser also runs over every serialised JSON string and
+// every meta value.
 //
 // Contributors: only those named on a public attributed signal; their
 // counters recomputed from what the file holds; trust tiers not exported.
@@ -146,22 +156,84 @@ function licenceText(): string {
 
 const has = (db: DatabaseSync, t: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t);
 
-// ---- node metadata: the public projection -------------------------------------------------
+// ---- URLs: public links only ------------------------------------------------------------
 
-/** Top-level keys the public entity view shows (src/entity/view.ts and its helpers). */
-const PUBLIC_KEYS = new Set([
-  "summary", "description", "bio", "location", "city", "country", "active_years", "medium", "homepage", "website", "url",
-  "kind", "year", "year_start", "year_end", "year_raw", "year_ongoing", "date_text", "mint_opens_at", "created_at",
-  "cdn_image_url", "image_url", "image_provenance", "source_url", "va_maker_name", "merged_into",
-]);
-/** full_profile: only the parts the entity view renders. */
-const PROFILE_PATHS: Array<[string, string[]]> = [
-  ["basic_info", ["location", "url", "active_years"]],
-  ["practice_description", ["practice_summary", "medium", "methodology"]],
-  ["commons_orientation", ["commons_summary"]],
-  ["governance_model", ["governance_detail"]],
-  ["key_works", ["works"]],
-];
+/** Query parameters that look like a signature, a credential or an expiry — never kept. */
+const SIGNED_PARAM = /^(x-amz-.*|x-goog-.*|signature|sig|s|token|access_token|auth|authorization|key|api_key|apikey|expires|exp|policy|key-pair-id|se|sp|sv|sr|st|skoid|sktid|skt|ske|sks|skv|password|secret)$/i;
+
+/**
+ * A URL as the file may hold it: http(s) only, no userinfo, signed-looking
+ * query parameters removed (the rest of the query stays — real links like
+ * page.php?NumPage=279 or books?id=… need it), no fragment. Anything else: null.
+ */
+export function publicUrl(v: unknown): string | null {
+  if (typeof v !== "string" || !v.trim()) return null;
+  let u: URL;
+  try { u = new URL(v.trim()); } catch { return null; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  if (u.username || u.password) return null;
+  for (const k of [...u.searchParams.keys()]) if (SIGNED_PARAM.test(k)) u.searchParams.delete(k);
+  u.hash = "";
+  return sanitise(u.toString());
+}
+
+// ---- node metadata: the public projection -------------------------------------------------
+//
+// Typed and recursive: every kept key has a declared shape (a string, a
+// number, a URL, a list of strings, a fixed sub-object) mirroring what the
+// public entity view renders (src/entity/view.ts, src/utils/year.ts,
+// src/utils/source-label.ts). A value of the wrong type is dropped, never
+// coerced; a sub-object keeps only its declared keys, at every depth.
+
+type Shape = "str" | "num" | "strnum" | "bool_true" | "url" | "strlist" | "str_or_list" | { [k: string]: Shape } | { list: { [k: string]: Shape } };
+
+const str = (v: unknown) => (typeof v === "string" ? sanitise(v) : undefined);
+function project(v: unknown, shape: Shape): unknown {
+  if (v === null || v === undefined) return undefined;
+  switch (shape) {
+    case "str": return str(v);
+    case "num": return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+    case "strnum": return typeof v === "number" && Number.isFinite(v) ? v : str(v);
+    case "bool_true": return v === true ? true : undefined;
+    case "url": return publicUrl(v) ?? undefined;
+    case "strlist": return Array.isArray(v) ? v.filter((x) => typeof x === "string").map((x) => sanitise(x)) : undefined;
+    case "str_or_list": return Array.isArray(v) ? project(v, "strlist") : str(v);
+  }
+  if ("list" in shape && typeof (shape as any).list === "object" && Object.keys(shape).length === 1) {
+    if (!Array.isArray(v)) return undefined;
+    const items = v.map((x) => project(x, (shape as any).list)).filter((x) => x !== undefined);
+    return items.length ? items : undefined;
+  }
+  if (typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [k, sub] of Object.entries(shape as Record<string, Shape>)) {
+    const x = project((v as any)[k], sub);
+    if (x !== undefined) out[k] = x;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** The profile sections the view reads (from full_profile, or from the top level when there is none). */
+const PROFILE_SHAPE: Record<string, Shape> = {
+  basic_info: { location: "str", url: "url", active_years: "strnum" },
+  practice_description: { practice_summary: "str", medium: "str" },
+  key_works: { works: { list: { title: "str", year: "strnum", description: "str" } } },
+};
+
+/** Top-level keys the public entity view shows, with their shapes. image_provenance is not one (no renderer). */
+const METADATA_SHAPE: Record<string, Shape> = {
+  summary: "str", description: "str", bio: "str",
+  location: "str", city: "str", country: "str", active_years: "strnum", medium: "str",
+  homepage: "url", website: "url", url: "url", source_url: "url",
+  kind: "str_or_list",
+  year: "strnum", year_start: "strnum", year_end: "strnum", year_raw: "str", year_ongoing: "bool_true",
+  date_text: "str", mint_opens_at: "str", created_at: "str",
+  cdn_image_url: "url", va_maker_name: "str", merged_into: "str",
+  retired: "bool_true", // never the reason or who
+  claimed: { at: "str", handle: "str", by: "strlist" },
+  ...PROFILE_SHAPE,
+  full_profile: PROFILE_SHAPE,
+};
 
 function projectMetadata(raw: unknown, tainted: Set<string>): { json: string | null; dropped: number } {
   const m = parse(raw);
@@ -170,32 +242,46 @@ function projectMetadata(raw: unknown, tainted: Set<string>): { json: string | n
   let dropped = 0;
   for (const [k, v] of Object.entries(m)) {
     if (tainted.has(k)) { dropped++; continue; }
-    if (PUBLIC_KEYS.has(k)) { out[k] = v; continue; }
-    if (k === "retired") { if (v === true) out.retired = true; continue; } // never the reason or who
-    if (k === "claimed" && v && typeof v === "object") {
-      const c = v as any;
-      out.claimed = {
-        ...(typeof c.at === "string" ? { at: c.at } : {}),
-        ...(typeof c.handle === "string" ? { handle: c.handle } : {}),
-        by: Array.isArray(c.by) ? c.by.filter((x: unknown) => typeof x === "string") : [],
-      };
-      continue;
-    }
-    if (k === "full_profile" && v && typeof v === "object") {
-      const fp: Record<string, unknown> = {};
-      for (const [section, keys] of PROFILE_PATHS) {
-        const sec = (v as any)[section];
-        if (!sec || typeof sec !== "object") continue;
-        const kept: Record<string, unknown> = {};
-        for (const key of keys) if (sec[key] !== undefined) kept[key] = sec[key];
-        if (Object.keys(kept).length) fp[section] = kept;
-      }
-      if (Object.keys(fp).length) out.full_profile = fp;
-      continue;
-    }
-    dropped++;
+    const shape = METADATA_SHAPE[k];
+    const x = shape ? project(v, shape) : undefined;
+    if (x === undefined) { if (k !== "image_url") dropped++; continue; }
+    out[k] = x;
   }
-  return { json: Object.keys(out).length ? JSON.stringify(out, (_k, val) => sanitise(val)) : null, dropped };
+  // The upstream image URL only stands in when there is no mirror copy — and only as a clean public link.
+  if (out.cdn_image_url === undefined && !tainted.has("image_url")) {
+    const up = publicUrl(m.image_url);
+    if (up) out.image_url = up;
+  } else if (m.image_url !== undefined) dropped++;
+  return { json: Object.keys(out).length ? finalJson(out) : null, dropped };
+}
+
+/** Serialise, then run the sanitiser over the whole string too (property names included); never emit broken JSON. */
+function finalJson(v: unknown): string | null {
+  const text = sanitise(JSON.stringify(v));
+  try { JSON.parse(text); return text; } catch { return null; }
+}
+
+// ---- signal content: prose only -----------------------------------------------------------
+//
+// Structured (JSON) content is an API request body or an operation record:
+// a node-create stores its whole metadata + aliases payload, a patch its
+// whole patch, a batch retirement its patches_to_review with their
+// before-images. None of it passes the metadata projection, so none of it is
+// exported. What stays is at most a tiny allowlisted summary — the
+// operation's name and the ids of a node / edge that are themselves in the
+// file — never values, before-images or review payloads.
+
+const OP_NAME = /^[a-z_]{1,40}$/;
+
+function structuredSummary(json: any, sourceType: unknown, nodeIds: Set<string>, edgeRef: (id: unknown) => string | null): string | null {
+  const op = typeof json?.action === "string" && OP_NAME.test(json.action) ? json.action
+    : typeof sourceType === "string" && OP_NAME.test(sourceType) ? sourceType : "structured";
+  const out: Record<string, string> = { op };
+  const node = [json?.node_id, json?.target_node, json?.id].find((x) => typeof x === "string" && nodeIds.has(x));
+  if (node) out.node_id = node;
+  const edge = [json?.edge_id, json?.supersedes_edge_id].map(edgeRef).find((x) => !!x);
+  if (edge) out.edge_id = edge;
+  return finalJson(out);
 }
 
 // ---- build --------------------------------------------------------------------------------
@@ -317,13 +403,17 @@ function fill(src: DatabaseSync, out: DatabaseSync, opts: SnapshotOptions): Snap
     }
     e._by = by;
   }
-  /** Edge ids inside structured content follow their re-minted ids. */
-  const remapJson = (v: any): any => {
-    if (typeof v === "string") return renamed.get(v) ?? v;
-    if (Array.isArray(v)) return v.map(remapJson);
-    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, remapJson(x)]));
-    return v;
+  const edgeIds = new Set(edgeRows.map((e) => e.id as string));
+  // A reference to a record not in the file is cleared (NULL): a signal left
+  // out, or anything else unknown.
+  const ref = (id: unknown): string | null => {
+    if (typeof id !== "string" || !id) return null;
+    if (renamed.has(id)) return S(renamed.get(id)!);
+    if (edgeIds.has(id) || exported.has(id)) return S(id);
+    return null;
   };
+  const nodeIds = new Set((src.prepare("SELECT id FROM nodes").all() as any[]).map((r) => String(r.id)));
+  const edgeRef = (id: unknown): string | null => (typeof id === "string" && (renamed.has(id) || edgeIds.has(id)) ? ref(id) : null);
 
   // ---- write signals ------------------------------------------------------------------------
   const insSig = out.prepare(
@@ -334,22 +424,27 @@ function fill(src: DatabaseSync, out: DatabaseSync, opts: SnapshotOptions): Snap
   for (const s of exported.values()) {
     const anon = anonymous(s);
     const words = !(s.consent_scope === "structural_only" || s.status === "revoked");
-    let content: unknown = words ? s.content : null;
-    const json = typeof content === "string" ? parse(content) : null;
-    if (json && typeof json === "object") content = anon ? null : JSON.stringify(remapJson(json)); // structured bodies are correlation handles when anonymous
+    // prose only: structured content becomes a tiny summary (attributed) or nothing (anonymous: a correlation handle)
+    let content: string | null = words && typeof s.content === "string" ? s.content : null;
+    const json = content !== null ? parse(content) : null;
+    if (json && typeof json === "object") content = anon ? null : structuredSummary(json, s.source_type, nodeIds, edgeRef);
     let prov: string | null = null;
     if (words && !anon) {
       const p = parse(s.provenance_chain);
       if (p && typeof p === "object" && !Array.isArray(p)) {
         const kept: Record<string, unknown> = {};
-        for (const k of PROVENANCE_KEYS) if (p[k] !== undefined && p[k] !== null && typeof p[k] !== "object") kept[k] = p[k];
-        if (Object.keys(kept).length) prov = JSON.stringify(kept);
+        for (const k of PROVENANCE_KEYS) {
+          const v = p[k];
+          if (v === undefined || v === null || typeof v === "object") continue;
+          if (k === "source") { const u = publicUrl(v); if (u) kept[k] = u; } else kept[k] = v;
+        }
+        if (Object.keys(kept).length) prov = finalJson(kept);
       }
     }
     insSig.run(
       S(s.id),
       words ? S(s.title) : null,
-      words ? S(s.source_url) : null,
+      words ? publicUrl(s.source_url) : null,
       S(s.source_type),
       S(s.cla_layer),
       words ? S(s.summary) : null,
@@ -443,15 +538,11 @@ function fill(src: DatabaseSync, out: DatabaseSync, opts: SnapshotOptions): Snap
     `INSERT INTO edges (id, source_id, target_id, edge_type, signal_id, confidence, charge, created_at, created_by, event_time, valid_from, valid_until, invalidated_by)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  const edgeIds = new Set(edgeRows.map((e) => e.id as string));
-  // A reference to a record not in the file is cleared (NULL): a signal left
-  // out, or anything else unknown.
-  const ref = (id: unknown): string | null => {
-    if (typeof id !== "string" || !id) return null;
-    if (renamed.has(id)) return S(renamed.get(id)!);
-    if (edgeIds.has(id) || exported.has(id)) return S(id);
-    return null;
-  };
+  // Nodes, edges and aliases are exported unconditionally (metadata projected,
+  // writer labels consented): only approved contributions ever materialise
+  // them — a pending or rejected proposal lives in intake_queue / drafts,
+  // which are not exported — and retirement / supersession keep their rows
+  // as public history (retired flag, valid_until).
   for (const e of edgeRows) {
     insEdge.run(S(renamed.get(e.id) ?? e.id), S(e.source_id), S(e.target_id), S(e.edge_type), ref(e.signal_id),
       TIERS.has(String(e.confidence)) ? null : S(e.confidence), S(e.charge),
@@ -471,7 +562,7 @@ function fill(src: DatabaseSync, out: DatabaseSync, opts: SnapshotOptions): Snap
   const entries: Array<[string, string]> = [
     ["title", "A(DAI) — Digital Arts Knowledge Commons: public snapshot"],
     ["generated_at", opts.generatedAt ?? new Date().toISOString().replace(/\.\d{3}Z$/, "Z")],
-    ["source", opts.source ?? "https://adai-basel.fly.dev/"],
+    ["source", publicUrl(opts.source) ?? "https://adai-basel.fly.dev/"],
     ["schema_version", SNAPSHOT_SCHEMA_VERSION],
     ["licence", "CC BY-SA 4.0 — the knowledge graph (see licence_text). Mirrored images are NOT covered: they stay with their artists / holding institutions."],
     ["licence_text", licenceText()],
@@ -487,7 +578,7 @@ function fill(src: DatabaseSync, out: DatabaseSync, opts: SnapshotOptions): Snap
     ].join("\n")],
     ["counts", JSON.stringify(tableCounts)],
   ];
-  for (const [k, v] of entries) meta.run(k, v);
+  for (const [k, v] of entries) meta.run(k, k === "counts" ? v : sanitise(v));
 
   return { path: "", counts: tableCounts, dropped: { signals: droppedSignals, contributors: droppedContributors, metadata_keys: droppedKeys } };
 }
