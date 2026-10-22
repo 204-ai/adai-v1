@@ -556,12 +556,25 @@ function fill(src: DatabaseSync, out: DatabaseSync, opts: SnapshotOptions): Snap
   // alias out, signed query parameters are stripped. Handles, slugs and
   // platform ids are plain strings and stay. Two aliases that clean to the
   // same (source, external_id) keep the first (oldest) and drop the rest.
-  const looksLikeUrl = (v: string) => /^[a-z][a-z0-9+.-]*:\/\//i.test(v) || /^www\./i.test(v);
+  // Classified on a trimmed copy: `scheme://…`, protocol-relative `//host/…`,
+  // any `http(s):` form (with or without slashes), `www.…`, and the
+  // dangerous non-web schemes are URLs; a colon-bearing platform id like
+  // `user:tz1…` is not.
+  const urlForm = (v: string): string | null => {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v) || /^https?:/i.test(v)) return v;
+    if (v.startsWith("//")) return `https:${v}`;
+    if (/^www\./i.test(v)) return `https://${v}`;
+    if (/^(javascript|data|vbscript|file|mailto|blob):/i.test(v)) return v; // publicUrl refuses these
+    return null;
+  };
   const aliasSeen = new Set<string>();
-  for (const a of src.prepare("SELECT * FROM node_aliases ORDER BY rowid").all() as any[]) {
+  // the earliest alias wins a collision after cleaning: by created_at, then rowid
+  for (const a of src.prepare("SELECT * FROM node_aliases ORDER BY created_at IS NULL, created_at, rowid").all() as any[]) {
     const raw = typeof a.external_id === "string" ? a.external_id : "";
+    const trimmed = raw.trim();
+    const asUrl = urlForm(trimmed);
     let ext: string | null;
-    if (a.source === "web" || looksLikeUrl(raw)) ext = publicUrl(/^www\./i.test(raw) ? `https://${raw}` : raw);
+    if (a.source === "web" || asUrl !== null) ext = publicUrl(asUrl ?? trimmed);
     else ext = S(raw) || null;
     if (!ext) { droppedAliases++; continue; }
     const key = `${S(a.source)}\u0000${ext}`;

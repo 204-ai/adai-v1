@@ -520,3 +520,39 @@ it("aliases: URL-valued ones pass publicUrl — userinfo dropped, signed queries
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it("aliases: more URL forms caught on a trimmed copy; colon-bearing platform ids kept; the earliest wins a collision", () => {
+  const db = fixture();
+  db.prepare("INSERT INTO nodes (id, type, name, slug, metadata, updated_by) VALUES ('artwork:forms', 'artwork', 'Forms', 'forms', '{}', 'contributor:migration')").run();
+  const alias = db.prepare("INSERT INTO node_aliases (source, external_id, node_id, created_at) VALUES (?, ?, 'artwork:forms', ?)");
+  alias.run("press", "   https://press.example/a?X-Amz-Signature=WSSIG", "2026-10-02T00:00:00Z");   // leading whitespace
+  alias.run("press", "//cdn.example/b.png?token=PRSIG", "2026-10-02T00:00:00Z");                    // protocol-relative
+  alias.run("press", "https:press.example/c?sig=NOSLASHSIG", "2026-10-02T00:00:00Z");              // no slashes
+  alias.run("press", " //user:PRPASS@cdn.example/d", "2026-10-02T00:00:00Z");                       // protocol-relative with userinfo: out
+  alias.run("press", "javascript:alert('PRJS')", "2026-10-02T00:00:00Z");                           // not a link: out
+  alias.run("fxhash", "user:tz1FORMSKEPT", "2026-10-02T00:00:00Z");                                 // a platform id: kept as is
+  // a collision after cleaning: the later-inserted row is the older one, and it wins
+  alias.run("web", "https://dup.example/x?token=NEWER", "2026-10-05T00:00:00Z");
+  alias.run("web", "https://dup.example/x?expires=1", "2026-10-01T00:00:00Z");
+  const dir = mkdtempSync(join(tmpdir(), "adai-snap-"));
+  try {
+    const path = join(dir, "s.sqlite");
+    buildSnapshot(db, path, { jsonlDir: join(dir, "jsonl") });
+    for (const text of textsOf(dir, path)) {
+      for (const sec of ["WSSIG", "PRSIG", "NOSLASHSIG", "PRPASS", "PRJS", "NEWER"]) assert.ok(!text.includes(sec), `"${sec}" leaked`);
+    }
+    const out = new DatabaseSync(path);
+    const rows = (out.prepare("SELECT source, external_id, created_at FROM node_aliases WHERE node_id = 'artwork:forms' ORDER BY source, external_id").all() as any[])
+      .map((a) => `${a.source} ${a.external_id}${a.source === "web" ? ` ${a.created_at}` : ""}`);
+    assert.deepEqual(rows, [
+      "fxhash user:tz1FORMSKEPT",
+      "press https://cdn.example/b.png",
+      "press https://press.example/a",
+      "press https://press.example/c",
+      "web https://dup.example/x 2026-10-01T00:00:00Z",
+    ]);
+    out.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
