@@ -1,0 +1,100 @@
+name: snapshot-publish
+
+# The public snapshot of the commons (issue #82): build it on the live Fly
+# machine from /data/adai.db (src/cli/export-snapshot.ts — five public
+# tables, consent applied, a plain SQLite file), pull it down, and publish it
+# to the PUBLIC R2 image bucket:
+#
+#   snapshots/adai-latest.sqlite          (what /offline links to: SNAPSHOT_URL)
+#   snapshots/adai-YYYY-MM-DD.sqlite      (a dated copy)
+#
+# The image janitor (seed/_build/cull_orphans.py) lists and deletes only
+# under `images/`, so `snapshots/` is never touched by it.
+#
+# TODO(licence, #82): dispatch-only until the licence statement on the
+# download is decided (LICENSE-DATA: CC BY-SA 4.0 for the graph; mirrored
+# images not covered — the file's meta table carries both). Once decided,
+# add the nightly schedule below and set the SNAPSHOT_URL Fly secret to
+#   <R2_PUBLIC_BASE>/snapshots/adai-latest.sqlite
+# so /offline shows the link.
+#
+#   schedule:
+#     - cron: "30 4 * * *"   # after embed-derive-daily (04:00)
+#
+# Required GitHub secrets:
+#   FLY_API_TOKEN                      deploy + ssh access to adai-basel
+#   R2_ENDPOINT, R2_BUCKET             the PUBLIC image bucket (not the Litestream backup bucket)
+#   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: snapshot-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: wake the machine
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        # Same wake dance as embed-derive-daily: the machine auto-stops, and
+        # `ssh console` cannot reach a stopped one.
+        run: |
+          for id in $(flyctl machine list --app adai-basel --json | jq -r '.[].id'); do
+            flyctl machine start "$id" --app adai-basel || true
+          done
+          for i in $(seq 1 30); do
+            if flyctl ssh console --app adai-basel -C "true" 2>/dev/null; then exit 0; fi
+            echo "waiting for ssh... ($i/30)"; sleep 5
+          done
+          echo "machine did not become reachable over ssh in time" >&2; exit 1
+
+      - name: build the snapshot on the machine
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          curl -fsSL -o /dev/null https://adai-basel.fly.dev/api/stats
+          flyctl ssh console --app adai-basel -C "node /app/dist/cli/export-snapshot.js --out /tmp/adai-snapshot.sqlite"
+
+      - name: pull it down
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          curl -fsSL -o /dev/null https://adai-basel.fly.dev/api/stats
+          echo "get /tmp/adai-snapshot.sqlite ./adai-snapshot.sqlite" | flyctl ssh sftp shell --app adai-basel
+          flyctl ssh console --app adai-basel -C "rm -f /tmp/adai-snapshot.sqlite"
+          test -s adai-snapshot.sqlite
+
+      - name: check it before publishing
+        # A last guard: a plain SQLite file with exactly the public tables,
+        # and nothing shaped like an email address or a token in it.
+        run: |
+          tables=$(sqlite3 adai-snapshot.sqlite "SELECT group_concat(name, ',') FROM (SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name)")
+          test "$tables" = "contributors,edges,meta,node_aliases,nodes,signals" || { echo "unexpected tables: $tables" >&2; exit 1; }
+          if grep -aqE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|adai_[A-Za-z0-9_-]{6,}' adai-snapshot.sqlite; then
+            echo "something email- or token-shaped is in the file: not publishing" >&2; exit 1
+          fi
+          sqlite3 adai-snapshot.sqlite "SELECT key, substr(value, 1, 80) FROM meta WHERE key IN ('generated_at', 'counts')"
+
+      - name: publish to the public bucket
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          day=$(date -u +%Y-%m-%d)
+          for key in "snapshots/adai-$day.sqlite" "snapshots/adai-latest.sqlite"; do
+            aws s3 cp adai-snapshot.sqlite "s3://$R2_BUCKET/$key" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --content-type application/vnd.sqlite3 \
+              --cache-control "public, max-age=3600"
+          done

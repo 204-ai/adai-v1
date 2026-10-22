@@ -20,6 +20,7 @@
     "contributor:rename": "tsx src/cli/rename-contributor.ts",
     "image:apply-patch": "tsx src/cli/apply-image-patch.ts",
     "notify:digest": "tsx src/cli/notify-digest.ts",
+    "snapshot:export": "tsx src/cli/export-snapshot.ts",
     "invite": "tsx src/cli/invite.ts",
     "intake:backfill-open": "tsx src/cli/backfill-open-items.ts",
     "node:merge": "tsx src/cli/merge-nodes.ts",

@@ -42,7 +42,7 @@ RUN curl -fsSL "https://github.com/benbjohnson/litestream/releases/download/v${L
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY db.sql entrypoint.sh SKILL.md ./
+COPY db.sql entrypoint.sh SKILL.md LICENSE-DATA ./
 COPY litestream.yml /etc/litestream.yml
 COPY --from=builder /app/dist ./dist
 # No seed.db is shipped — the runtime DB is the live /data volume restored from

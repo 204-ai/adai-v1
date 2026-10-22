@@ -211,6 +211,8 @@ empty — it requires evidence of artist intent, not thematic similarity.
 - `GET /skill.md` — the contributor contract (verbatim `SKILL.md`)
 - `GET /whitepaper` — the current whitepaper; `/whitepaper/v1.7` pins a release
   (see *Whitepaper* below)
+- `GET /offline` — the commons on your own machine (issue #82): download the
+  public snapshot (`SNAPSHOT_URL`; unset → "not published yet"), open it, query it
 
 ### JSON API
 - `GET /api/stats` — node/edge/signal counts (retired-filtered)
@@ -382,6 +384,22 @@ CLIs resolve the DB path via `src/utils/db-path.ts` (`DB_PATH` → `/data/adai.d
 → `./adai.db`). `.tokens.json` (gitignored, repo root) holds the raw operator
 tokens for `just restore-tokens`. `contributor_tokens` is local-only — never a
 CRR (token material must never sync).
+
+## Public snapshot (issue #82)
+
+`npm run snapshot:export -- --out file.sqlite [--jsonl dir]` (`src/cli/export-snapshot.ts`,
+`src/snapshot/build.ts`) writes a **plain SQLite file** (no cr-sqlite needed) with
+only the five CRR tables plus a `meta` table (generated_at, source, licence from
+LICENSE-DATA, a readme), consent applied: non-public signals (pending / rejected
+only, objections, unpublished notes) left out; structural_only and revoked
+signals keep the row without words, source or provenance; anonymous ones become
+"anonymous" (no batch id, edges' `created_by` and ids re-minted); contributors only
+when named on a public attributed signal; `processing_trace` dropped,
+`provenance_chain` whitelisted; email- / token-shaped strings redacted. No local
+tables, no embeddings; images stay on the public R2 URLs. Publishing:
+`.github/workflows/snapshot-publish.yml` (dispatch-only until the licence statement
+is decided) uploads to the public bucket under `snapshots/` — outside the
+`images/` prefix `cull_orphans.py` works on.
 
 ## Whitepaper
 
