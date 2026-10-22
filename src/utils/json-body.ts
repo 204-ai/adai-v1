@@ -16,7 +16,10 @@ export const TIGHT_JSON_PREFIXES = [
 export function generousJsonUnlessTight(limit = "16mb"): RequestHandler {
   const generous = express.json({ limit });
   return (req, res, next) => {
-    if (TIGHT_JSON_PREFIXES.some((p) => req.path.startsWith(p))) return next();
+    // Express routes case-insensitively (/API/V1/READINGS reaches the readings
+    // router), so the exclusion must too.
+    const path = req.path.toLowerCase();
+    if (TIGHT_JSON_PREFIXES.some((p) => path.startsWith(p))) return next();
     return generous(req, res, next);
   };
 }

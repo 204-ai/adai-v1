@@ -385,7 +385,7 @@ it("body limits with the production middleware order: the readings routes keep t
   const base = `http://127.0.0.1:${(server.address() as any).port}`;
   try {
     const big = JSON.stringify({ relation: REL, note: "x".repeat(100 * 1024) });
-    for (const path of ["/api/v1/readings", "/api/readings"]) {
+    for (const path of ["/api/v1/readings", "/api/readings", "/API/V1/READINGS", "/Api/Readings"]) {
       const r = await fetch(base + path, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${critic.raw_token}` }, body: big });
       assert.equal(r.status, 413, `${path}: over the tight cap`);
     }
