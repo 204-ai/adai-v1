@@ -22,8 +22,11 @@
  * an entry (focus + profile) through `apply` without pushing again, and
  * tells the field (`interrupted`) so a running reading replay stops.
  *
- * Every entry we write carries { adai: 'field', id, profile, focus, prev,
- * pushed, base, depth }.
+ * Every entry we write carries { adai: 'field', key, id, profile, focus,
+ * prev, pushed, base, depth }; `key` is the entry's stable identity, so a
+ * dismissal's step back applies its override only to the entry it meant
+ * (base.key) and nothing else, and a reload can pick the entry up again
+ * (`rehydrate`). The landing entry is stamped with a key at start.
  * Other query parameters (lens, seed, …) and the hash are kept; the legacy
  * ?node= and the one-shot ?reading= are dropped once the address is ours.
  *
@@ -57,7 +60,8 @@
     let batch = null;        // { wrote } — a replayed reading is ONE step
     let timer = null;
     let dismiss = false;     // the next sync follows an explicit profile dismissal
-    let restoring = null;    // { focus }: the base a dismissal is going back to
+    let restoring = null;    // { key, focus, until }: the entry a dismissal is going back to
+    const newKey = () => `fa_${now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     function currentUrl() {
       const l = win.location;
@@ -90,7 +94,7 @@
       const ours = prevState && prevState.adai === 'field';
       const chained = ours && prevState.profile && prevState.base;
       const st = {
-        adai: 'field', ...want,
+        adai: 'field', key: pushing || !ours || !prevState.key ? newKey() : prevState.key, ...want,
         prev: pushing ? cur : ours ? prevState.prev ?? null : null,
         pushed: pushing ? true : ours ? !!prevState.pushed : false,
       };
@@ -99,10 +103,10 @@
           st.base = prevState.base;
           st.depth = (prevState.depth || 0) + (pushing ? 1 : 0);
         } else if (pushing) {
-          st.base = { url: cur, focus: ours ? prevState.focus ?? null : o.idFromLocation(win.location) };
+          st.base = { url: cur, key: ours ? prevState.key ?? null : null, focus: ours ? prevState.focus ?? null : o.idFromLocation(win.location) };
           st.depth = 1;
         } else {
-          st.base = { url: cur, focus: want.focus };
+          st.base = { url: cur, key: st.key, focus: want.focus };
           st.depth = 0;
         }
       }
@@ -126,7 +130,7 @@
       if (dismiss) {
         dismiss = false;
         if (!want.profile && ours && prevState.profile && prevState.pushed && prevState.base && prevState.depth > 0) {
-          restoring = { focus: prevState.base.focus ?? null };
+          restoring = { key: prevState.base.key ?? null, url: prevState.base.url, focus: prevState.base.focus ?? null, until: now() + settleMs };
           pending = { url: prevState.base.url, until: now() + settleMs };
           win.history.go(-prevState.depth);
           return;
@@ -158,11 +162,18 @@
       const st = e && e.state;
       let target;
       if (o.interrupted) o.interrupted();
-      if (restoring) {
-        // Our own step back from a dismissed profile: its base, profile closed.
-        target = { id: restoring.focus, profile: false, focus: restoring.focus };
-        restoring = null;
-      } else if (st && st.adai === 'field') {
+      const ours = st && st.adai === 'field';
+      // Our own step back from a dismissed profile — only when the entry it
+      // meant arrives (by key, else by address), and not too late. Any other
+      // traversal restores its own state and cancels the intent.
+      const meant = restoring && now() < restoring.until &&
+        (restoring.key ? ours && st.key === restoring.key : currentUrl() === restoring.url);
+      const dismissal = meant ? restoring : null;
+      restoring = null;
+      dismiss = false; // a traversal also cancels a dismissal not yet acted on
+      if (dismissal) {
+        target = { id: dismissal.focus, profile: false, focus: dismissal.focus };
+      } else if (ours) {
         target = { id: st.id ?? null, profile: !!st.profile, focus: st.focus ?? (st.profile ? null : st.id ?? null) };
       } else {
         // An entry we did not write: the landing page, or a #hash step.
@@ -185,6 +196,29 @@
 
     win.addEventListener('popstate', onPopState);
 
+    /**
+     * At start: an entry this page wrote before a reload, still matching the
+     * address, comes back as it was (focus, profile, its chain); returns it
+     * for the field to apply. Anything else (a genuinely new arrival) is
+     * stamped with a key and answered with null: land by the pathname.
+     */
+    function rehydrate() {
+      const st = win.history.state;
+      if (st && st.adai === 'field' && st.key) {
+        const id = st.profile ? st.id : st.focus;
+        const url = urlFor(id ?? null);
+        if (url && url.split('#')[0] === currentUrl().split('#')[0]) {
+          pending = { url, until: now() + settleMs };
+          return { id: st.id ?? null, profile: !!st.profile, focus: st.focus ?? null };
+        }
+      }
+      // keep whatever else the entry holds (it may be another script's state)
+      const keep = st && typeof st === 'object' && st.adai !== 'field' ? st : {};
+      const here = o.idFromLocation(win.location) ?? null;
+      win.history.replaceState({ ...keep, adai: 'field', key: newKey(), id: here, profile: false, focus: here, prev: null, pushed: false }, '', currentUrl());
+      return null;
+    }
+
     return {
       changed,
       sync,
@@ -200,6 +234,10 @@
        *  Returns the batch; only that batch's owner ends it (a popstate drops it). */
       beginBatch() { batch = { wrote: false }; return batch; },
       endBatch(token) { if (token && token !== batch) return; batch = null; changed(); },
+      /** The replay that owns `token` was superseded: detach its batch now, so
+       *  the navigation that interrupted it is a step of its own. */
+      dropBatch(token) { if (token && token === batch) batch = null; },
+      rehydrate,
       urlFor,
     };
   }
