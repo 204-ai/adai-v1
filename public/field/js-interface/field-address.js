@@ -226,6 +226,9 @@
       /** The page is landing on an address it named (deep link, your own node):
        *  the next write replaces the entry instead of adding a step. */
       landing(ms = settleMs) { landingUntil = now() + ms; },
+      /** The page's initial navigation was superseded by the visitor: stop
+       *  waiting for its address and drop its replace allowance. */
+      cancelLanding() { pending = null; landingUntil = 0; },
       /** Hold the address where it is until the screen reaches `url` (or a timeout). */
       expect(url, ms = settleMs) { pending = { url, until: now() + ms }; },
       /** The profile was closed by its own close button (not "view in field", not Esc). */

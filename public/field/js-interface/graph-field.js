@@ -1617,8 +1617,12 @@
   // A replay is one navigation among others: starting one, Back/Forward, or
   // any focus change that is not the replay's own hop supersedes it. Each
   // replay holds a generation and stops as soon as it is no longer current.
-  function cancelReplay(bundle) {
+  function cancelReplay(bundle, opts = {}) {
     bundle.replayGen = (bundle.replayGen || 0) + 1;
+    // Any navigation but a replay starting is the visitor's (or Back's): it
+    // supersedes the page's initial navigation, and the address must stop
+    // waiting for it.
+    if (!opts.replayStart) supersedeInitial(bundle);
     // Detach the superseded replay's address batch now, not in its finally a
     // dwell later: the navigation that interrupted it is a step of its own.
     if (bundle.replayBatch) {
@@ -1626,6 +1630,30 @@
       bundle.replayBatch = null;
     }
     return bundle.replayGen;
+  }
+
+  /**
+   * The page's initial navigation (a deep link, a reload's restoration, a
+   * shared reading, "open on yourself") is pending while bundle.initialNav is
+   * set. Superseded — by a focus, Back, anything but its own moves — it is
+   * dropped, and so is what the address was told to expect of it (the
+   * awaited URL, the replace-instead-of-push allowance): the navigation that
+   * superseded it gets its own address and history step at once.
+   */
+  function supersedeInitial(bundle) {
+    if (!bundle.initialNav) return;
+    bundle.initialNav = false;
+    bundle.address?.cancelLanding();
+  }
+
+  /** The initial navigation, after `ms`, unless superseded. `keep`: it stays
+   *  initial past the timer (a reading: until its replay ends). */
+  function initialNavigation(bundle, fn, ms, opts = {}) {
+    bundle.initialNav = true;
+    return unlessNavigated(bundle, () => {
+      if (!opts.keep) bundle.initialNav = false; // its own moves below do not supersede it
+      fn();
+    }, ms);
   }
 
   /** Run `fn` after `ms` unless the field navigated meanwhile (any focus
@@ -1640,7 +1668,7 @@
     if (!Array.isArray(path) || path.length === 0) return;
     const w = window.innerWidth;
     const h = window.innerHeight;
-    const gen = cancelReplay(bundle);
+    const gen = cancelReplay(bundle, { replayStart: true });
     const current = () => bundle.replayGen === gen;
     if (opts.snapshot) {
       // Build history with everything up to last; jump to last.
@@ -1677,6 +1705,8 @@
       // Only this replay's own batch (a popstate or an interruption already dropped it).
       if (bundle.replayBatch === batch) bundle.replayBatch = null;
       bundle.address?.endBatch(batch);
+      // a reading that was the page's initial navigation is done with it
+      if (current() && bundle.initialNav) { bundle.initialNav = false; bundle.address?.cancelLanding(); }
     }
   }
 
@@ -3609,14 +3639,14 @@
       window.history.replaceState(window.history.state, '', u.href);
       // Replay after a short beat so the brand viz finishes its first paint —
       // unless the visitor navigated in the meantime.
-      unlessNavigated(bundle, () => replayPath(graph, bundle, urlPath, { snapshot: false }), 400);
+      initialNavigation(bundle, () => replayPath(graph, bundle, urlPath, { snapshot: false }), 400, { keep: true });
     }
     // A reload: the entry this page wrote comes back as it was (its focus,
     // its profile, its place in a profile chain). A new arrival is stamped.
     const restoredEntry = bundle.address?.rehydrate() ?? null;
     const restored = replayingOnLoad ? null : restoredEntry;
     if (restored) {
-      unlessNavigated(bundle, () => {
+      initialNavigation(bundle, () => {
         const ev = window.ADAI_ENTITY_VIEW;
         if (restored.focus) {
           if (!window.ADAI_FIELD_STUDY?.zoomToNode?.(restored.focus)) bundle.revealInPlace(restored.focus);
@@ -3664,7 +3694,7 @@
         // the node's neighbourhood). Falls back to the in-place reveal when
         // the field study isn't up (e.g. stage missing).
         const id = targetId;
-        unlessNavigated(bundle, () => {
+        initialNavigation(bundle, () => {
           if (window.ADAI_FIELD_STUDY?.zoomToNode?.(id)) return;
           bundle.revealInPlace(id);
         }, 600);
@@ -3763,7 +3793,7 @@
         // Open on yourself, unless the link names another node or replays a reading.
         if (!named && !replayingOnLoad && !restored && (bundle.replayGen || 0) === startGen) {
           bundle.address?.landing();
-          unlessNavigated(bundle, () => {
+          initialNavigation(bundle, () => {
             if (window.ADAI_FIELD_STUDY?.zoomToNode?.(L.self)) return;
             bundle.revealInPlace(L.self);
           }, 700);

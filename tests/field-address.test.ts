@@ -454,3 +454,33 @@ it("dismissal: when its step back never comes, the intent lapses (bounded)", () 
   h.traverseNow(-2); // much later, the visitor goes back there by hand
   assert.equal(h.screen.profileId, "institution:the outlier collection", "its own state: the lapsed intent does not apply");
 });
+
+it("superseding the initial navigation: cancelLanding drops the awaited address and the replace allowance", () => {
+  // landing on A's deep link; the visitor focuses B before the landing fires
+  let h = harness(OUTLIER);
+  h.addr.expect(h.addr.urlFor("institution:the outlier collection"));
+  h.addr.landing();
+  h.addr.cancelLanding(); // what graph-field does when the visitor's focus supersedes it
+  h.set("practitioner:william mapan");
+  assert.equal(h.url, MAPAN, "B's address at once");
+  assert.equal(h.length, 2, "its own history step (no leaked replace allowance)");
+  h.back();
+  assert.equal(h.url, OUTLIER);
+
+  // without the cancel, the expectation would hold B's address back
+  h = harness(OUTLIER);
+  h.addr.expect(h.addr.urlFor("institution:the outlier collection"));
+  h.set("practitioner:william mapan");
+  assert.equal(h.url, OUTLIER, "(the bug: still waiting for A)");
+
+  // a reload of a saved profile entry, superseded the same way
+  const first = harness(OUTLIER);
+  chain(first);
+  const r = harness("", { session: first.session });
+  assert.ok(r.restored);
+  r.addr.cancelLanding();
+  r.screen.profileId = null;
+  r.set("practitioner:william mapan", null);
+  assert.equal(r.url, MAPAN);
+  assert.equal(r.length, 4, "a step after the restored entry");
+});
