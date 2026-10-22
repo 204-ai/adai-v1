@@ -21,6 +21,7 @@ import { rosterFor } from "../utils/roster.js";
 import { heldWorks } from "../utils/held-works.js";
 import { CLAIMABLE_TYPES } from "../claim/store.js";
 import { approvedClaimsFor } from "../claim/store.js";
+import { accountsSection } from "./accounts.js";
 import { SHOWCASE, type Showcase, type ShowcaseWork } from "./showcase.js";
 import { notesByTriple, publicNotesFor, type RelationNote } from "../claim/notes.js";
 import { tripleKey } from "../utils/claims.js";
@@ -676,6 +677,7 @@ export function renderEntityView(db: DatabaseSync, node: EntityNode, viewer: Ent
         ${rosterSection(db, node)}
         ${heldWorksSection(db, node)}
         ${relationGroups(db, node, edges, showcase, notesByTriple(publicNotesFor(db, node.id)), gathered.source === "graph").map(groupSection).join("")}
+        ${accountsSection(db, node)}
         ${embeddingsPlaceholder()}
         ${listSection("collections (editorial)", showcase?.collections ?? [])}
         ${listSection("exhibitions.selected (editorial)", showcase?.exhibitions_selected ?? [])}
