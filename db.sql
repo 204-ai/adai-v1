@@ -410,3 +410,11 @@ CREATE TABLE IF NOT EXISTS relation_notes (
 CREATE INDEX IF NOT EXISTS idx_relation_notes_triple ON relation_notes(source_id, edge_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_relation_notes_node ON relation_notes(node_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_relation_notes_queue_ref ON relation_notes(queue_ref);
+
+-- The live activity feed (issue #83, src/utils/activity.ts) reads the past
+-- 24 hours by time; these serve its OR-split time predicates.
+-- (reviewed_at, created_at): an approved row is timed by reviewed_at, else
+-- (auto-merged, reviewed_at NULL) by created_at — both ranges use one index.
+CREATE INDEX IF NOT EXISTS idx_intake_reviewed_created ON intake_queue(reviewed_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_node_claims_reviewed_created ON node_claims(reviewed_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_relation_notes_created_at ON relation_notes(created_at);

@@ -4,18 +4,107 @@
  * A small, quiet, collapsible trace of the past 24 hours in /field:
  * "X added a work", "Y claimed their page". Live or empty, never stale:
  * nothing shows when the feed is switched off (GET /api/activity says
- * enabled:false) or when nothing happened in the window.
+ * enabled:false), when nothing happened in the window, or when the feed
+ * cannot be read (an error clears it rather than leaving old lines up).
+ * Events also expire here, on the client: each line goes at its own 24 h
+ * mark, on a timer, and again whenever the tab comes back into view.
  *
  * Polls once a minute, and not at all while the tab is hidden. Styles live
  * in /field-static/css/activity.css (one element, a few classes: easy to
  * restyle). A line opens the entity overlay when there is one, else the page.
+ *
+ * The controller (window.ADAI_ACTIVITY_CORE.create) takes its clock, fetch,
+ * timers and renderer as arguments: tests/activity-client.test.ts drives it
+ * with fake time.
  */
-(() => {
+(function (root) {
   const POLL_MS = 60_000;
+  const WINDOW_MS = 24 * 3600_000;
+
+  /** The events still inside the window at `now`. */
+  function live(events, now) {
+    return events.filter((e) => {
+      const t = Date.parse(e && e.at);
+      return Number.isFinite(t) && now - t < WINDOW_MS;
+    });
+  }
+
+  /** When the next of them leaves the window (ms from now), or null. */
+  function nextExpiry(events, now) {
+    let soonest = null;
+    for (const e of events) {
+      const left = Date.parse(e.at) + WINDOW_MS - now;
+      if (soonest === null || left < soonest) soonest = left;
+    }
+    return soonest === null ? null : Math.max(0, soonest);
+  }
+
+  function valid(j) {
+    return j && typeof j === 'object' && (j.enabled === false || (j.enabled === true && Array.isArray(j.events)));
+  }
+
+  /**
+   * @param o.fetchJson  () => Promise<object>   GET /api/activity (rejects on network / HTTP error)
+   * @param o.render     (events[]) => void       [] hides the element
+   * @param o.stop       () => void               the feed is off: remove everything
+   * @param o.now, o.setTimeout, o.clearTimeout, o.hidden () => boolean
+   */
+  function create(o) {
+    let events = [];
+    let pollTimer = null;
+    let expiryTimer = null;
+    let stopped = false;
+
+    function show() {
+      events = live(events, o.now());
+      o.render(events);
+      if (expiryTimer) { o.clearTimeout(expiryTimer); expiryTimer = null; }
+      const next = nextExpiry(events, o.now());
+      if (next !== null && !stopped) expiryTimer = o.setTimeout(show, next + 1);
+    }
+
+    function schedule() {
+      if (stopped || pollTimer || o.hidden()) return;
+      pollTimer = o.setTimeout(poll, POLL_MS);
+    }
+
+    async function poll() {
+      pollTimer = null;
+      if (stopped || o.hidden()) return;
+      let j = null;
+      try { j = await o.fetchJson(); } catch { j = null; }
+      if (j && j.enabled === false) {
+        stopped = true;
+        events = [];
+        if (expiryTimer) { o.clearTimeout(expiryTimer); expiryTimer = null; }
+        o.stop();
+        return;
+      }
+      // An error or a malformed answer clears the feed: never old lines.
+      events = valid(j) ? j.events : [];
+      show();
+      schedule();
+    }
+
+    function visibility() {
+      if (o.hidden()) {
+        if (pollTimer) { o.clearTimeout(pollTimer); pollTimer = null; }
+        return;
+      }
+      if (stopped) return;
+      show(); // drop what expired while the tab was away, before asking again
+      poll();
+    }
+
+    return { poll, visibility, show, get events() { return events; }, get stopped() { return stopped; } };
+  }
+
+  root.ADAI_ACTIVITY_CORE = { create, live, nextExpiry, WINDOW_MS, POLL_MS };
+
+  // ---- the DOM (skipped when loaded without one, as in tests) ----
+  if (typeof document === 'undefined' || !document.body) return;
   const OPEN_KEY = 'adai:activity-open';
-  let timer = null;
   let el = null;
-  let stopped = false;
 
   function ago(iso) {
     const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
@@ -63,6 +152,7 @@
   }
 
   function render(events) {
+    if (!events.length && !el) return;
     const box = ensure();
     const list = box.querySelector('.adai-activity-list');
     list.textContent = '';
@@ -86,36 +176,20 @@
     box.hidden = events.length === 0; // live or empty
   }
 
-  async function poll() {
-    timer = null;
-    if (stopped || document.hidden) return;
-    try {
+  const feed = create({
+    fetchJson: async () => {
       const r = await fetch('/api/activity', { headers: { accept: 'application/json' } });
-      const j = r.ok ? await r.json() : null;
-      if (j && j.enabled === false) {
-        // Switched off: no element, no more requests.
-        stopped = true;
-        if (el) el.remove();
-        return;
-      }
-      if (j && Array.isArray(j.events)) render(j.events);
-    } catch { /* offline: keep what is shown; the next poll retries */ }
-    schedule();
-  }
-
-  function schedule() {
-    if (stopped || timer || document.hidden) return;
-    timer = setTimeout(poll, POLL_MS);
-  }
-
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      if (timer) { clearTimeout(timer); timer = null; }
-    } else if (!stopped) {
-      poll();
-    }
+      if (!r.ok) throw new Error(`activity ${r.status}`);
+      return r.json();
+    },
+    render,
+    stop: () => { if (el) { el.remove(); el = null; } },
+    now: () => Date.now(),
+    setTimeout: (f, ms) => setTimeout(f, ms),
+    clearTimeout: (t) => clearTimeout(t),
+    hidden: () => document.hidden,
   });
-
-  window.ADAI_ACTIVITY = { refresh: poll };
-  poll();
-})();
+  document.addEventListener('visibilitychange', () => feed.visibility());
+  window.ADAI_ACTIVITY = { refresh: feed.poll };
+  feed.poll();
+})(typeof window !== 'undefined' ? window : globalThis);

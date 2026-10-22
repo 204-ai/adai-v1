@@ -219,7 +219,8 @@ empty — it requires evidence of artist intent, not thematic similarity.
   the past 24 h only, consent-filtered, never from the cached graph stream;
   off unless `ACTIVITY_FEED=on` (or `settings.activity_feed='on'`; on staging the
   `activity` switch). `/field` shows it as a small collapsible "live" chip
-  (`public/field/js-interface/activity.js` + `css/activity.css`), polled each 60 s
+  (`public/field/js-interface/activity.js` + `css/activity.css`), polled each 60 s;
+  lines also expire client-side at their 24 h mark, and an error clears the feed
 - `GET /api/graph` — full graph as D3 `{nodes, edges}`, `?type=` filter; nodes
   carry `cdn_image_url`/`image_url` when present
 - `GET /api/graph/:slug` — ego graph (1-hop)
