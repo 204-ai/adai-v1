@@ -21,6 +21,7 @@ import { rosterFor } from "../utils/roster.js";
 import { heldWorks } from "../utils/held-works.js";
 import { CLAIMABLE_TYPES } from "../claim/store.js";
 import { approvedClaimsFor } from "../claim/store.js";
+import { externalLinks } from "./external-links.js";
 import { SHOWCASE, type Showcase, type ShowcaseWork } from "./showcase.js";
 import { notesByTriple, publicNotesFor, type RelationNote } from "../claim/notes.js";
 import { tripleKey } from "../utils/claims.js";
@@ -229,8 +230,6 @@ function bio(text: string | null): string {
   return text ? `<p class="ev-bio">&gt; ${esc(text)} <span class="ev-bio-mark">‖</span></p>` : "";
 }
 
-const ALIAS_LABEL: Record<string, string> = { wikidata: "wikidata", moma: "MoMA", met: "Met", artblocks: "Art Blocks", fxhash: "fxhash" };
-
 function metadataRows(db: DatabaseSync, node: EntityNode, meta: any, showcase: Showcase | null): Array<[string, string]> {
   const rows: Array<[string, string]> = [];
   if (showcase) {
@@ -253,14 +252,17 @@ function metadataRows(db: DatabaseSync, node: EntityNode, meta: any, showcase: S
   if (active && node.type !== "artwork") rows.push(["active", esc(active)]);
   const medium = str(profile?.practice_description?.medium) ?? str(meta.medium);
   if (medium) rows.push(["medium", esc(medium)]);
-  if (str(meta.status)) rows.push(["status", esc(String(meta.status))]);
-  const web = [info.url, meta.homepage, meta.website, meta.url].find(isHttp);
+  // Not metadata.status (issue #86): a free-form import/contributor label
+  // ("confirmed", "seed", "draft") with no review behind it, which a visitor
+  // would read as A(DAI) verification. It stays on /record; what the system
+  // does know (claimed by @handle) is the claim line beside the title.
+  const aliases = db.prepare("SELECT source, external_id FROM node_aliases WHERE node_id = ? ORDER BY source, external_id").all(node.id) as Array<{ source: string; external_id: string }>;
+  const web = [info.url, meta.homepage, meta.website, meta.url, ...aliases.filter((a) => a.source === "web").map((a) => a.external_id)].find(isHttp);
   if (web) rows.push(["web", `<a href="${esc(web)}" target="_blank" rel="noopener">${esc(web.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/$/, ""))} ↗</a>`]);
-  for (const a of db.prepare("SELECT source, external_id FROM node_aliases WHERE node_id = ? AND source NOT IN ('handle', 'slug') ORDER BY source").all(node.id) as any[]) {
-    const label = ALIAS_LABEL[a.source] ?? a.source;
-    const id = esc(String(a.external_id));
-    rows.push([esc(label), a.source === "wikidata" ? `<a href="https://www.wikidata.org/wiki/${encodeURIComponent(a.external_id)}" target="_blank" rel="noopener">${id} ↗</a>` : id]);
-  }
+  // Platform ids as plain labelled links, never raw identifiers; an id we
+  // cannot build a safe URL from stays on /record (src/entity/external-links.ts).
+  const links = externalLinks(aliases);
+  if (links.length) rows.push(["elsewhere", links.map((l) => `<a href="${esc(l.href)}" target="_blank" rel="noopener">${esc(l.label)} ↗</a>`).join(" · ")]);
   return rows;
 }
 
