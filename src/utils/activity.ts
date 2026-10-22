@@ -263,12 +263,12 @@ function compute(db: DatabaseSync, limit: number, nowMs: number): ActivityEvent[
       const c = list[0];
       const works = c.s.type === "artwork" && c.t.type === "artwork";
       if (list.length === 1 && (c.sHidden || c.tHidden)) {
-        // one end is the anonymous author's own page: name and link only the other end
-        const other = c.sHidden && c.tHidden ? null : c.sHidden ? c.t : c.s;
-        push({ at: g.at, kind: "connected", actor: c.actor, count: 1, node: other,
-          text: (w) => other ? `${w} connected ${other.name} to a page` : `${w} made a connection` });
+        // one end is the anonymous author's own page: naming or linking the other
+        // end would point at them (the work they made, the show they were in)
+        push({ at: g.at, kind: "connected", actor: c.actor, count: 1, node: null, text: (w) => `${w} made a connection` });
         continue;
       }
+      // any item touching the anonymous author's own page — the first or a later one — hides the link
       const anyHidden = list.some((i) => i.sHidden || i.tHidden);
       push({ at: g.at, kind: "connected", actor: c.actor, count: list.length, node: anyHidden ? null : c.t,
         text: (w) => list.length === 1

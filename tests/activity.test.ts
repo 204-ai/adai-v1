@@ -212,6 +212,14 @@ it("anonymous: no speaker's name, slug or id anywhere in the response; an anonym
     { source_id: "artwork:glitch-2", target_id: QP, edge_type: "CREATED_BY" },
     { source_id: "artwork:glitch-3", target_id: QP, edge_type: "CREATED_BY" },
   ]);
+  // … and a folded group whose own-page end is only in a later item
+  const s7 = anon();
+  edge("artwork:glitch-1", "project:glitch-show", "EXHIBITED_AT", s7);
+  edge("artwork:glitch-3", QP, "CREATED_BY", s7);
+  queue(s7, "Quiet Person", ago(7), null, [
+    { source_id: "artwork:glitch-1", target_id: "project:glitch-show", edge_type: "EXHIBITED_AT" },
+    { source_id: "artwork:glitch-3", target_id: QP, edge_type: "CREATED_BY" },
+  ]);
   const { default: activityRoutes2 } = await import("../src/routes/activity.js");
   process.env.ACTIVITY_FEED = "on";
   const app = express();
@@ -226,11 +234,15 @@ it("anonymous: no speaker's name, slug or id anywhere in the response; an anonym
       "Someone added context to a relation with Artist B",
       "Someone added an artist",
       "Someone wrote an account",
-      "Someone connected GLITCH Show to a page",
-      "Someone connected Glitch One to a page",
+      "Someone made a connection",
+      "Someone made a connection",
+      "Someone made 2 connections",
       "Someone made 2 connections",
     ]);
-    assert.deepEqual(j.events.slice(2).map((e: any) => e.href), [null, "/project/glitch-show", "/artwork/glitch-1", null]);
+    // the other end of an anonymous self-connection is neither named nor linked
+    assert.deepEqual(j.events.slice(2).map((e: any) => e.href), [null, null, null, null, null]);
+    assert.deepEqual(j.events.slice(2).map((e: any) => e.id), [null, null, null, null, null]);
+    assert.doesNotMatch(body, /GLITCH Show|Glitch One|Glitch Two|Glitch Three|glitch-show|glitch-\d/, "no endpoint of a self-connection is named");
     assert.doesNotMatch(body, /artist-a|Artist A|quiet-person|Quiet Person/, "the whole response");
   } finally {
     delete process.env.ACTIVITY_FEED;
