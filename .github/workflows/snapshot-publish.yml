@@ -73,12 +73,14 @@ jobs:
           test -s adai-snapshot.sqlite
 
       - name: check it before publishing
-        # A last guard: a plain SQLite file with exactly the public tables,
-        # and nothing shaped like an email address or a token in it.
+        # A tripwire, not the privacy boundary (that is the projection in
+        # src/snapshot/build.ts): exactly the public tables, and nothing
+        # shaped like an email address or a common credential.
         run: |
           tables=$(sqlite3 adai-snapshot.sqlite "SELECT group_concat(name, ',') FROM (SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name)")
           test "$tables" = "contributors,edges,meta,node_aliases,nodes,signals" || { echo "unexpected tables: $tables" >&2; exit 1; }
-          if grep -aqE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|adai_[A-Za-z0-9_-]{6,}' adai-snapshot.sqlite; then
+          # word boundaries as in the sanitiser: 'disk--…' or 're_Alain_…' in titles and URLs are not keys
+          if grep -aqE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|\badai_[A-Za-z0-9_-]{6,}|\bsk-(ant-|proj-)?[A-Za-z0-9_-]{16,}|\bre_[A-Za-z0-9_]{16,}|\bfm[12]_[A-Za-z0-9_+/=-]{20,}|\bAKIA[0-9A-Z]{16}|\bgh[pousr]_[A-Za-z0-9]{30,}' adai-snapshot.sqlite; then
             echo "something email- or token-shaped is in the file: not publishing" >&2; exit 1
           fi
           sqlite3 adai-snapshot.sqlite "SELECT key, substr(value, 1, 80) FROM meta WHERE key IN ('generated_at', 'counts')"

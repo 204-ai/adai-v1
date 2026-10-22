@@ -388,15 +388,20 @@ CRR (token material must never sync).
 ## Public snapshot (issue #82)
 
 `npm run snapshot:export -- --out file.sqlite [--jsonl dir]` (`src/cli/export-snapshot.ts`,
-`src/snapshot/build.ts`) writes a **plain SQLite file** (no cr-sqlite needed) with
-only the five CRR tables plus a `meta` table (generated_at, source, licence from
-LICENSE-DATA, a readme), consent applied: non-public signals (pending / rejected
-only, objections, unpublished notes) left out; structural_only and revoked
-signals keep the row without words, source or provenance; anonymous ones become
-"anonymous" (no batch id, edges' `created_by` and ids re-minted); contributors only
-when named on a public attributed signal; `processing_trace` dropped,
-`provenance_chain` whitelisted; email- / token-shaped strings redacted. No local
-tables, no embeddings; images stay on the public R2 URLs. Publishing:
+`src/snapshot/build.ts`) reads the source **read-only** (no `initDb`, one read
+transaction) and writes, atomically and never over the source, a **plain SQLite
+file** (no cr-sqlite needed) with only the five CRR tables plus a `meta` table.
+The privacy boundary is the projection: public signals only, decided per batch and
+operation (a probationary URL-intake batch stays out while its review is pending
+or rejected); structural_only / revoked keep the row without words; anonymous
+ones lose every correlation handle (batch id, provenance, structured content;
+edges' `created_by` and ids re-minted, references followed); node metadata is an
+allowlist of what the entity view shows, minus any value a restricted or
+non-public contribution wrote; `updated_by` only when the latest writer is
+public and attributed; contributors only when named publicly, counters recomputed,
+no trust tiers; references to records not in the file are NULL. A central
+sanitiser (emails, common key shapes) runs over every value as defence in depth
+only. No local tables, no embeddings; images stay on the public R2 URLs. Publishing:
 `.github/workflows/snapshot-publish.yml` (dispatch-only until the licence statement
 is decided) uploads to the public bucket under `snapshots/` — outside the
 `images/` prefix `cull_orphans.py` works on.
