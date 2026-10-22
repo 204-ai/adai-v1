@@ -625,14 +625,18 @@ curl -s -X POST "$ADAI_BASE/api/v1/readings" -H "Authorization: Bearer $ADAI_TOK
 # consent_scope: "full_commons" (default) or "structural_only" → the words stay off the page
 # batch_id (optional, as everywhere, §1.7)
 # → 201 {"status":"live"|"pending","signal_id":"signal-…","intake_id":"intake-…","reading":{…}}
-# Take it back (only its author):
-curl -s -X POST "$ADAI_BASE/api/v1/readings/<signal_id>/withdraw" -H "Authorization: Bearer $ADAI_TOKEN"
+# Take it back (only its author; JSON content type required):
+curl -s -X POST "$ADAI_BASE/api/v1/readings/<signal_id>/withdraw" -H "Authorization: Bearer $ADAI_TOKEN" -H 'content-type: application/json' -d '{}'
+# A withdrawn reading leaves the page; one that was never published leaves no trace in /history.
 ```
 
 Trust tiers as for every write (§3): `auto` / `reviewed` publish at once;
 `probationary` readings wait on `/review?kind=reading`. The relation must be
 live and curated (not embedding-derived); the same words twice on the same
-relation are refused (409 `already_read`). At most 2000 characters. A reading
+relation are refused (409 `already_read`). At most 2000 characters, 5 readings
+a minute and 30 a day per contributor, however they sign in (429
+`too_many_readings`). A relation row shows its latest 3 readings; the rest are
+in the page's accounts section. A reading
 is the writer's own interpretation — write it with them, in their words; a
 claim that the relation itself is wrong is not a reading (that is a
 contest, §1.9, or a curator's correction). Signed-in contributors can add one

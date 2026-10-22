@@ -389,6 +389,17 @@ export interface FileReadingArgs {
  * when X happens to claim one end. Tier-gated like context: auto / reviewed
  * publish at once, probationary go to /review (kind 'reading').
  */
+/** Readings a contributor may file: per day, and in any one minute — one quota whichever way they sign in. */
+export const READINGS_PER_DAY = 30;
+export const READINGS_PER_MINUTE = 5;
+
+function readingQuota(db: DatabaseSync, contributorId: string): void {
+  const since = (ms: number) => new Date(Date.now() - ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const count = (ms: number) => Number((db.prepare("SELECT COUNT(*) AS n FROM relation_notes WHERE kind = 'reading' AND contributor_id = ? AND created_at >= ?").get(contributorId, since(ms)) as any).n);
+  if (count(60_000) >= READINGS_PER_MINUTE) throw new ClaimError(429, "too_many_readings", `at most ${READINGS_PER_MINUTE} readings a minute — slow down`);
+  if (count(86_400_000) >= READINGS_PER_DAY) throw new ClaimError(429, "too_many_readings", `at most ${READINGS_PER_DAY} readings a day`);
+}
+
 export function fileReading(db: DatabaseSync, args: FileReadingArgs): RelationNote {
   const note = typeof args.note === "string" ? args.note.trim() : "";
   if (!note) throw new ClaimError(400, "note_required", "write the reading, in a sentence or more");
@@ -407,6 +418,7 @@ export function fileReading(db: DatabaseSync, args: FileReadingArgs): RelationNo
     .prepare("SELECT 1 FROM relation_notes WHERE kind = 'reading' AND contributor_id = ? AND source_id = ? AND edge_type = ? AND target_id = ? AND note = ? AND state IN ('pending','live')")
     .get(args.contributor.id, rel.source_id, rel.edge_type, rel.target_id, note);
   if (same) throw new ClaimError(409, "already_read", "you already gave this reading of this relation");
+  readingQuota(db, args.contributor.id);
 
   const autoLive = isAutoMerge(args.contributor.trust_tier);
   db.exec("BEGIN");
@@ -449,11 +461,19 @@ export function withdrawNote(db: DatabaseSync, signalId: string, contributorId: 
   if (!n) throw new ClaimError(404, "note_not_found", signalId);
   if (n.contributor_id !== contributorId) throw new ClaimError(403, "not_your_note", "only its author can withdraw a note");
   if (!["open", "pending", "live"].includes(n.state)) throw new ClaimError(409, "note_settled", `note is ${n.state}`);
-  db.prepare("UPDATE relation_notes SET state = 'withdrawn', resolved_by = ?, resolved_at = ? WHERE signal_id = ?").run("author", nowIso(), signalId);
-  db.prepare("UPDATE signals SET status = 'superseded' WHERE id = ?").run(signalId);
-  if (n.queue_id) {
-    db.prepare("UPDATE intake_queue SET status = 'rejected', rejection_reason = 'withdrawn by author', reviewed_by = 'author', reviewed_at = ? WHERE id = ? AND status = 'pending'")
-      .run(nowIso(), n.queue_id);
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE relation_notes SET state = 'withdrawn', resolved_by = ?, resolved_at = ? WHERE signal_id = ?").run("author", nowIso(), signalId);
+    // an admin revocation stands: the author cannot turn 'revoked' back into 'superseded'
+    db.prepare("UPDATE signals SET status = 'superseded' WHERE id = ? AND status != 'revoked'").run(signalId);
+    if (n.queue_id) {
+      db.prepare("UPDATE intake_queue SET status = 'rejected', rejection_reason = 'withdrawn by author', reviewed_by = 'author', reviewed_at = ? WHERE id = ? AND status = 'pending'")
+        .run(nowIso(), n.queue_id);
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
   }
   return getNote(db, signalId)!;
 }

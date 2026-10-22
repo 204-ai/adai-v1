@@ -378,8 +378,17 @@ function worksSection(node: EntityNode, gathered: ReturnType<typeof gatherWorks>
  * docs/CLAIM-SPEC.md), and any contributor's reading (#80 part 3), which is
  * labelled as such and never as the subject.
  */
+/** Readings shown on one relation row; the rest wait in the accounts section. */
+export const ROW_READINGS_SHOWN = 3;
+
 function notesHtml(notes: RelationNote[]): string {
-  return notes.map((n) => {
+  // the latest few readings, in order; the subject's own notes always show
+  const readings = notes.filter((n) => n.kind === "reading");
+  const hidden = new Set(readings.slice(0, Math.max(0, readings.length - ROW_READINGS_SHOWN)).map((n) => n.signal_id));
+  const more = hidden.size
+    ? `<div class="ev-rel-note ev-rel-note--more"><a href="#ev-accounts">${hidden.size} more reading${hidden.size === 1 ? "" : "s"} in the accounts ↓</a></div>`
+    : "";
+  return notes.filter((n) => !hidden.has(n.signal_id)).map((n) => {
     // publicNotesFor has applied consent; an ended claim is no longer the subject.
     const a = noteAuthor(n);
     const who = esc(a.who);
@@ -396,7 +405,7 @@ function notesHtml(notes: RelationNote[]): string {
     return n.kind === "contest"
       ? `<div class="ev-rel-note ev-rel-note--contest">⚑ contested ${a.subject ? `by the subject (${who})` : `by ${who}`}: ${words}</div>`
       : `<div class="ev-rel-note">${n.withheld ? words : `“${words}”`} — ${who}</div>`;
-  }).join("");
+  }).join("") + more;
 }
 
 /** A signed-in contributor's way in to a reading of this one relation (entity-view.js opens the form). */

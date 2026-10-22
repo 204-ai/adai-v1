@@ -275,6 +275,11 @@ function readingRoute(req: Request, res: Response): void {
 }
 
 function withdrawReadingRoute(req: Request, res: Response): void {
+  // a state change: JSON only, so a plain cross-site form post can never trigger it
+  if (!req.is("application/json")) {
+    res.status(415).set(JSON_HEADERS).json({ error: "json_required", message: "send Content-Type: application/json" });
+    return;
+  }
   const db = getDb();
   const id = String(req.params.signal_id);
   const n = getNote(db, id);

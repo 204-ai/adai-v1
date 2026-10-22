@@ -23,7 +23,9 @@ const { accountsFor } = await import("../src/entity/accounts.js");
 const { publicNotesFor } = await import("../src/claim/notes.js");
 const { buildLog } = await import("../src/claim/log.js");
 const { nodeHistory } = await import("../src/utils/history.js");
-const { checkDirection, SUGGESTABLE_EDGE_TYPES, EDGE_DIRECTIONS } = await import("../src/intake/candidate.js");
+const { checkDirection, SUGGESTABLE_EDGE_TYPES, EDGE_DIRECTIONS, CandidateError } = await import("../src/intake/candidate.js");
+const { generousJsonUnlessTight } = await import("../src/utils/json-body.js");
+const { createDraft, claimJob, runDraftTool } = await import("../src/intake/draft.js");
 
 function setup() {
   const db = initDb(":memory:");
@@ -127,8 +129,9 @@ it("readings: any contributor, on a live relation, shown on both ends as 'a read
     const hist = nodeHistory(db, "project:glitch-show")!.events.filter((e: any) => e.kind === "note");
     assert.deepEqual(hist.map((e: any) => e.note_kind), ["reading"]);
     assert.match((await call("GET", "/project/glitch-show/history")).text, /<strong>a reading<\/strong>/);
-    assert.equal((await call("POST", `/api/v1/readings/${criticSignal}/withdraw`, { token: artist.raw_token })).status, 403);
-    assert.equal((await call("POST", `/api/v1/readings/${criticSignal}/withdraw`, { token: critic.raw_token })).status, 200);
+    assert.equal((await call("POST", `/api/v1/readings/${criticSignal}/withdraw`, { token: artist.raw_token }, {})).status, 403);
+    assert.equal((await call("POST", `/api/v1/readings/${criticSignal}/withdraw`, { token: critic.raw_token })).status, 415, "JSON only");
+    assert.equal((await call("POST", `/api/v1/readings/${criticSignal}/withdraw`, { token: critic.raw_token }, {})).status, 200);
     assert.doesNotMatch((await call("GET", "/project/glitch-show")).text, /a reading by A Critic/);
   } finally {
     server.close();
@@ -287,4 +290,131 @@ it("DOCUMENTS: publication → project / artwork, everywhere edge types are list
   } finally {
     server.close();
   }
+});
+
+// ---- review fixes -------------------------------------------------------------------------
+
+it("history: a pending reading withdrawn by its author was never public — no words in /history (HTML or JSON)", async () => {
+  const { db, newcomer } = setup();
+  const { server, call } = await serve(db);
+  try {
+    const r = await call("POST", "/api/v1/readings", { token: newcomer.raw_token }, { relation: REL, note: "UNREVIEWEDWORDS never approved." });
+    assert.equal(r.json.status, "pending");
+    assert.equal((await call("POST", `/api/v1/readings/${r.json.signal_id}/withdraw`, { token: newcomer.raw_token }, {})).status, 200);
+    for (const node of ["project/glitch-show", "artwork/glitch-one"]) {
+      assert.doesNotMatch((await call("GET", `/${node}/history`)).text, /UNREVIEWEDWORDS|a reading/);
+      assert.doesNotMatch((await call("GET", `/${node}/history.json`)).text, /UNREVIEWEDWORDS|"reading"/);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+it("withdrawal never undoes an admin revocation: publish → revoke → withdraw stays revoked and redacted", async () => {
+  const { db, critic, admin } = setup();
+  const { server, call } = await serve(db);
+  try {
+    const r = await call("POST", "/api/v1/readings", { token: critic.raw_token }, { relation: REL, note: "REVOKEDREADING words." });
+    assert.equal(r.json.status, "live");
+    assert.equal((await call("POST", `/api/v1/signals/${r.json.signal_id}/revoke`, { token: admin.raw_token }, { reason: "asked" })).status, 200);
+    assert.equal((await call("POST", `/api/v1/readings/${r.json.signal_id}/withdraw`, { token: critic.raw_token }, {})).status, 200);
+    assert.equal((db.prepare("SELECT status FROM signals WHERE id = ?").get(r.json.signal_id) as any).status, "revoked");
+    assert.doesNotMatch((await call("GET", "/project/glitch-show/history")).text, /REVOKEDREADING/);
+    assert.doesNotMatch((await call("GET", "/project/glitch-show/history.json")).text, /REVOKEDREADING/);
+  } finally {
+    server.close();
+  }
+});
+
+it("quota: one per contributor across session and bearer — a burst limit and a daily limit, 429", async () => {
+  const { db } = setup();
+  const { server, call } = await serve(db);
+  const q = ensureContributorForEmail(db, { email: "q@x.org", name: "Quota Q", invite: true, tier: "auto" });
+  const token = mintToken(db, { contributorName: "Quota Q" });
+  assert.equal(token.contributor_id, q.id, "the same contributor both ways");
+  const cookie = cookieHeader(issueSession(db, q.id).signed, 100, false).split(";")[0]!;
+  try {
+    for (let i = 0; i < 5; i++) {
+      const via = i % 2 ? { cookie } : { token: token.raw_token };
+      const path = i % 2 ? "/api/readings" : "/api/v1/readings";
+      assert.equal((await call("POST", path, via, { relation: REL, note: `burst ${i}` })).status, 201, `reading ${i}`);
+    }
+    let r = await call("POST", "/api/readings", { cookie }, { relation: REL, note: "burst 6" });
+    assert.equal(r.status, 429);
+    assert.equal(r.json.error, "too_many_readings");
+    assert.equal((await call("POST", "/api/v1/readings", { token: token.raw_token }, { relation: REL, note: "burst 7" })).status, 429, "the bearer route shares it");
+    // an hour later the burst is over, but the day's count holds
+    db.prepare("UPDATE relation_notes SET created_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour') WHERE contributor_id = ?").run(q.id);
+    const ins = db.prepare("INSERT INTO relation_notes (signal_id, kind, source_id, edge_type, target_id, node_id, contributor_id, note, state, created_at) VALUES (?, 'reading', ?, ?, ?, ?, ?, 'old', 'live', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-2 hours'))");
+    for (let i = 0; i < 24; i++) ins.run(`old-${i}`, REL.source_id, REL.edge_type, REL.target_id, REL.source_id, q.id);
+    assert.equal((await call("POST", "/api/v1/readings", { token: token.raw_token }, { relation: REL, note: "the 30th" })).status, 201);
+    r = await call("POST", "/api/readings", { cookie }, { relation: REL, note: "the 31st" });
+    assert.equal(r.status, 429);
+    assert.match(r.json.message, /a day/);
+  } finally {
+    server.close();
+  }
+});
+
+it("a relation row shows its latest 3 readings and points to the rest in the accounts", async () => {
+  const { db } = setup();
+  const { server, call } = await serve(db);
+  try {
+    for (let i = 1; i <= 5; i++) {
+      const t = mintToken(db, { contributorName: `Reader ${i}`, createIfMissing: true, tier: "auto" });
+      assert.equal((await call("POST", "/api/v1/readings", { token: t.raw_token }, { relation: REL, note: `Reading number ${i}.` })).status, 201);
+      db.prepare("UPDATE relation_notes SET created_at = ? WHERE note = ?").run(`2026-10-2${i}T00:00:00Z`, `Reading number ${i}.`);
+    }
+    const html = (await call("GET", "/project/glitch-show")).text;
+    const row = html.slice(html.indexOf('data-group="EXHIBITED_AT:in"'), html.indexOf('id="ev-accounts"'));
+    assert.deepEqual([...row.matchAll(/Reading number (\d)/g)].map((m) => m[1]), ["3", "4", "5"], "the latest three, in order");
+    assert.match(row, /<a href="#ev-accounts">2 more readings in the accounts ↓<\/a>/);
+    assert.equal(accountsFor(db, "project:glitch-show").filter((a) => a.kind === "reading").length, 5, "all of them in the accounts");
+  } finally {
+    server.close();
+  }
+});
+
+it("body limits with the production middleware order: the readings routes keep their 64 KB cap", async () => {
+  const { db, critic } = setup();
+  const app = express();
+  app.use(generousJsonUnlessTight("16mb")); // as src/index.ts mounts it, first
+  app.use(claim); app.use(pages); app.use(contributorApi);
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((r) => server.once("listening", r));
+  const base = `http://127.0.0.1:${(server.address() as any).port}`;
+  try {
+    const big = JSON.stringify({ relation: REL, note: "x".repeat(100 * 1024) });
+    for (const path of ["/api/v1/readings", "/api/readings"]) {
+      const r = await fetch(base + path, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${critic.raw_token}` }, body: big });
+      assert.equal(r.status, 413, `${path}: over the tight cap`);
+    }
+    const ok = await fetch(base + "/api/v1/readings", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${critic.raw_token}` }, body: JSON.stringify({ relation: REL, note: "small" }) });
+    assert.equal(ok.status, 201);
+    void db;
+  } finally {
+    server.close();
+  }
+});
+
+it("DOCUMENTS through the URL intake: a publication must already be a node; never proposed as a new one", () => {
+  const { db } = setup();
+  const c = ensureContributorForEmail(db, { email: "intake@x.org", name: "Intake I", invite: true, tier: "auto" });
+  const d = createDraft(db, c.id, "https://glitch.example/");
+  claimJob(db, "w1");
+  const pg = { page_url: "https://glitch.example/catalogue", quote: "The GLITCH Catalogue documents the GLITCH Show." };
+  assert.throws(
+    () => runDraftTool(db, d.id, "w1", "propose_edge", { source: "publication:no-such-catalogue", target: "project:glitch-show", edge_type: "DOCUMENTS", confidence: "high", ...pg }),
+    (e: any) => e instanceof CandidateError && /does not exist in A\(DAI\)/.test(e.message),
+  );
+  assert.throws(
+    () => runDraftTool(db, d.id, "w1", "propose_node", { type: "publication", name: "A New Catalogue", ...pg }),
+    (e: any) => e instanceof CandidateError && /not allowed/.test(e.message),
+  );
+  const ok = runDraftTool(db, d.id, "w1", "propose_edge", { source: "publication:glitch-catalogue", target: "project:glitch-show", edge_type: "DOCUMENTS", confidence: "high", ...pg }) as any;
+  assert.ok(ok, "an existing publication documents the show");
+  assert.throws(
+    () => runDraftTool(db, d.id, "w1", "propose_edge", { source: "project:glitch-show", target: "publication:glitch-catalogue", edge_type: "DOCUMENTS", confidence: "high", ...pg }),
+    /Swap source and target/,
+  );
 });

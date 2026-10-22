@@ -1,3 +1,4 @@
+import { generousJsonUnlessTight } from "./utils/json-body.js";
 import express from "express";
 import path from "node:path";
 import fs from "node:fs";
@@ -54,12 +55,7 @@ const app = express();
 // declares its own tight one at the router level — otherwise an attacker
 // could amplify a single POST into 16 MB of JSON parsing per request
 // before hitting the rate-limit gate.
-const generousJson = express.json({ limit: "16mb" });
-app.use((req, res, next) => {
-  if (req.path.startsWith("/api/archivist/") || req.path.startsWith("/api/intake/") || req.path.startsWith("/internal/") ||
-      req.path.startsWith("/api/claims") || req.path.startsWith("/api/me/") || req.path.startsWith("/api/review/access/")) return next();
-  return generousJson(req, res, next);
-});
+app.use(generousJsonUnlessTight("16mb")); // src/utils/json-body.ts: the tight routes are skipped
 
 // Staging (src/utils/staging.ts): kept out of search engines, every HTML
 // response carries the switch bar, /api/staging reports the switches.

@@ -262,10 +262,16 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
 
   // ---- the subject's notes ------------------------------------------------------
   const noteRows = db.prepare(
-    `SELECT signal_id, kind, state, note, source_id, edge_type, target_id, meta_key, resolution, resolved_at, created_at
-       FROM relation_notes
-      WHERE kind IN ('contest','context','reading') AND state NOT IN ('pending','rejected')
-        AND (source_id = ? OR target_id = ? OR (meta_key IS NOT NULL AND node_id = ?))`
+    // Only notes that were actually published: a contest is public the moment
+    // it is filed; context and readings only once their review item was
+    // approved (auto-published or by a curator) — a pending one withdrawn by
+    // its author was never public, and its words must not surface here.
+    `SELECT rn.signal_id, rn.kind, rn.state, rn.note, rn.source_id, rn.edge_type, rn.target_id, rn.meta_key, rn.resolution, rn.resolved_at, rn.created_at
+       FROM relation_notes rn
+       LEFT JOIN intake_queue q ON q.id = rn.queue_id
+      WHERE (rn.kind = 'contest'
+             OR (rn.kind IN ('context','reading') AND (q.status = 'approved' OR (rn.queue_id IS NULL AND rn.state = 'live'))))
+        AND (rn.source_id = ? OR rn.target_id = ? OR (rn.meta_key IS NOT NULL AND rn.node_id = ?))`
   ).all(nodeId, nodeId, nodeId) as any[];
   const noteEvents: HistoryEvent[] = noteRows.map((r) => {
     const sig = signal(r.signal_id);

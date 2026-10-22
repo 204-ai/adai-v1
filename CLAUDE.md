@@ -306,7 +306,11 @@ by `fileReading` in `src/claim/notes.ts`; `node_id` = the relation's source, no
 claim implied). `POST /api/v1/readings` (bearer) or `POST /api/readings`
 (session: the "+ reading" button on an entity-view relation row) with
 `{relation, note, source_url?, consent_scope?, consent_attribution?, batch_id?}`;
-`…/:signal_id/withdraw` by its author. Tier-gated like context (probationary →
+`…/:signal_id/withdraw` by its author (JSON only; never undoes an admin revoke).
+5 a minute / 30 a day per contributor across both routes (429); both stay
+under the tight 64 KB body cap (`src/utils/json-body.ts` skips them in the
+app-wide 16 MB parser). A row shows its latest 3; `/history` lists a note
+only once it was published. Tier-gated like context (probationary →
 `/review?kind=reading`). Shown on the relation row and in the accounts section
 of both ends as "a reading by X" — `publicNotesFor` never lets a reading be the
 subject (no handle, `subject_now` false, even for a claimant), and only while
