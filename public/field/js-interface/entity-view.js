@@ -9,7 +9,9 @@
  *                     links navigate normally.
  *   - /field          the overlay: 'i' (or clicking the focused node) fetches
  *                     /api/entity?id=… and lays the same article over the
- *                     graph; ESC dismisses back to the previous zoom. Links
+ *                     graph; ESC dismisses back to the previous zoom. The
+ *                     address follows the open profile (issue #85, wired
+ *                     in graph-field.js / field-address.js). Links
  *                     to other nodes re-open the overlay on them (cmd/ctrl-
  *                     click still opens the standalone page in a new tab).
  *
@@ -227,12 +229,19 @@
   }
 
   // ---------- Overlay: open / close ----------
+  // The field's address follows the open profile (issue #85): graph-field.js
+  // listens for this and writes /field/<type>/<slug>.
+  function announce() {
+    window.dispatchEvent(new CustomEvent('adai:entity-view', { detail: { open: STATE.open, id: STATE.currentId } }));
+  }
+
   async function open(id) {
     if (!id) return;
     const el = ensureContainer();
     const seq = ++STATE.seq;
     STATE.open = true;
     STATE.currentId = id;
+    announce();
     const name = window.ADAI_GRAPH?.byId?.get(id)?.name || id;
     el.innerHTML = `${chrome()}<article class="ev-article"><p class="ev-empty adai-embed-loading"><span class="adai-spin"></span>opening ${escapeHtml(name)}…</p></article>`;
     // Re-opens kept the previous scroll position — navigating from a card
@@ -275,10 +284,12 @@
     el.classList.remove('is-open');
     el.setAttribute('aria-hidden', 'true');
     el.innerHTML = '';
+    const was = STATE.open;
     STATE.open = false;
     STATE.currentId = null;
     STATE.seq++;
     document.body.classList.remove('ev-locked');
+    if (was) announce();
   }
 
   // ---------- Triggers ----------
@@ -405,5 +416,5 @@
   });
 
   // Public API.
-  window.ADAI_ENTITY_VIEW = { open, close, get isOpen() { return STATE.open; } };
+  window.ADAI_ENTITY_VIEW = { open, close, get isOpen() { return STATE.open; }, get currentId() { return STATE.currentId; } };
 })();

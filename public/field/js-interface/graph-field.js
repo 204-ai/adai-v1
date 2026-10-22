@@ -1629,18 +1629,24 @@
     }
     // Replay: step-by-step. Transition each hop, then dwell so the viewer
     // can read where they've landed before the next move. Skip the dwell
-    // on the very last hop — they've arrived.
-    for (let i = 0; i < path.length; i++) {
-      const id = path[i];
-      const isLast = i === path.length - 1;
-      while (bundle.transitioning) {
-        await new Promise(r => setTimeout(r, 60));
+    // on the very last hop — they've arrived. The address follows each hop
+    // in place: a replayed reading is one history step (issue #85).
+    bundle.address?.beginBatch();
+    try {
+      for (let i = 0; i < path.length; i++) {
+        const id = path[i];
+        const isLast = i === path.length - 1;
+        while (bundle.transitioning) {
+          await new Promise(r => setTimeout(r, 60));
+        }
+        zoomToNode(graph, bundle, id, w, h);
+        // wait the transition itself
+        await new Promise(r => setTimeout(r, CFG.ZOOM_TRANSITION_MS + 60));
+        // then a longer dwell so the viewer can read this node
+        if (!isLast) await new Promise(r => setTimeout(r, CFG.REPLAY_DWELL_MS));
       }
-      zoomToNode(graph, bundle, id, w, h);
-      // wait the transition itself
-      await new Promise(r => setTimeout(r, CFG.ZOOM_TRANSITION_MS + 60));
-      // then a longer dwell so the viewer can read this node
-      if (!isLast) await new Promise(r => setTimeout(r, CFG.REPLAY_DWELL_MS));
+    } finally {
+      bundle.address?.endBatch();
     }
   }
 
@@ -2234,6 +2240,7 @@
         bundle.zoomFocus = null;
         renderBreadcrumb(bundle, graph);
         renderEmbedStrip(bundle, graph);
+        bundle.address?.changed();
       });
       return;
     }
@@ -3093,6 +3100,7 @@
     renderEdgeFilter(bundle, graph);
     renderEmbedStrip(bundle, graph);
     renderBookmarksStrip(bundle, graph);
+    bundle.address?.changed();
   }
 
   function revealNodeInPlace(graph, bundle, nodeId, opts = {}) {
@@ -3129,6 +3137,7 @@
     renderEdgeFilter(bundle, graph);
     renderEmbedStrip(bundle, graph);
     renderBookmarksStrip(bundle, graph);
+    bundle.address?.changed();
 
     fieldRevealTimer = setTimeout(() => {
       fieldRevealTimer = null;
@@ -3155,6 +3164,7 @@
     renderEdgeFilter(bundle, graph);
     renderEmbedStrip(bundle, graph);
     renderBookmarksStrip(bundle, graph);
+    bundle.address?.changed();
   }
 
   function drawInPlaceFocus(ctx, bundle, graph, width, height, filterMatch, dimmedAlpha, focusAlpha = 1) {
@@ -3514,9 +3524,41 @@
       renderBreadcrumb(bundle, graph);
     }, { once: true });
 
+    // ---- the address follows the field (issue #85) ----
+    // /field/<type>/<slug> names the open profile, else the focused node;
+    // each change is a history step, Back/Forward re-apply an entry
+    // (public/field/js-interface/field-address.js).
+    function focusOn(id) {
+      if (!id || !graph.byId.has(id) || bundle.focusedId === id) return;
+      if (window.ADAI_FIELD_STUDY?.zoomToNode?.(id)) return;
+      bundle.revealInPlace(id);
+    }
+    bundle.address = window.ADAI_FIELD_ADDRESS?.create({
+      win: window,
+      nodeFor: (id) => graph.byId.get(id) || null,
+      read: () => {
+        const ev = window.ADAI_ENTITY_VIEW;
+        return { focusId: bundle.focusedId || null, profileId: ev?.isOpen ? (ev.currentId || null) : null };
+      },
+      idFromLocation: () => deepLinkTarget().id,
+      apply: ({ id, profile, focus }) => {
+        const ev = window.ADAI_ENTITY_VIEW;
+        if (profile && id) {
+          if (ev && (!ev.isOpen || ev.currentId !== id)) ev.open(id);
+        } else if (ev?.isOpen) {
+          ev.close();
+        }
+        if (focus) focusOn(focus);
+        else if (!profile && bundle.focusedId) bundle.zoomToHome();
+      },
+    }) || null;
+    window.addEventListener('adai:entity-view', () => bundle.address?.changed());
+
     // If the URL has ?reading=..., auto-replay it on load.
     const urlPath = readingFromUrl();
     if (urlPath && urlPath.length > 0) {
+      // The page lands on the reading: its replay is this entry, not a new step.
+      bundle.address?.landing(urlPath.length * (CFG.ZOOM_TRANSITION_MS + CFG.REPLAY_DWELL_MS) + 2000);
       // Clear the param so reload doesn't replay again, but keep the URL clean.
       const u = new URL(window.location.href);
       u.searchParams.delete('reading');
@@ -3555,6 +3597,10 @@
     if (deepLink.wanted) {
       const targetId = deepLink.id;
       if (targetId) {
+        // The address already names it (or names it the legacy way): hold it
+        // there until the focus lands, then settle it in place, no new step.
+        bundle.address?.expect(bundle.address.urlFor(targetId));
+        bundle.address?.landing();
         // Same beat as ?reading — let the brand viz finish its first paint,
         // then drive the field-study zoom (pans the bitmap camera AND reveals
         // the node's neighbourhood). Falls back to the in-place reveal when
@@ -3655,6 +3701,7 @@
         setLens(params.get('lens') === '1' || stored === '1');
         // Open on yourself, unless the link names another node or replays a reading.
         if (!named && !params.get('reading')) {
+          bundle.address?.landing();
           setTimeout(() => {
             if (window.ADAI_FIELD_STUDY?.zoomToNode?.(L.self)) return;
             bundle.revealInPlace(L.self);
