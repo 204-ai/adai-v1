@@ -1,0 +1,35 @@
+/* Live activity (issue #83, public/field/js-interface/activity.js).
+   Quiet by design: a small "live · n" chip, collapsed by default; the list
+   opens upwards. Nothing at all shows when the feed is off or empty.
+   Everything visual is here — restyle freely (Gio has the final say). */
+.adai-activity {
+  position: fixed; left: 24px; bottom: 108px; z-index: 40; /* above the #vitals readout */
+  max-width: min(340px, calc(100vw - 48px));
+  font-family: 'SF Mono', 'Menlo', monospace; font-size: 10px; letter-spacing: 0.04em;
+  color: #8a8a8c;
+  display: flex; flex-direction: column-reverse; align-items: flex-start; gap: 6px;
+}
+.adai-activity[hidden] { display: none; }
+.adai-activity-toggle {
+  font: inherit; color: inherit; cursor: pointer;
+  background: rgba(10, 10, 12, 0.6); border: 1px solid #2a2a30; border-radius: 10px;
+  padding: 3px 9px;
+}
+.adai-activity-toggle:hover { color: #c8c6c1; border-color: #45454c; }
+.adai-activity-dot {
+  display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: #7eb8da; margin-right: 6px; vertical-align: 1px; opacity: 0.8;
+}
+.adai-activity-count { color: #6a6a6c; margin-left: 2px; }
+.adai-activity-list {
+  display: none; list-style: none; margin: 0; padding: 8px 10px;
+  background: rgba(10, 10, 12, 0.75); border: 1px solid #2a2a30; border-radius: 2px;
+}
+.adai-activity.is-open .adai-activity-list { display: block; }
+.adai-activity-list li { line-height: 1.5; padding: 2px 0; }
+.adai-activity-what { color: #b8b6b1; text-decoration: none; }
+a.adai-activity-what:hover { color: #E8E6E1; text-decoration: underline dotted; text-underline-offset: 3px; }
+.adai-activity-when { color: #55555a; white-space: nowrap; }
+/* The field's declutter toggle ('h') hides it with the rest of the chrome. */
+body.field-chrome-hidden #adai-activity { display: none !important; }
+@media (max-width: 768px) { .adai-activity { bottom: 120px; left: 16px; } }

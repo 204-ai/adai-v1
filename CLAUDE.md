@@ -215,6 +215,11 @@ empty — it requires evidence of artist intent, not thematic similarity.
 ### JSON API
 - `GET /api/stats` — node/edge/signal counts (retired-filtered)
 - `GET /api/staging` — staging only: the switch state (see *Staging*)
+- `GET /api/activity` — the live activity feed (issue #83, `src/utils/activity.ts`):
+  the past 24 h only, consent-filtered, never from the cached graph stream;
+  off unless `ACTIVITY_FEED=on` (or `settings.activity_feed='on'`; on staging the
+  `activity` switch). `/field` shows it as a small collapsible "live" chip
+  (`public/field/js-interface/activity.js` + `css/activity.css`), polled each 60 s
 - `GET /api/graph` — full graph as D3 `{nodes, edges}`, `?type=` filter; nodes
   carry `cdn_image_url`/`image_url` when present
 - `GET /api/graph/:slug` — ego graph (1-hop)
@@ -501,7 +506,7 @@ to land and break things before a deliberate `just deploy` to prod.
 - **Switches** (`src/utils/staging.ts`, one secret `STAGING_SWITCHES`): every
   outward integration is off by default and flipped per debugging session —
   `mail=stdout|allowlist:<addr|@domain>,…|live`, `worker=on`, `r2=on`,
-  `gemini=on`, `archivist=off`, `data=keep` (skip the nightly restore).
+  `gemini=on`, `archivist=off`, `activity=on`, `data=keep` (skip the nightly restore).
   `just staging-set mail=allowlist:x@y.z worker=on` sets the WHOLE state,
   `just staging-reset` returns to defaults, `just staging-status` shows them;
   a red bar on every staging page shows them too. On prod (`ADAI_ENV` unset)
