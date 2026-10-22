@@ -35,7 +35,7 @@ try {
   src.close();
   console.error(`[snapshot] wrote ${r.path}: ${Object.entries(r.counts).map(([t, n]) => `${t} ${n}`).join(", ")}; ` +
     `left out ${r.dropped.signals} non-public signal(s), ${r.dropped.contributors} contributor(s) never public, ` +
-    `${r.dropped.metadata_keys} metadata value(s) outside the public projection`);
+    `${r.dropped.metadata_keys} metadata value(s) outside the public projection, ${r.dropped.aliases} alias(es) not public or duplicates after cleaning`);
 } catch (e) {
   console.error(`[snapshot] failed: ${(e as Error).message}`);
   process.exit(1);

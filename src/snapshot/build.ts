@@ -52,7 +52,7 @@
 // reference to it follows (invalidated_by, a summary's edge_id). References
 // to records not in the file (a signal left out) are cleared to NULL.
 //
-// URLs (sources, websites, images, provenance): http(s) only, no userinfo,
+// URLs (sources, websites, images, provenance, URL-valued aliases): http(s) only, no userinfo,
 // signed-looking query parameters (X-Amz-*, signature, token, expires, …)
 // removed. The sanitiser also runs over every serialised JSON string and
 // every meta value.
@@ -134,7 +134,7 @@ export interface SnapshotOptions {
 export interface SnapshotReport {
   path: string;
   counts: Record<string, number>;
-  dropped: { signals: number; contributors: number; metadata_keys: number };
+  dropped: { signals: number; contributors: number; metadata_keys: number; aliases: number };
 }
 
 function parse(s: unknown): any {
@@ -548,9 +548,26 @@ function fill(src: DatabaseSync, out: DatabaseSync, opts: SnapshotOptions): Snap
       TIERS.has(String(e.confidence)) ? null : S(e.confidence), S(e.charge),
       S(e.created_at), e._by, S(e.event_time), S(e.valid_from), S(e.valid_until), ref(e.invalidated_by));
   }
+  let droppedAliases = 0;
   const insAlias = out.prepare("INSERT INTO node_aliases (source, external_id, node_id, created_at) VALUES (?, ?, ?, ?)");
+  // URL-valued aliases (source 'web' — the intake records the evidence page —
+  // or any external id that is a URL; the API takes arbitrary strings) pass
+  // publicUrl like every other URL: userinfo or a non-http scheme leaves the
+  // alias out, signed query parameters are stripped. Handles, slugs and
+  // platform ids are plain strings and stay. Two aliases that clean to the
+  // same (source, external_id) keep the first (oldest) and drop the rest.
+  const looksLikeUrl = (v: string) => /^[a-z][a-z0-9+.-]*:\/\//i.test(v) || /^www\./i.test(v);
+  const aliasSeen = new Set<string>();
   for (const a of src.prepare("SELECT * FROM node_aliases ORDER BY rowid").all() as any[]) {
-    insAlias.run(S(a.source), S(a.external_id), S(a.node_id), S(a.created_at));
+    const raw = typeof a.external_id === "string" ? a.external_id : "";
+    let ext: string | null;
+    if (a.source === "web" || looksLikeUrl(raw)) ext = publicUrl(/^www\./i.test(raw) ? `https://${raw}` : raw);
+    else ext = S(raw) || null;
+    if (!ext) { droppedAliases++; continue; }
+    const key = `${S(a.source)}\u0000${ext}`;
+    if (aliasSeen.has(key)) { droppedAliases++; continue; }
+    aliasSeen.add(key);
+    insAlias.run(S(a.source), ext, S(a.node_id), S(a.created_at));
   }
   for (const ix of INDEXES) out.exec(ix);
 
@@ -580,5 +597,5 @@ function fill(src: DatabaseSync, out: DatabaseSync, opts: SnapshotOptions): Snap
   ];
   for (const [k, v] of entries) meta.run(k, k === "counts" ? v : sanitise(v));
 
-  return { path: "", counts: tableCounts, dropped: { signals: droppedSignals, contributors: droppedContributors, metadata_keys: droppedKeys } };
+  return { path: "", counts: tableCounts, dropped: { signals: droppedSignals, contributors: droppedContributors, metadata_keys: droppedKeys, aliases: droppedAliases } };
 }

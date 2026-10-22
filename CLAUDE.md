@@ -400,8 +400,8 @@ and ids re-minted, references followed); signal content is prose only — struct
 `{op, node_id?, edge_id?}`; node metadata is a typed, recursive allowlist of what
 the entity view shows (key works as `{title, year, description}`, no
 `image_provenance`, the upstream `image_url` only without a mirror copy), minus
-any value a restricted or non-public contribution wrote; URLs lose userinfo and
-signed-looking query parameters; `updated_by` only when the latest writer is
+any value a restricted or non-public contribution wrote; URLs (aliases included)
+lose signed-looking query parameters, and one with userinfo is left out; `updated_by` only when the latest writer is
 public and attributed; contributors only when named publicly, counters recomputed,
 no trust tiers; references to records not in the file are NULL. A central
 sanitiser (emails, common key shapes) runs over every value, every serialised JSON

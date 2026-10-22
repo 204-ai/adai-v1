@@ -483,3 +483,40 @@ it("URLs and the final sanitiser pass: signed queries and userinfo gone, real qu
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it("aliases: URL-valued ones pass publicUrl — userinfo dropped, signed queries stripped, collisions after cleaning keep the first", () => {
+  const db = fixture();
+  db.prepare("INSERT INTO nodes (id, type, name, slug, metadata, updated_by) VALUES ('artwork:aliased', 'artwork', 'Aliased', 'aliased', '{}', 'contributor:migration')").run();
+  const alias = db.prepare("INSERT INTO node_aliases (source, external_id, node_id) VALUES (?, ?, 'artwork:aliased')");
+  // as the URL intake materialises them: the evidence page as a 'web' alias
+  alias.run("web", "https://gallery.example/works/aliased?X-Amz-Signature=ALIASSIG&X-Amz-Credential=ALIASCRED");
+  alias.run("web", "https://gallery.example/works/aliased?token=ALIASTOKEN"); // the same link once cleaned: dropped
+  alias.run("web", "https://curator:ALIASPASS@private.example/aliased");       // userinfo: dropped
+  alias.run("web", "javascript:alert('ALIASJS')");                             // not http(s): dropped
+  // arbitrary strings through /api/v1/nodes: a URL under another source is cleaned too
+  alias.run("press", "https://press.example/review?id=42&sig=PRESSSIG");
+  alias.run("fxhash", "user:tz1ALIASKEPTPLAIN");                                // a platform id with a colon: kept as is
+  alias.run("slug", "artwork/old-aliased");
+  const dir = mkdtempSync(join(tmpdir(), "adai-snap-"));
+  try {
+    const path = join(dir, "s.sqlite");
+    const r = buildSnapshot(db, path, { jsonlDir: join(dir, "jsonl") });
+    for (const text of textsOf(dir, path)) {
+      for (const sec of ["ALIASSIG", "ALIASCRED", "ALIASTOKEN", "ALIASPASS", "private.example", "ALIASJS", "PRESSSIG"]) assert.ok(!text.includes(sec), `"${sec}" leaked`);
+    }
+    const out = new DatabaseSync(path);
+    const rows = (out.prepare("SELECT source, external_id FROM node_aliases WHERE node_id = 'artwork:aliased' ORDER BY source, external_id").all() as any[]).map((a) => `${a.source} ${a.external_id}`);
+    assert.deepEqual(rows, [
+      "fxhash user:tz1ALIASKEPTPLAIN",
+      "press https://press.example/review?id=42",
+      "slug artwork/old-aliased",
+      "web https://gallery.example/works/aliased",
+    ]);
+    assert.equal(r.dropped.aliases, 3);
+    out.close();
+    const jsonl = readFileSync(join(dir, "jsonl", "node_aliases.jsonl"), "utf8");
+    assert.match(jsonl, /"external_id":"https:\/\/gallery\.example\/works\/aliased"/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
