@@ -7,7 +7,7 @@ import { htmlEscape } from "../templates.js";
 import { fieldPath } from "../utils/site.js";
 import { collapseClaims, CLAIM_COLS } from "../utils/claims.js";
 import { approvedClaimsFor, CLAIMABLE_TYPES, claimByQueueId } from "./store.js";
-import { noteAuthor, noteByQueueId, objectionsFor, type RelationNote } from "./notes.js";
+import { noteAuthor, noteByQueueId, objectionsFor, type AuditNote, type RelationNote } from "./notes.js";
 
 const esc = (v: unknown): string => htmlEscape(String(v ?? ""));
 
@@ -201,3 +201,23 @@ export function relationNotesHtml(notes: RelationNote[] | undefined): string {
     .join("");
 }
 
+
+/**
+ * The curator's audit line for a note (the record page, curators only):
+ * the words and the writer as stored, with what the public filter does to
+ * them spelled out — never shown to anyone else.
+ */
+export function relationNoteAuditHtml(n: AuditNote): string {
+  const labels = [
+    `${n.kind} · ${n.state}`,
+    n.signal_status !== "active" ? `signal ${n.signal_status} — hidden from the public` : "",
+    n.consent_attribution === "anonymous" ? "anonymous — the public sees “someone”" : "",
+    n.consent_scope === "structural_only" ? "structural only — the public does not see these words" : "",
+    n.subject_now ? "" : "claim ended — not shown as the subject",
+  ].filter(Boolean);
+  const who = `${esc(n.by ?? n.contributor_id)}${n.handle ? ` (page handle @${esc(n.handle)})` : ""}`;
+  const about = n.relation
+    ? `${esc(n.relation.source_id)} ${esc(n.relation.edge_type)} ${esc(n.relation.target_id)}`
+    : n.meta_key ? `value of ${esc(n.meta_key)} on ${esc(n.node_id)}` : esc(n.node_id);
+  return `<div class='meta' data-audit-note='${esc(n.signal_id)}'><span class='tag'>${labels.map(esc).join("</span> <span class='tag'>")}</span> ${who} on ${about}: “${esc(n.note)}”</div>`;
+}

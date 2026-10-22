@@ -17,8 +17,8 @@ import { heldWorks } from "../utils/held-works.js";
 import { collapseClaims, CLAIM_COLS, tripleKey } from "../utils/claims.js";
 import { nodeHistory, type HistoryEvent } from "../utils/history.js";
 import { readSession } from "../intake/auth.js";
-import { accessClaimCards, accessClaimCount, claimReviewCards, curatorSignIn, objectionsBlock, profileClaimBlock, relationNotesHtml } from "../claim/pages.js";
-import { notesByTriple, publicNotesFor } from "../claim/notes.js";
+import { accessClaimCards, accessClaimCount, claimReviewCards, curatorSignIn, objectionsBlock, profileClaimBlock, relationNoteAuditHtml, relationNotesHtml } from "../claim/pages.js";
+import { auditNotesFor, notesByTriple, publicNotesFor } from "../claim/notes.js";
 import { renderEntityView, nodePath, type EntityNode, type EntityViewer } from "../entity/view.js";
 import { entityPage } from "../entity/page.js";
 import { movedTo } from "../utils/moved.js";
@@ -376,7 +376,10 @@ function profileHandler(req: any, res: any) {
     )
     .all(node.id, node.id) as any[]);
 
-  // The subject's word on its relations: open contests, context notes.
+  // The subject's word on its relations: open contests, context notes. The
+  // record is public: everyone gets the public filter, except a curator, who
+  // gets the full audit view of every note below the relations.
+  const curator = viewerOf(db, req).curator;
   const notes = notesByTriple(publicNotesFor(db, node.id));
   if (edges.length > 0) {
     const grouped = new Map<string, any[]>();
@@ -400,6 +403,14 @@ function profileHandler(req: any, res: any) {
         body += `<li><a href='/record/${encodeURIComponent(otherType)}/${encodeURIComponent(otherSlug)}'>${htmlEscape(String(otherName ?? otherSlug))}</a>${claimed}${relationNotesHtml(notes.get(tripleKey(e)))}</li>`;
       }
       body += `</ul></div>`;
+    }
+  }
+
+  if (curator) {
+    const audit = auditNotesFor(db, node.id);
+    if (audit.length) {
+      body += `<h3>notes — curator audit (${audit.length})</h3><p class='meta'>Every note on this page's relations and values, as stored. The public sees only live context and open contests, with the consent below applied.</p>`;
+      body += audit.map(relationNoteAuditHtml).join("");
     }
   }
 

@@ -41,7 +41,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { htmlEscape as esc } from "../templates.js";
 import { edgeLabel } from "../utils/edge-labels.js";
 import { proseDate } from "../utils/signal-prose.js";
-import { publicNotesFor } from "../claim/notes.js";
+import { countPublicNotes, publicNotesFor } from "../claim/notes.js";
 
 export type AccountKind = "contribution" | "context" | "contest";
 
@@ -75,10 +75,10 @@ export const ACCOUNTS_PAGE_MAX = 50;
 const TEXT_FOLD = 700;
 
 const isHttp = (u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u);
-const after = (a: { at: string | null; signal_id: string }, c: AccountCursor | null) =>
-  !c || String(a.at ?? "") > c.at || (String(a.at ?? "") === c.at && a.signal_id > c.id);
+/** Binary string order, as SQLite compares the cursor (never localeCompare: the two must agree). */
+const cmp = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
 const byTime = (a: { at: string | null; signal_id: string }, b: { at: string | null; signal_id: string }) =>
-  String(a.at ?? "").localeCompare(String(b.at ?? "")) || a.signal_id.localeCompare(b.signal_id);
+  cmp(String(a.at ?? ""), String(b.at ?? "")) || cmp(a.signal_id, b.signal_id);
 
 /** Written contributions: what qualifies (see the header). */
 const CONTRIBUTIONS_WHERE = `
@@ -155,13 +155,9 @@ function nodeRefs(db: DatabaseSync, ids: string[]): Map<string, AccountNodeRef> 
 }
 
 /** The claimants' public notes, through the one public filter (consent, status, claim standing). */
-function notes(db: DatabaseSync, nodeId: string, cursor: AccountCursor | null, limit: number): { list: Account[]; total: number } {
-  const all = publicNotesFor(db, nodeId).filter((n) => n.kind === "context" || n.kind === "contest");
-  const page = all
-    .map((n) => ({ n, at: n.created_at, signal_id: n.signal_id }))
-    .filter((x) => after(x, cursor))
-    .sort(byTime)
-    .slice(0, limit);
+function notes(db: DatabaseSync, nodeId: string, cursor: AccountCursor | null, limit: number): Account[] {
+  // paged in SQL, through the public predicate (only context / contest are public kinds)
+  const page = publicNotesFor(db, nodeId, { after: cursor, limit }).map((n) => ({ n }));
   const refs = nodeRefs(db, page.flatMap(({ n }) => [n.node_id, n.relation?.source_id ?? "", n.relation?.target_id ?? ""]));
   const list = page.map(({ n }): Account => {
     const fromHere = n.node_id === nodeId;
@@ -187,21 +183,21 @@ function notes(db: DatabaseSync, nodeId: string, cursor: AccountCursor | null, l
       source_url: null,
     };
   });
-  return { list, total: all.length };
+  return list;
 }
 
 /** One page of accounts after `cursor`, oldest first, and the cursor of the next. */
-export function accountsPage(db: DatabaseSync, nodeId: string, opts: { after?: AccountCursor | null; limit?: number } = {}): { accounts: Account[]; next: AccountCursor | null; total: number } {
+/** `total` is counted for the first page only (later pages are appended to a list that already says it). */
+export function accountsPage(db: DatabaseSync, nodeId: string, opts: { after?: AccountCursor | null; limit?: number } = {}): { accounts: Account[]; next: AccountCursor | null; total: number | null } {
   const limit = Math.max(1, Math.min(ACCOUNTS_PAGE_MAX, opts.limit ?? ACCOUNTS_SHOWN));
   const cursor = opts.after ?? null;
-  const n = notes(db, nodeId, cursor, limit + 1);
-  const merged = [...contributions(db, nodeId, cursor, limit + 1), ...n.list].sort(byTime);
+  const merged = [...contributions(db, nodeId, cursor, limit + 1), ...notes(db, nodeId, cursor, limit + 1)].sort(byTime);
   const accounts = merged.slice(0, limit);
   const last = accounts[accounts.length - 1];
   return {
     accounts,
     next: merged.length > limit && last ? { at: String(last.at ?? ""), id: last.signal_id } : null,
-    total: countContributions(db, nodeId) + n.total,
+    total: cursor ? null : countContributions(db, nodeId) + countPublicNotes(db, nodeId),
   };
 }
 
@@ -293,11 +289,12 @@ export function moreButton(node: { id: string }, next: AccountCursor | null, rem
 export function accountsSection(db: DatabaseSync, node: { id: string; name: string }): string {
   const page = accountsPage(db, node.id, { limit: ACCOUNTS_SHOWN });
   if (!page.accounts.length) return "";
+  const total = page.total ?? page.accounts.length; // always counted on the first page
   return `
       <section class="ev-section" id="ev-accounts">
-        <h2 class="ev-h2">// accounts <span class="ev-h2-count">/${pad(page.total)}</span></h2>
+        <h2 class="ev-h2">// accounts <span class="ev-h2-count">/${pad(total)}</span></h2>
         <p class="ev-accounts-lede">What contributors have written about ${esc(node.name)}, side by side and oldest first. No account here is the official one.</p>
         <ol class="ev-accounts">${accountItems(page.accounts, node)}</ol>
-        ${moreButton(node, page.next, page.total - page.accounts.length)}
+        ${moreButton(node, page.next, total - page.accounts.length)}
       </section>`;
 }

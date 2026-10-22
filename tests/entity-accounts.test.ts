@@ -323,3 +323,105 @@ it("relation rows: one public-note filter — anonymous, structural_only and rev
     server.close();
   }
 });
+
+// ---- second review round (#80 review of 948317c) ---------------------------------------------
+
+it("an ended claimant's note never borrows the node's handle, while another claimant holds it", async () => {
+  const { db } = setup();
+  db.prepare("INSERT INTO contributors (id, name, trust_tier) VALUES ('c-b2', 'Second Claimant', 'auto')").run();
+  db.prepare("INSERT INTO node_claims (id, node_id, contributor_id, status, via) VALUES ('clm_b2', 'practitioner:artist-b', 'c-b2', 'approved', 'invite')").run();
+  db.prepare("UPDATE node_claims SET status = 'withdrawn' WHERE id = 'clm_b'").run();
+  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, created_by, valid_from) VALUES ('e1', 'practitioner:artist-a', 'practitioner:artist-b', 'COLLABORATES_WITH', 't', '2026-10-26T00:00:00Z')").run();
+  db.prepare("INSERT INTO signals (id, title, content, submitted_by, created_at) VALUES ('nb', 'note', '{}', 'Artist B', '2026-10-27T08:00:00Z')").run();
+  db.prepare(`INSERT INTO relation_notes (signal_id, kind, source_id, edge_type, target_id, node_id, contributor_id, note, state, created_at)
+    VALUES ('nb', 'contest', 'practitioner:artist-a', 'COLLABORATES_WITH', 'practitioner:artist-b', 'practitioner:artist-b', 'c-b', 'Old claimant speaking.', 'open', '2026-10-27T08:00:00Z')`).run();
+  const { server, base } = await serve(pages);
+  try {
+    const [page, overlay] = await both(base, "/practitioner/artist-b", "practitioner:artist-b");
+    const record = await (await fetch(`${base}/record/practitioner/artist-b`)).text();
+    for (const html of [page, overlay, record]) {
+      assert.match(html, /⚑ contested by Artist B: Old claimant speaking\./, "the writer's own name");
+      assert.doesNotMatch(html, /@artistb\)?: Old claimant|by the subject \(@artistb\): Old claimant/);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+it("/record: the public filter for visitors, the full labelled audit view for a curator", async () => {
+  process.env.SESSION_SECRET = "test-secret-at-least-16-chars";
+  process.env.ADMIN_EMAILS = "curator@adai.test";
+  const { ensureContributorForEmail, issueSession, cookieHeader } = await import("../src/intake/auth.js");
+  const { db } = setup();
+  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, created_by, valid_from) VALUES ('e1', 'practitioner:artist-a', 'practitioner:artist-b', 'COLLABORATES_WITH', 't', '2026-10-26T00:00:00Z')").run();
+  const note = db.prepare(`INSERT INTO relation_notes (signal_id, kind, source_id, edge_type, target_id, node_id, contributor_id, note, state, created_at)
+    VALUES (?, ?, 'practitioner:artist-a', 'COLLABORATES_WITH', 'practitioner:artist-b', 'practitioner:artist-a', 'c-a', ?, ?, ?)`);
+  const sig = db.prepare("INSERT INTO signals (id, title, content, submitted_by, created_at, consent_attribution, consent_scope, status) VALUES (?, 'note', '{}', 'Artist A', ?, ?, ?, ?)");
+  sig.run("an", "2026-10-27T08:00:00Z", "anonymous", "full_commons", "active");
+  note.run("an", "context", "Anonymous words.", "live", "2026-10-27T08:00:00Z");
+  sig.run("so", "2026-10-27T09:00:00Z", "attributed", "structural_only", "active");
+  note.run("so", "contest", "Structural words.", "open", "2026-10-27T09:00:00Z");
+  sig.run("rv", "2026-10-27T10:00:00Z", "attributed", "full_commons", "revoked");
+  note.run("rv", "context", "Revoked words.", "live", "2026-10-27T10:00:00Z");
+  const cur = ensureContributorForEmail(db, { email: "curator@adai.test", name: "Cura", invite: true });
+  const cookie = cookieHeader(issueSession(db, cur.id).signed, 100, false).split(";")[0]!;
+  const { server, base } = await serve(pages);
+  try {
+    const visitor = await (await fetch(`${base}/record/practitioner/artist-b`)).text();
+    assert.doesNotMatch(visitor, /Structural words|Revoked words|curator audit/);
+    assert.match(visitor, /“Anonymous words\.” — someone/);
+    const curator = await (await fetch(`${base}/record/practitioner/artist-b`, { headers: { cookie } })).text();
+    assert.match(curator, /notes — curator audit \(3\)/);
+    assert.match(curator, /data-audit-note='rv'>.*signal revoked — hidden from the public.*Revoked words\./);
+    assert.match(curator, /data-audit-note='an'>.*anonymous — the public sees “someone”.*Artist A.*Anonymous words\./);
+    assert.match(curator, /data-audit-note='so'>.*structural only — the public does not see these words.*Structural words\./);
+  } finally {
+    server.close();
+    delete process.env.ADMIN_EMAILS;
+  }
+});
+
+it("notes page in SQL with the same cursor; totals only on the first page", async () => {
+  const { db, signal } = setup();
+  const { accountsPage } = await import("../src/entity/accounts.js");
+  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, created_by, valid_from) VALUES ('e1', 'practitioner:artist-a', 'practitioner:artist-b', 'COLLABORATES_WITH', 't', '2026-10-26T00:00:00Z')").run();
+  const note = db.prepare(`INSERT INTO relation_notes (signal_id, kind, source_id, edge_type, target_id, node_id, contributor_id, note, state, created_at)
+    VALUES (?, 'context', 'practitioner:artist-a', 'COLLABORATES_WITH', 'practitioner:artist-b', 'practitioner:artist-b', 'c-b', ?, 'live', ?)`);
+  for (let i = 1; i <= 7; i++) {
+    db.prepare("INSERT INTO signals (id, title, content, submitted_by, created_at) VALUES (?, 'note', '{}', 'Artist B', ?)").run(`n${i}`, "2026-10-27T08:00:00Z");
+    note.run(`n${i}`, `Note ${i}`, "2026-10-27T08:00:00Z"); // all in one second: the id breaks the tie
+  }
+  for (let i = 1; i <= 5; i++) signal("practitioner:artist-b", "A Critic", "2026-10-27T08:00:00Z", `Reading ${i}`, `Text ${i}.`);
+  const seen: string[] = [];
+  let p = accountsPage(db, "practitioner:artist-b", { limit: 4 });
+  assert.equal(p.total, 12);
+  seen.push(...p.accounts.map((a) => a.signal_id));
+  while (p.next) {
+    p = accountsPage(db, "practitioner:artist-b", { after: p.next, limit: 4 });
+    assert.equal(p.total, null);
+    seen.push(...p.accounts.map((a) => a.signal_id));
+  }
+  assert.equal(seen.length, 12);
+  assert.equal(new Set(seen).size, 12);
+  assert.deepEqual(seen, [...seen].sort(), "(created_at, id) order across both kinds");
+});
+
+it("the signal_authors backfill runs once (a settings flag)", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "adai-80-bf-"));
+  try {
+    const path = join(dir, "t.db");
+    let db = initDb(path);
+    assert.ok((db.prepare("SELECT value FROM settings WHERE key = 'signal_authors_backfill'").get() as any)?.value);
+    // a note that would qualify, written behind insertSignal's back after the backfill ran
+    db.prepare("INSERT INTO relation_notes (signal_id, kind, node_id, contributor_id, note, state) VALUES ('late', 'context', 'x', 'c', 'n', 'live')").run();
+    db.close();
+    db = initDb(path);
+    assert.equal(db.prepare("SELECT 1 FROM signal_authors WHERE signal_id = 'late'").get(), undefined, "not rescanned on the next boot");
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

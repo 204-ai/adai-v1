@@ -79,18 +79,27 @@ function runMigrations(db: DatabaseSync) {
     if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
   }
   // signal_authors (issue #80): the authenticated author of signals written
-  // before insertSignal recorded it, where the record proves it — a URL-intake
-  // signal whose provenance names its draft (a /api/v1 caller can set
-  // batch_id but never provenance_chain) and whose submitter is the draft
-  // owner; a claim note (relation_notes is written only by the signed-in
-  // claimant). Anything else stays unproven. Idempotent.
-  db.exec(`INSERT OR IGNORE INTO signal_authors (signal_id, contributor_id, via)
-    SELECT s.id, d.contributor_id, 'draft' FROM signals s
-      JOIN drafts d ON d.id = s.batch_id AND d.id = CASE WHEN json_valid(s.provenance_chain) THEN json_extract(s.provenance_chain, '$.draft_id') END
-      JOIN contributors k ON k.id = d.contributor_id AND k.name = s.submitted_by
-     WHERE s.provenance_chain IS NOT NULL`);
-  db.exec(`INSERT OR IGNORE INTO signal_authors (signal_id, contributor_id, via)
-    SELECT signal_id, contributor_id, 'note' FROM relation_notes`);
+  // before insertSignal recorded it, where the record proves it — once (a
+  // settings flag; every write since records its author itself):
+  //   - a URL-intake signal whose provenance names its draft (a /api/v1
+  //     caller can set batch_id but never provenance_chain), whose batch is
+  //     that draft, and whose submitter is the draft owner's current name;
+  //   - a claim note (relation_notes is written only by the signed-in claimant).
+  // Ambiguous history stays unverified rather than guessed: a draft owner
+  // renamed since (submitted_by no longer matches), a signal whose submitter
+  // is not the draft's owner (whoever confirmed it, it is not proven to be
+  // the owner's), and every /api/v1 or form write from before.
+  const done = db.prepare("SELECT value FROM settings WHERE key = 'signal_authors_backfill'").get() as any;
+  if (!done) {
+    db.exec(`INSERT OR IGNORE INTO signal_authors (signal_id, contributor_id, via)
+      SELECT s.id, d.contributor_id, 'draft' FROM signals s
+        JOIN drafts d ON d.id = s.batch_id AND d.id = CASE WHEN json_valid(s.provenance_chain) THEN json_extract(s.provenance_chain, '$.draft_id') END
+        JOIN contributors k ON k.id = d.contributor_id AND k.name = s.submitted_by
+       WHERE s.provenance_chain IS NOT NULL`);
+    db.exec(`INSERT OR IGNORE INTO signal_authors (signal_id, contributor_id, via)
+      SELECT signal_id, contributor_id, 'note' FROM relation_notes`);
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('signal_authors_backfill', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))").run();
+  }
 }
 
 export function getDb(): DatabaseSync {

@@ -105,6 +105,14 @@ export function noteByQueueId(db: DatabaseSync, queueId: string): RelationNote |
   return r ? rowToNote(r) : null;
 }
 
+/** The public predicate: which notes, on what, still standing — shared by the list, its pages and its count. */
+const PUBLIC_NOTES_FROM = `
+         FROM relation_notes rn
+         LEFT JOIN signals s ON s.id = rn.signal_id
+        WHERE ((rn.kind = 'contest' AND rn.state = 'open') OR (rn.kind = 'context' AND rn.state = 'live'))
+          AND (rn.source_id = :node OR rn.target_id = :node OR (rn.meta_key IS NOT NULL AND rn.node_id = :node))
+          AND COALESCE(s.status, 'active') = 'active'`;
+
 /**
  * Notes the public sees: open contests and live context notes, on relations /
  * keys touching `nodeId` — the one filter for every public surface (profile,
@@ -112,24 +120,25 @@ export function noteByQueueId(db: DatabaseSync, queueId: string): RelationNote |
  * left out; consent is applied here: anonymous blanks who wrote it (by,
  * handle), structural_only blanks the words. `subject_now` says whether the
  * writer still holds an approved claim on the node it wrote from — only then
- * may a page call it the subject speaking.
+ * may a page call it the subject speaking, or show the node's handle as its
+ * byline. Optionally one page: after a (created_at, signal_id) cursor, in
+ * that order, `limit` long — paged in SQL.
  */
-export function publicNotesFor(db: DatabaseSync, nodeId: string): RelationNote[] {
+export function publicNotesFor(db: DatabaseSync, nodeId: string, page: { after?: { at: string; id: string } | null; limit?: number } = {}): RelationNote[] {
+  const cursor = page.after ?? null;
   return (db
     .prepare(
       `SELECT rn.*, c.name AS by_name, json_extract(n.metadata, '$.claimed.handle') AS handle,
               s.consent_scope, s.consent_attribution,
               EXISTS (SELECT 1 FROM node_claims k WHERE k.contributor_id = rn.contributor_id AND k.node_id = rn.node_id AND k.status = 'approved') AS subject_now
-         FROM relation_notes rn
+         ${PUBLIC_NOTES_FROM.replace("FROM relation_notes rn", `FROM relation_notes rn
          LEFT JOIN contributors c ON c.id = rn.contributor_id
-         LEFT JOIN nodes n ON n.id = rn.node_id
-         LEFT JOIN signals s ON s.id = rn.signal_id
-        WHERE ((rn.kind = 'contest' AND rn.state = 'open') OR (rn.kind = 'context' AND rn.state = 'live'))
-          AND (rn.source_id = ? OR rn.target_id = ? OR (rn.meta_key IS NOT NULL AND rn.node_id = ?))
-          AND COALESCE(s.status, 'active') = 'active'
-        ORDER BY rn.created_at ASC, rn.signal_id ASC`
+         LEFT JOIN nodes n ON n.id = rn.node_id`)}
+          AND (:cursor = 0 OR rn.created_at > :at OR (rn.created_at = :at AND rn.signal_id > :id))
+        ORDER BY rn.created_at ASC, rn.signal_id ASC
+        LIMIT :limit`
     )
-    .all(nodeId, nodeId, nodeId) as any[]).map((r) => {
+    .all({ node: nodeId, cursor: cursor ? 1 : 0, at: cursor?.at ?? "", id: cursor?.id ?? "", limit: page.limit ?? -1 }) as any[]).map((r) => {
       const n = rowToNote(r);
       n.anonymous = r.consent_attribution === "anonymous";
       n.withheld = r.consent_scope === "structural_only";
@@ -140,11 +149,56 @@ export function publicNotesFor(db: DatabaseSync, nodeId: string): RelationNote[]
     });
 }
 
-/** Who wrote a public note, as a page may say it. */
+/** How many notes publicNotesFor would list (the same predicate). */
+export function countPublicNotes(db: DatabaseSync, nodeId: string): number {
+  return Number((db.prepare(`SELECT COUNT(*) AS n ${PUBLIC_NOTES_FROM}`).get({ node: nodeId }) as any).n);
+}
+
+/** One note of the curator's audit view: everything, with its standing spelled out. */
+export interface AuditNote extends RelationNote {
+  signal_status: string;
+  consent_scope: string | null;
+  consent_attribution: string | null;
+}
+
+/**
+ * The curator's view (the record page, curators only): every note touching
+ * the node — any kind, any state, revoked signals, anonymous authors and
+ * structural_only words included — never filtered, so a curator can see
+ * what the public filter hides and why. Not for any public surface.
+ */
+export function auditNotesFor(db: DatabaseSync, nodeId: string): AuditNote[] {
+  return (db
+    .prepare(
+      `SELECT rn.*, c.name AS by_name, json_extract(n.metadata, '$.claimed.handle') AS handle,
+              s.consent_scope, s.consent_attribution, COALESCE(s.status, 'active') AS signal_status,
+              EXISTS (SELECT 1 FROM node_claims k WHERE k.contributor_id = rn.contributor_id AND k.node_id = rn.node_id AND k.status = 'approved') AS subject_now
+         FROM relation_notes rn
+         LEFT JOIN contributors c ON c.id = rn.contributor_id
+         LEFT JOIN nodes n ON n.id = rn.node_id
+         LEFT JOIN signals s ON s.id = rn.signal_id
+        WHERE rn.source_id = ? OR rn.target_id = ? OR (rn.meta_key IS NOT NULL AND rn.node_id = ?)
+        ORDER BY rn.created_at ASC, rn.signal_id ASC`
+    )
+    .all(nodeId, nodeId, nodeId) as any[]).map((r) => ({
+      ...rowToNote(r),
+      subject_now: !!r.subject_now,
+      signal_status: r.signal_status,
+      consent_scope: r.consent_scope ?? null,
+      consent_attribution: r.consent_attribution ?? null,
+    }));
+}
+
+/**
+ * Who wrote a public note, as a page may say it: the node's handle and "the
+ * subject" only while the writer's claim stands; once it ended, the writer's
+ * own name (another claimant may hold the handle now).
+ */
 export function noteAuthor(n: RelationNote): { who: string; subject: boolean } {
   if (n.anonymous) return { who: "someone", subject: false };
-  const who = n.handle ? `@${n.handle}` : n.by ?? "a contributor";
-  return { who, subject: n.subject_now !== false };
+  const standing = n.subject_now !== false; // notes outside publicNotesFor carry no flag: as before
+  const who = standing && n.handle ? `@${n.handle}` : n.by ?? "a contributor";
+  return { who, subject: standing };
 }
 
 /** Group notes by relation triple (tripleKey), for the profile's relation list. */
