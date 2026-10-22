@@ -13,21 +13,34 @@
 //   - the claimants' public notes on its relations and edits: context that
 //     is live, contests that are open (src/claim/notes.ts).
 //
-// Rules: chronological, oldest first, nothing ranked — the subject's own
-// words (a claimant of this node, or a contributor whose token stands for
-// it) are marked as the subject speaking, not lifted above the rest. Consent
-// as everywhere else: structural_only keeps its words (and title, source)
-// off the page, anonymous names no one — not even as "the subject".
+// What is an account is decided by what the record says the write was, not
+// by how its text looks: a signal of source_type 'contribution' (the
+// contribute form, POST /api/v1/signals) whose queue row carries no
+// structured operation. URL-intake evidence, admin corrections, claims and
+// generated operational text never are. A legacy body that is valid JSON
+// (an API request body stored as content) is skipped; text that merely
+// starts with "[" or "{" is not.
+//
+// Rules: chronological (created_at, then signal id), oldest first, nothing
+// ranked. The subject speaking is marked, not lifted above the rest — and
+// only on proof: the signal's authenticated author (signal_authors, never
+// the free-text submitted_by, which the public form lets anyone set) holds
+// an approved claim on the node now, or a live token standing for it. A note
+// from a claim that has since ended reads as an ordinary contribution.
+// Consent as everywhere else: structural_only keeps its words (and title,
+// source) off the page, anonymous names no one — not even as "the subject".
+//
+// Bounded: the first ACCOUNTS_SHOWN are rendered with the page; the rest come
+// in pages from GET /api/entity/accounts (a stable (created_at, id) cursor).
 //
 // Account types (part 1 of #80: documentation / intention / reading /
-// testimony) are not stored yet; `account_type` is carried as null and the
-// renderer already groups by it when any account has one.
+// testimony) are not stored yet; `account_type` is carried as null and
+// rendered as a data attribute, so a grouping can be added on top.
 
 import type { DatabaseSync } from "node:sqlite";
 import { htmlEscape as esc } from "../templates.js";
 import { edgeLabel } from "../utils/edge-labels.js";
 import { proseDate } from "../utils/signal-prose.js";
-import { contributorNode } from "../utils/contributor-node.js";
 import { publicNotesFor } from "../claim/notes.js";
 
 export type AccountKind = "contribution" | "context" | "contest";
@@ -43,110 +56,174 @@ export interface Account {
   text: string | null;          // null when the contributor kept the words off the page
   withheld: boolean;            // structural_only
   by: string | null;            // null = anonymous (or unknown)
-  by_node: AccountNodeRef | null; // the node the author stands for, when there is one
-  subject: boolean;             // this node speaking about itself
-  speaking_for: AccountNodeRef | null; // a note written from the relation's other end
+  verified: boolean;            // the author is an authenticated contributor (signal_authors)
+  by_node: AccountNodeRef | null; // the node the author's live token stands for
+  subject: boolean;             // this node speaking about itself, proven
+  speaking_for: AccountNodeRef | null; // a note from the relation's other end, by its current claimant
   relation: { source: AccountNodeRef | null; source_id: string; edge_type: string; target: AccountNodeRef | null; target_id: string } | null;
   meta_key: string | null;      // a contest on an edited value
   at: string | null;
   source_url: string | null;
 }
 
-/** Shown at once; the rest, still in order, behind "more". */
+export interface AccountCursor { at: string; id: string }
+
+/** Shown at once; the rest, still in order, page by page. */
 export const ACCOUNTS_SHOWN = 10;
+export const ACCOUNTS_PAGE_MAX = 50;
 /** Longer texts fold after this many characters. */
 const TEXT_FOLD = 700;
 
-const looksJson = (s: string | null | undefined) => !!s && /^\s*[{[]/.test(s);
 const isHttp = (u: unknown): u is string => typeof u === "string" && /^https?:\/\//i.test(u);
+const after = (a: { at: string | null; signal_id: string }, c: AccountCursor | null) =>
+  !c || String(a.at ?? "") > c.at || (String(a.at ?? "") === c.at && a.signal_id > c.id);
+const byTime = (a: { at: string | null; signal_id: string }, b: { at: string | null; signal_id: string }) =>
+  String(a.at ?? "").localeCompare(String(b.at ?? "")) || a.signal_id.localeCompare(b.signal_id);
 
-function nodeRef(db: DatabaseSync, id: string | null | undefined): AccountNodeRef | null {
-  if (!id) return null;
-  const n = db.prepare("SELECT id, type, slug, name FROM nodes WHERE id = ?").get(id) as AccountNodeRef | undefined;
-  return n ?? null;
-}
-
-/** Who may speak as this node: its approved claimants and the contributors whose tokens stand for it. */
-function subjectVoices(db: DatabaseSync, nodeId: string): { ids: Set<string>; names: Set<string> } {
-  const rows = db.prepare(
-    `SELECT k.id, k.name FROM contributors k
-      WHERE k.id IN (SELECT contributor_id FROM node_claims WHERE node_id = ? AND status = 'approved')
-         OR k.id IN (SELECT contributor_id FROM contributor_tokens WHERE node_id = ?)`
-  ).all(nodeId, nodeId) as Array<{ id: string; name: string | null }>;
-  return { ids: new Set(rows.map((r) => r.id)), names: new Set(rows.map((r) => r.name).filter((n): n is string => !!n)) };
-}
-
-export function accountsFor(db: DatabaseSync, nodeId: string): Account[] {
-  const voices = subjectVoices(db, nodeId);
-  const speaksAsSubject = (by: string | null | undefined) => !!by && (voices.ids.has(by) || voices.names.has(by));
-  const out: Account[] = [];
-
-  // ---- contributions' own words -------------------------------------------------
-  const rows = db.prepare(
-    `SELECT s.id, s.title, s.content, s.source_url, s.submitted_by, s.created_at,
-            s.consent_scope, s.consent_attribution
-       FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id
-      WHERE iq.target_node = ? AND iq.status = 'approved' AND iq.kind = 'human_signal'
+/** Written contributions: what qualifies (see the header). */
+const CONTRIBUTIONS_WHERE = `
+      WHERE iq.target_node = :node AND iq.status = 'approved' AND iq.kind = 'human_signal'
+        AND iq.proposed_nodes IS NULL AND iq.proposed_edges IS NULL
         AND COALESCE(s.status, 'active') = 'active'
-      GROUP BY s.id`
-  ).all(nodeId) as any[];
-  for (const r of rows) {
-    const text = typeof r.content === "string" && r.content.trim() && !looksJson(r.content) ? r.content.trim() : null;
-    const title = typeof r.title === "string" && r.title.trim() ? r.title.trim() : null;
-    if (!text) continue; // a structured write (an API body), not a written account
+        AND COALESCE(s.source_type, 'contribution') = 'contribution'
+        AND TRIM(COALESCE(s.content, '')) != ''
+        AND NOT (json_valid(s.content) AND json_type(s.content) IN ('object', 'array'))`;
+
+function contributions(db: DatabaseSync, nodeId: string, cursor: AccountCursor | null, limit: number): Account[] {
+  const rows = db.prepare(
+    `SELECT s.id, s.title, s.content, s.source_url, s.submitted_by, s.created_at AS at,
+            s.consent_scope, s.consent_attribution,
+            sa.contributor_id AS author_id, k.name AS author_name,
+            EXISTS (SELECT 1 FROM node_claims c WHERE c.contributor_id = sa.contributor_id AND c.node_id = :node AND c.status = 'approved') AS claimant_now,
+            tn.id AS tn_id, tn.type AS tn_type, tn.slug AS tn_slug, tn.name AS tn_name
+       FROM intake_queue iq
+       JOIN signals s ON s.id = iq.signal_id
+       LEFT JOIN signal_authors sa ON sa.signal_id = s.id
+       LEFT JOIN contributors k ON k.id = sa.contributor_id
+       LEFT JOIN nodes tn ON tn.id = (SELECT t.node_id FROM contributor_tokens t
+                                       WHERE t.contributor_id = sa.contributor_id AND t.node_id IS NOT NULL AND t.revoked_at IS NULL
+                                       ORDER BY t.created_at DESC LIMIT 1)
+                         AND json_extract(tn.metadata, '$.retired') IS NOT 1
+       ${CONTRIBUTIONS_WHERE}
+        AND (s.created_at > :at OR (s.created_at = :at AND s.id > :id))
+      GROUP BY s.id
+      ORDER BY s.created_at, s.id
+      LIMIT :limit`
+  ).all({ node: nodeId, at: cursor?.at ?? "", id: cursor?.id ?? "", limit }) as any[];
+  return rows.map((r) => {
     const withheld = r.consent_scope === "structural_only";
     const anonymous = r.consent_attribution === "anonymous";
-    const as = anonymous ? null : contributorNode(db, r.submitted_by);
-    const named = anonymous || !r.submitted_by ? null
-      : ((db.prepare("SELECT name FROM contributors WHERE id = ?").get(r.submitted_by) as any)?.name ?? r.submitted_by);
-    out.push({
+    const verified = !!r.author_id;
+    const byNode = !anonymous && verified && r.tn_id ? { id: r.tn_id, type: r.tn_type, slug: r.tn_slug, name: r.tn_name } : null;
+    const title = typeof r.title === "string" && r.title.trim() ? r.title.trim() : null;
+    return {
       signal_id: r.id,
-      kind: "contribution",
+      kind: "contribution" as const,
       account_type: null,
       title: withheld ? null : title,
-      text: withheld ? null : text,
+      text: withheld ? null : String(r.content).trim(),
       withheld,
-      by: named,
-      by_node: as ? { id: as.id, type: as.type, slug: as.slug, name: as.name } : null,
-      subject: !anonymous && (speaksAsSubject(r.submitted_by) || as?.id === nodeId),
+      // A verified author by their current name; an unproven one by the name
+      // they typed, plain — never linked, never the subject.
+      by: anonymous ? null : verified ? (r.author_name ?? r.submitted_by ?? null) : (r.submitted_by ?? null),
+      verified,
+      by_node: byNode,
+      subject: !anonymous && verified && (!!r.claimant_now || byNode?.id === nodeId),
       speaking_for: null,
       relation: null,
       meta_key: null,
-      at: r.created_at ?? null,
+      at: r.at ?? null,
       source_url: withheld || !isHttp(r.source_url) ? null : r.source_url,
-    });
-  }
+    };
+  });
+}
 
-  // ---- the claimants' public notes -------------------------------------------------
-  for (const n of publicNotesFor(db, nodeId)) {
-    if (n.kind !== "context" && n.kind !== "contest") continue;
-    const s = db.prepare("SELECT status, consent_scope, consent_attribution, created_at FROM signals WHERE id = ?").get(n.signal_id) as any;
-    if (s && (s.status ?? "active") !== "active") continue;
-    const withheld = s?.consent_scope === "structural_only";
-    const anonymous = s?.consent_attribution === "anonymous";
+function countContributions(db: DatabaseSync, nodeId: string): number {
+  return Number((db.prepare(`SELECT COUNT(DISTINCT s.id) AS n FROM intake_queue iq JOIN signals s ON s.id = iq.signal_id ${CONTRIBUTIONS_WHERE}`).get({ node: nodeId }) as any).n);
+}
+
+/** Node refs for many ids at once. */
+function nodeRefs(db: DatabaseSync, ids: string[]): Map<string, AccountNodeRef> {
+  const out = new Map<string, AccountNodeRef>();
+  const uniq = [...new Set(ids.filter(Boolean))];
+  for (let i = 0; i < uniq.length; i += 200) {
+    const chunk = uniq.slice(i, i + 200);
+    const rows = db.prepare(`SELECT id, type, slug, name FROM nodes WHERE id IN (${chunk.map(() => "?").join(",")})`).all(...chunk) as unknown as AccountNodeRef[];
+    for (const r of rows) out.set(r.id, { id: r.id, type: r.type, slug: r.slug, name: r.name });
+  }
+  return out;
+}
+
+/** The claimants' public notes, through the one public filter (consent, status, claim standing). */
+function notes(db: DatabaseSync, nodeId: string, cursor: AccountCursor | null, limit: number): { list: Account[]; total: number } {
+  const all = publicNotesFor(db, nodeId).filter((n) => n.kind === "context" || n.kind === "contest");
+  const page = all
+    .map((n) => ({ n, at: n.created_at, signal_id: n.signal_id }))
+    .filter((x) => after(x, cursor))
+    .sort(byTime)
+    .slice(0, limit);
+  const refs = nodeRefs(db, page.flatMap(({ n }) => [n.node_id, n.relation?.source_id ?? "", n.relation?.target_id ?? ""]));
+  const list = page.map(({ n }): Account => {
     const fromHere = n.node_id === nodeId;
-    out.push({
+    const standing = !n.anonymous && !!n.subject_now;
+    return {
       signal_id: n.signal_id,
-      kind: n.kind,
+      kind: n.kind as "context" | "contest",
       account_type: null,
       title: null,
-      text: withheld ? null : n.note,
-      withheld,
-      by: anonymous ? null : n.handle ? `@${n.handle}` : n.by,
+      text: n.withheld ? null : n.note,
+      withheld: !!n.withheld,
+      // the node's handle only while its claim stands; else the writer's name
+      by: n.anonymous ? null : standing && n.handle ? `@${n.handle}` : n.by,
+      verified: true,
       by_node: null,
-      subject: !anonymous && fromHere,
-      speaking_for: !anonymous && !fromHere ? nodeRef(db, n.node_id) : null,
+      subject: standing && fromHere,
+      speaking_for: standing && !fromHere ? refs.get(n.node_id) ?? null : null,
       relation: n.relation
-        ? { source: nodeRef(db, n.relation.source_id), source_id: n.relation.source_id, edge_type: n.relation.edge_type, target: nodeRef(db, n.relation.target_id), target_id: n.relation.target_id }
+        ? { source: refs.get(n.relation.source_id) ?? null, source_id: n.relation.source_id, edge_type: n.relation.edge_type, target: refs.get(n.relation.target_id) ?? null, target_id: n.relation.target_id }
         : null,
       meta_key: n.meta_key,
-      at: n.created_at ?? s?.created_at ?? null,
+      at: n.created_at ?? null,
       source_url: null,
-    });
-  }
+    };
+  });
+  return { list, total: all.length };
+}
 
-  // Oldest first: an order of time, not of standing.
-  return out.sort((a, b) => String(a.at ?? "").localeCompare(String(b.at ?? "")) || a.signal_id.localeCompare(b.signal_id));
+/** One page of accounts after `cursor`, oldest first, and the cursor of the next. */
+export function accountsPage(db: DatabaseSync, nodeId: string, opts: { after?: AccountCursor | null; limit?: number } = {}): { accounts: Account[]; next: AccountCursor | null; total: number } {
+  const limit = Math.max(1, Math.min(ACCOUNTS_PAGE_MAX, opts.limit ?? ACCOUNTS_SHOWN));
+  const cursor = opts.after ?? null;
+  const n = notes(db, nodeId, cursor, limit + 1);
+  const merged = [...contributions(db, nodeId, cursor, limit + 1), ...n.list].sort(byTime);
+  const accounts = merged.slice(0, limit);
+  const last = accounts[accounts.length - 1];
+  return {
+    accounts,
+    next: merged.length > limit && last ? { at: String(last.at ?? ""), id: last.signal_id } : null,
+    total: countContributions(db, nodeId) + n.total,
+  };
+}
+
+/** Every account (tests, small nodes). */
+export function accountsFor(db: DatabaseSync, nodeId: string): Account[] {
+  const out: Account[] = [];
+  let cursor: AccountCursor | null = null;
+  for (;;) {
+    const p = accountsPage(db, nodeId, { after: cursor, limit: ACCOUNTS_PAGE_MAX });
+    out.push(...p.accounts);
+    if (!p.next) return out;
+    cursor = p.next;
+  }
+}
+
+export function encodeCursor(c: AccountCursor | null): string | null {
+  return c ? `${c.at}|${c.id}` : null;
+}
+export function decodeCursor(s: unknown): AccountCursor | null {
+  if (typeof s !== "string" || !s.includes("|")) return null;
+  const i = s.indexOf("|");
+  return { at: s.slice(0, i), id: s.slice(i + 1) };
 }
 
 // ---- render ------------------------------------------------------------------------------
@@ -201,37 +278,26 @@ function accountItem(a: Account, node: { name: string }): string {
   return `<li class="${cls}" data-signal-id="${esc(a.signal_id)}"${a.account_type ? ` data-account-type="${esc(a.account_type)}"` : ""}>${label(a, node)}${body}${byline(a)}</li>`;
 }
 
-function accountList(list: Account[], node: { name: string }): string {
-  const shown = list.slice(0, ACCOUNTS_SHOWN).map((a) => accountItem(a, node)).join("");
-  const rest = list.slice(ACCOUNTS_SHOWN);
-  return `<ol class="ev-accounts">${shown}</ol>` +
-    (rest.length
-      ? `<details class="ev-accounts-rest"><summary>${rest.length} more, in the same order</summary><ol class="ev-accounts">${rest.map((a) => accountItem(a, node)).join("")}</ol></details>`
-      : "");
-}
-
 const pad = (n: number) => String(n).padStart(2, "0");
 
+/** The list items of one page — the section and GET /api/entity/accounts share it. */
+export function accountItems(accounts: Account[], node: { name: string }): string {
+  return accounts.map((a) => accountItem(a, node)).join("");
+}
+
+export function moreButton(node: { id: string }, next: AccountCursor | null, remaining: number): string {
+  if (!next || remaining <= 0) return "";
+  return `<button type="button" class="ev-accounts-next" data-node-id="${esc(node.id)}" data-after="${esc(encodeCursor(next)!)}">${remaining} more, in the same order</button>`;
+}
+
 export function accountsSection(db: DatabaseSync, node: { id: string; name: string }): string {
-  const accounts = accountsFor(db, node.id);
-  if (!accounts.length) return "";
-  // Grouped by account type once types exist (#80 part 1); untyped ones stay
-  // together under no heading. Group order is by first appearance — no type
-  // outranks another.
-  const groups = new Map<string, Account[]>();
-  for (const a of accounts) {
-    const k = a.account_type ?? "";
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k)!.push(a);
-  }
-  const typed = [...groups.keys()].some((k) => k);
-  const body = typed
-    ? [...groups].map(([k, list]) => `<h3 class="ev-accounts-type">${esc(k || "other accounts")}</h3>${accountList(list, node)}`).join("")
-    : accountList(accounts, node);
+  const page = accountsPage(db, node.id, { limit: ACCOUNTS_SHOWN });
+  if (!page.accounts.length) return "";
   return `
       <section class="ev-section" id="ev-accounts">
-        <h2 class="ev-h2">// accounts <span class="ev-h2-count">/${pad(accounts.length)}</span></h2>
+        <h2 class="ev-h2">// accounts <span class="ev-h2-count">/${pad(page.total)}</span></h2>
         <p class="ev-accounts-lede">What contributors have written about ${esc(node.name)}, side by side and oldest first. No account here is the official one.</p>
-        ${body}
+        <ol class="ev-accounts">${accountItems(page.accounts, node)}</ol>
+        ${moreButton(node, page.next, page.total - page.accounts.length)}
       </section>`;
 }

@@ -30,16 +30,34 @@ function setup() {
   db.prepare("INSERT INTO contributor_tokens (token_hash, token_prefix, contributor_id, node_id) VALUES ('h', 'adai_x', 'c-cat', 'publication:catalogue')").run();
 
   let n = 0;
-  const signal = (target: string, by: string, at: string, title: string | null, content: string, extra: Partial<{ status: string; scope: string; attribution: string; url: string; queue: string }> = {}) => {
+  // the authenticated author, as insertSignal records it (signal_authors), by name
+  const ids: Record<string, string> = { "Archive Desk": "c-archive", "A Critic": "c-critic", "Artist B": "c-b", "Artist A": "c-a", "Secret Name": "c-anon", "Catalogue Team": "c-cat" };
+  const signal = (target: string, by: string, at: string, title: string | null, content: string, extra: Partial<{ status: string; scope: string; attribution: string; url: string; queue: string; author: string | null; type: string; ops: any[] }> = {}) => {
     const id = `sig-${++n}`;
-    db.prepare("INSERT INTO signals (id, title, content, submitted_by, created_at, status, consent_scope, consent_attribution, source_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(id, title, content, by, at, extra.status ?? "active", extra.scope ?? "full_commons", extra.attribution ?? "attributed", extra.url ?? null);
-    db.prepare("INSERT INTO intake_queue (id, signal_id, target_node, submitted_by, trust_tier, status, kind) VALUES (?, ?, ?, ?, 'auto', ?, 'human_signal')")
-      .run(`q-${id}`, id, target, by, extra.queue ?? "approved");
+    db.prepare("INSERT INTO signals (id, title, content, submitted_by, created_at, status, consent_scope, consent_attribution, source_url, source_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, title, content, by, at, extra.status ?? "active", extra.scope ?? "full_commons", extra.attribution ?? "attributed", extra.url ?? null, extra.type ?? "contribution");
+    db.prepare("INSERT INTO intake_queue (id, signal_id, target_node, submitted_by, trust_tier, status, kind, proposed_nodes) VALUES (?, ?, ?, ?, 'auto', ?, 'human_signal', ?)")
+      .run(`q-${id}`, id, target, by, extra.queue ?? "approved", extra.ops ? JSON.stringify(extra.ops) : null);
+    const author = extra.author === undefined ? ids[by] : extra.author;
+    if (author) db.prepare("INSERT INTO signal_authors (signal_id, contributor_id) VALUES (?, ?)").run(id, author);
     return id;
   };
   return { db, signal };
 }
+
+const serve = async (...routers: any[]) => {
+  const app = express();
+  app.use(express.json());
+  for (const r of routers) app.use(r);
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((r) => server.once("listening", r));
+  return { server, base: `http://127.0.0.1:${(server.address() as any).port}` };
+};
+const both = async (base: string, path: string, id: string) => {
+  const page = await (await fetch(`${base}${path}`)).text();
+  const overlay = ((await (await fetch(`${base}/api/entity?id=${encodeURIComponent(id)}`)).json()) as any).html as string;
+  return [page, overlay];
+};
 
 it("accounts: what is shown, in what order, with what consent", () => {
   const { db, signal } = setup();
@@ -150,11 +168,157 @@ it("accounts: escaping, sources, anonymity and withheld words on the page; long 
       assert.doesNotMatch(sec, /Private title|Private words|private\.example/);
       assert.match(sec, /kept the words of this account off the public page/);
       assert.match(sec, /<details class="ev-account-more"><summary>more<\/summary>.*END/s);
-      assert.match(sec, /<details class="ev-accounts-rest"><summary>3 more, in the same order<\/summary>/);
-      assert.ok(sec.indexOf("Day 9") > sec.indexOf("ev-accounts-rest"), "the latest stay in order, behind more");
+      assert.match(sec, /<button type="button" class="ev-accounts-next" data-node-id="project:glitch-show" data-after="2026-11-06T09:00:00Z\|sig-10">3 more, in the same order<\/button>/);
+      assert.doesNotMatch(sec, /Day 7/, "the rest is not rendered with the page");
     }
     // a node with nothing written about it has no section
     assert.doesNotMatch(await (await fetch(`${base}/practitioner/artist-a`)).text(), /id="ev-accounts"/);
+  } finally {
+    server.close();
+  }
+});
+
+// ---- review fixes (#80 review of 3e3999f) --------------------------------------------------
+
+it("impersonation: the public form cannot speak as the subject or borrow a linked byline", async () => {
+  const { db, signal } = setup();
+  const { default: api } = await import("../src/routes/api.js");
+  const { server, base } = await serve(pages, api);
+  try {
+    // anyone may type a claimant's name into POST /api/contribute
+    for (const [target, name] of [["practitioner:artist-b", "Artist B"], ["publication:catalogue", "Catalogue Team"]]) {
+      const r = await fetch(`${base}/api/contribute`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target_node: target, title: "Fake", content: `Pretending to be ${name}.`, contributor_name: name }) });
+      assert.ok(r.status < 400, String(r.status));
+    }
+    for (const id of ["practitioner:artist-b", "publication:catalogue"]) {
+      const fake = accountsFor(db, id).find((a) => a.title === "Fake");
+      // (the form inherits the named contributor's trust tier — a separate,
+      // pre-existing bug — so it may be approved and shown; it has no standing)
+      if (id === "practitioner:artist-b") assert.ok(fake, "shown, through the tier the form inherits by name");
+      if (!fake) continue;
+      assert.equal(fake.subject, false);
+      assert.equal(fake.verified, false);
+      assert.equal(fake.by_node, null);
+    }
+    const [page, overlay] = await both(base, "/practitioner/artist-b", "practitioner:artist-b");
+    for (const html of [page, overlay]) {
+      const sec = html.slice(html.indexOf('id="ev-accounts"'));
+      assert.doesNotMatch(sec, /in their own words/);
+    }
+    // two contributors with one name: only the claimant's own (proven) writing is the subject
+    db.prepare("INSERT INTO contributors (id, name, trust_tier) VALUES ('c-b2', 'Artist B', 'auto')").run();
+    signal("practitioner:artist-b", "Artist B", "2026-10-26T09:00:00Z", "Namesake", "Not the artist.", { author: "c-b2" });
+    signal("practitioner:artist-b", "Artist B", "2026-10-26T10:00:00Z", "The artist", "Really the artist.", { author: "c-b" });
+    const list = accountsFor(db, "practitioner:artist-b");
+    assert.equal(list.find((a) => a.title === "Namesake")!.subject, false);
+    assert.equal(list.find((a) => a.title === "The artist")!.subject, true);
+    // a token standing for the catalogue speaks for it only when the write is proven
+    signal("publication:catalogue", "Catalogue Team", "2026-10-26T12:00:00Z", "Colophon", "Proven.", { author: "c-cat" });
+    signal("publication:catalogue", "Catalogue Team", "2026-10-26T13:00:00Z", "Unproven", "No author row.", { author: null });
+    const cat = accountsFor(db, "publication:catalogue");
+    assert.equal(cat.find((a) => a.title === "Colophon")!.subject, true);
+    assert.equal(cat.find((a) => a.title === "Colophon")!.by_node?.id, "publication:catalogue");
+    const un = cat.find((a) => a.title === "Unproven")!;
+    assert.deepEqual([un.subject, un.by_node, un.by], [false, null, "Catalogue Team"]);
+  } finally {
+    server.close();
+  }
+});
+
+it("ended claims: no longer the subject, on the accounts and the relation rows; withdrawn notes gone", async () => {
+  const { db, signal } = setup();
+  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, created_by, valid_from) VALUES ('e1', 'practitioner:artist-a', 'practitioner:artist-b', 'COLLABORATES_WITH', 't', '2026-10-26T00:00:00Z')").run();
+  const note = db.prepare(`INSERT INTO relation_notes (signal_id, kind, source_id, edge_type, target_id, node_id, contributor_id, note, state, created_at)
+    VALUES (?, ?, 'practitioner:artist-a', 'COLLABORATES_WITH', 'practitioner:artist-b', ?, ?, ?, ?, ?)`);
+  const sig = db.prepare("INSERT INTO signals (id, title, content, submitted_by, created_at) VALUES (?, 'note', '{}', ?, ?)");
+  sig.run("n1", "Artist B", "2026-10-27T08:00:00Z");
+  note.run("n1", "context", "practitioner:artist-b", "c-b", "We made it together.", "live", "2026-10-27T08:00:00Z");
+  sig.run("n2", "Artist B", "2026-10-27T09:00:00Z");
+  note.run("n2", "contest", "practitioner:artist-b", "c-b", "Withdrawn words.", "withdrawn", "2026-10-27T09:00:00Z");
+  signal("practitioner:artist-b", "Artist B", "2026-10-26T09:00:00Z", "Intention", "Mine.");
+  db.prepare("UPDATE node_claims SET status = 'withdrawn' WHERE contributor_id = 'c-b'").run();
+
+  const list = accountsFor(db, "practitioner:artist-b");
+  assert.ok(list.every((a) => !a.subject && !a.speaking_for));
+  assert.equal(list.find((a) => a.signal_id === "n1")!.by, "Artist B", "the writer's name, not the node's handle");
+  const { server, base } = await serve(pages);
+  try {
+    const [page, overlay] = await both(base, "/practitioner/artist-b", "practitioner:artist-b");
+    for (const html of [page, overlay]) {
+      assert.doesNotMatch(html, /in their own words/);
+      assert.doesNotMatch(html, /Withdrawn words/);
+      assert.match(html, /We made it together\./);
+      assert.doesNotMatch(html, /by the subject/);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+it("what is an account: decided by source and operation, not by how the text starts", () => {
+  const { db, signal } = setup();
+  const T = "project:glitch-show";
+  signal(T, "A Critic", "2026-10-26T01:00:00Z", "Bracketed", "[draft] notes from the opening, {loosely} kept.");
+  signal(T, "A Critic", "2026-10-26T02:00:00Z", "API body", `[{"source_id":"x","edge_type":"HELD_BY"}]`);
+  signal(T, "A Critic", "2026-10-26T03:00:00Z", "Object body", `{"note":"structured"}`);
+  signal(T, "Archive Desk", "2026-10-26T04:00:00Z", "URL intake: ended", "The site no longer shows this relation.", { type: "api_url_intake" });
+  signal(T, "Archive Desk", "2026-10-26T05:00:00Z", "Correction", "Admin note about a merge.", { type: "api_admin" });
+  signal(T, "Archive Desk", "2026-10-26T06:00:00Z", "Patch", "Updated the dates.", { ops: [{ op: "patch_node", node_id: T, metadata: { year: "2026" } }] });
+  assert.deepEqual(accountsFor(db, T).map((a) => a.title), ["Bracketed"]);
+});
+
+it("paging: a stable (created_at, id) cursor through GET /api/entity/accounts, ties included", async () => {
+  const { db, signal } = setup();
+  const T = "project:glitch-show";
+  for (let i = 1; i <= 12; i++) signal(T, "Archive Desk", `2026-11-${String(i).padStart(2, "0")}T09:00:00Z`, `Day ${i}`, `Note ${i}.`);
+  for (const t of ["Tie A", "Tie B", "Tie C"]) signal(T, "A Critic", "2026-11-05T09:00:00Z", t, `${t}.`);
+  const { server, base } = await serve(pages);
+  try {
+    const page = await (await fetch(`${base}/project/glitch-show`)).text();
+    const titles = [...page.matchAll(/<p class="ev-account-title">([^<]+)<\/p>/g)].map((m) => m[1]);
+    assert.equal(titles.length, 10);
+    let after = /data-after="([^"]+)"/.exec(page)![1];
+    for (;;) {
+      const j = (await (await fetch(`${base}/api/entity/accounts?id=${encodeURIComponent(T)}&after=${encodeURIComponent(after)}&limit=2`)).json()) as any;
+      titles.push(...[...String(j.html).matchAll(/<p class="ev-account-title">([^<]+)<\/p>/g)].map((m) => m[1]));
+      if (!j.next) break;
+      after = j.next;
+    }
+    assert.equal(titles.length, 15);
+    assert.equal(new Set(titles).size, 15, "no duplicates");
+    assert.deepEqual(titles, accountsFor(db, T).map((a) => a.title), "the same order as the whole list");
+    assert.equal((await fetch(`${base}/api/entity/accounts?id=nope`)).status, 404);
+  } finally {
+    server.close();
+  }
+});
+
+it("relation rows: one public-note filter — anonymous, structural_only and revoked handled on every surface", async () => {
+  const { db } = setup();
+  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, created_by, valid_from) VALUES ('e1', 'practitioner:artist-a', 'practitioner:artist-b', 'COLLABORATES_WITH', 't', '2026-10-26T00:00:00Z')").run();
+  const note = db.prepare(`INSERT INTO relation_notes (signal_id, kind, source_id, edge_type, target_id, node_id, contributor_id, note, state, created_at)
+    VALUES (?, ?, 'practitioner:artist-a', 'COLLABORATES_WITH', 'practitioner:artist-b', 'practitioner:artist-a', 'c-a', ?, ?, ?)`);
+  const sig = db.prepare("INSERT INTO signals (id, title, content, submitted_by, created_at, consent_attribution, consent_scope, status) VALUES (?, 'note', '{}', 'Artist A', ?, ?, ?, ?)");
+  sig.run("an", "2026-10-27T08:00:00Z", "anonymous", "full_commons", "active");
+  note.run("an", "context", "Anonymous words.", "live", "2026-10-27T08:00:00Z");
+  sig.run("so", "2026-10-27T09:00:00Z", "attributed", "structural_only", "active");
+  note.run("so", "contest", "Structural words.", "open", "2026-10-27T09:00:00Z");
+  sig.run("rv", "2026-10-27T10:00:00Z", "attributed", "full_commons", "revoked");
+  note.run("rv", "context", "Revoked words.", "live", "2026-10-27T10:00:00Z");
+  const { server, base } = await serve(pages);
+  try {
+    const [page, overlay] = await both(base, "/practitioner/artist-b", "practitioner:artist-b");
+    const record = await (await fetch(`${base}/record/practitioner/artist-b`)).text();
+    for (const html of [page, overlay, record]) {
+      assert.match(html, /Anonymous words\./, "an anonymous note keeps its words");
+      assert.doesNotMatch(html, /Structural words|Revoked words/);
+      // the anonymous note names no one
+      assert.match(html, /“Anonymous words\.” — someone/);
+    }
+    for (const html of [page, overlay]) {
+      assert.match(html, /kept off the public page/);
+    }
   } finally {
     server.close();
   }

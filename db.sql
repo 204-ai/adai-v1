@@ -410,3 +410,23 @@ CREATE TABLE IF NOT EXISTS relation_notes (
 CREATE INDEX IF NOT EXISTS idx_relation_notes_triple ON relation_notes(source_id, edge_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_relation_notes_node ON relation_notes(node_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_relation_notes_queue_ref ON relation_notes(queue_ref);
+
+-- Who wrote a signal, as authenticated (issue #80 review). signals.submitted_by
+-- is a display name, and the public POST /api/contribute lets anyone type
+-- any name — so nothing that grants standing (the subject speaking, a byline
+-- linked to the node a token stands for) may trust it. insertSignal (every
+-- authenticated write: /api/v1, URL intake, claims, claim notes) records the
+-- contributor id here; URL-intake signals and claim notes written before this
+-- table existed are backfilled from drafts / relation_notes at boot
+-- (src/db.ts). Local, never a CRR.
+CREATE TABLE IF NOT EXISTS signal_authors (
+    signal_id       TEXT PRIMARY KEY NOT NULL,
+    contributor_id  TEXT NOT NULL,
+    via             TEXT NOT NULL DEFAULT 'write'     -- write | draft | note (how it was established)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_authors_contributor ON signal_authors(contributor_id);
+
+-- The accounts section reads approved rows by target node, and notes by
+-- either end of a relation.
+CREATE INDEX IF NOT EXISTS idx_intake_target ON intake_queue(target_node, status);
+CREATE INDEX IF NOT EXISTS idx_relation_notes_target ON relation_notes(target_id);

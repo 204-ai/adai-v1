@@ -78,6 +78,19 @@ function runMigrations(db: DatabaseSync) {
   } catch (e: any) {
     if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
   }
+  // signal_authors (issue #80): the authenticated author of signals written
+  // before insertSignal recorded it, where the record proves it — a URL-intake
+  // signal whose provenance names its draft (a /api/v1 caller can set
+  // batch_id but never provenance_chain) and whose submitter is the draft
+  // owner; a claim note (relation_notes is written only by the signed-in
+  // claimant). Anything else stays unproven. Idempotent.
+  db.exec(`INSERT OR IGNORE INTO signal_authors (signal_id, contributor_id, via)
+    SELECT s.id, d.contributor_id, 'draft' FROM signals s
+      JOIN drafts d ON d.id = s.batch_id AND d.id = CASE WHEN json_valid(s.provenance_chain) THEN json_extract(s.provenance_chain, '$.draft_id') END
+      JOIN contributors k ON k.id = d.contributor_id AND k.name = s.submitted_by
+     WHERE s.provenance_chain IS NOT NULL`);
+  db.exec(`INSERT OR IGNORE INTO signal_authors (signal_id, contributor_id, via)
+    SELECT signal_id, contributor_id, 'note' FROM relation_notes`);
 }
 
 export function getDb(): DatabaseSync {

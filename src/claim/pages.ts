@@ -7,7 +7,7 @@ import { htmlEscape } from "../templates.js";
 import { fieldPath } from "../utils/site.js";
 import { collapseClaims, CLAIM_COLS } from "../utils/claims.js";
 import { approvedClaimsFor, CLAIMABLE_TYPES, claimByQueueId } from "./store.js";
-import { noteByQueueId, objectionsFor, type RelationNote } from "./notes.js";
+import { noteAuthor, noteByQueueId, objectionsFor, type RelationNote } from "./notes.js";
 
 const esc = (v: unknown): string => htmlEscape(String(v ?? ""));
 
@@ -190,10 +190,13 @@ export function relationNotesHtml(notes: RelationNote[] | undefined): string {
   if (!notes?.length) return "";
   return notes
     .map((n) => {
-      const who = n.handle ? `@${esc(n.handle)}` : esc(n.by ?? "the subject");
+      // publicNotesFor has applied consent; an ended claim is no longer the subject.
+      const a = noteAuthor(n);
+      const who = esc(a.who);
+      const words = n.withheld ? "<em>words kept off the public page</em>" : esc(n.note);
       return n.kind === "contest"
-        ? `<div class='meta' style='color:#d4a574'>⚑ contested by the subject (${who}): ${esc(n.note)}</div>`
-        : `<div class='meta'>“${esc(n.note)}” — ${who}</div>`;
+        ? `<div class='meta' style='color:#d4a574'>⚑ contested ${a.subject ? `by the subject (${who})` : `by ${who}`}: ${words}</div>`
+        : `<div class='meta'>${n.withheld ? words : `“${words}”`} — ${who}</div>`;
     })
     .join("");
 }

@@ -51,6 +51,10 @@ export interface RelationNote {
   resolved_at: string | null;
   resolution: string | null;
   created_at: string | null;
+  // Set by publicNotesFor (the one filter every public surface uses):
+  anonymous?: boolean;    // by / handle already blanked
+  withheld?: boolean;     // structural_only: note already blanked
+  subject_now?: boolean;  // the writer still holds an approved claim on node_id
 }
 
 const NOTE_MAX = 2000;
@@ -101,16 +105,46 @@ export function noteByQueueId(db: DatabaseSync, queueId: string): RelationNote |
   return r ? rowToNote(r) : null;
 }
 
-/** Notes the public sees: open contests and live context notes, on relations / keys touching `nodeId`. */
+/**
+ * Notes the public sees: open contests and live context notes, on relations /
+ * keys touching `nodeId` — the one filter for every public surface (profile,
+ * record, accounts, /me). A note whose signal was revoked or superseded is
+ * left out; consent is applied here: anonymous blanks who wrote it (by,
+ * handle), structural_only blanks the words. `subject_now` says whether the
+ * writer still holds an approved claim on the node it wrote from — only then
+ * may a page call it the subject speaking.
+ */
 export function publicNotesFor(db: DatabaseSync, nodeId: string): RelationNote[] {
   return (db
     .prepare(
-      `${NOTE_SELECT}
+      `SELECT rn.*, c.name AS by_name, json_extract(n.metadata, '$.claimed.handle') AS handle,
+              s.consent_scope, s.consent_attribution,
+              EXISTS (SELECT 1 FROM node_claims k WHERE k.contributor_id = rn.contributor_id AND k.node_id = rn.node_id AND k.status = 'approved') AS subject_now
+         FROM relation_notes rn
+         LEFT JOIN contributors c ON c.id = rn.contributor_id
+         LEFT JOIN nodes n ON n.id = rn.node_id
+         LEFT JOIN signals s ON s.id = rn.signal_id
         WHERE ((rn.kind = 'contest' AND rn.state = 'open') OR (rn.kind = 'context' AND rn.state = 'live'))
           AND (rn.source_id = ? OR rn.target_id = ? OR (rn.meta_key IS NOT NULL AND rn.node_id = ?))
-        ORDER BY rn.created_at ASC`
+          AND COALESCE(s.status, 'active') = 'active'
+        ORDER BY rn.created_at ASC, rn.signal_id ASC`
     )
-    .all(nodeId, nodeId, nodeId) as any[]).map(rowToNote);
+    .all(nodeId, nodeId, nodeId) as any[]).map((r) => {
+      const n = rowToNote(r);
+      n.anonymous = r.consent_attribution === "anonymous";
+      n.withheld = r.consent_scope === "structural_only";
+      n.subject_now = !!r.subject_now;
+      if (n.anonymous) { n.by = null; n.handle = null; }
+      if (n.withheld) n.note = "";
+      return n;
+    });
+}
+
+/** Who wrote a public note, as a page may say it. */
+export function noteAuthor(n: RelationNote): { who: string; subject: boolean } {
+  if (n.anonymous) return { who: "someone", subject: false };
+  const who = n.handle ? `@${n.handle}` : n.by ?? "a contributor";
+  return { who, subject: n.subject_now !== false };
 }
 
 /** Group notes by relation triple (tripleKey), for the profile's relation list. */

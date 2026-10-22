@@ -23,6 +23,7 @@ import { renderEntityView, nodePath, type EntityNode, type EntityViewer } from "
 import { entityPage } from "../entity/page.js";
 import { movedTo } from "../utils/moved.js";
 import { contributorsAs } from "../utils/contributor-node.js";
+import { ACCOUNTS_SHOWN, accountItems, accountsPage, decodeCursor, encodeCursor } from "../entity/accounts.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.join(__dirname, "..", "..");
@@ -133,6 +134,26 @@ router.get("/api/entity", (req, res) => {
   }
   const r = renderEntityView(db, node, viewerOf(db, req));
   res.set("Cache-Control", "no-store").json({ id: node.id, type: node.type, slug: node.slug, name: node.name, html: r.article });
+});
+
+// GET /api/entity/accounts?id=&after=&limit= — the next page of the accounts
+// section (src/entity/accounts.ts): list items to append, and the cursor after
+// them. Public, like the article it extends.
+router.get("/api/entity/accounts", (req, res) => {
+  const db = getDb();
+  const id = typeof req.query.id === "string" ? req.query.id : "";
+  const node = id ? db.prepare("SELECT id, name FROM nodes WHERE id = ?").get(id) as { id: string; name: string } | undefined : undefined;
+  if (!node) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  const limit = Number.parseInt(String(req.query.limit ?? ""), 10);
+  const page = accountsPage(db, node.id, { after: decodeCursor(req.query.after), limit: Number.isFinite(limit) ? limit : ACCOUNTS_SHOWN });
+  res.set("Cache-Control", "no-store").json({
+    html: accountItems(page.accounts, node),
+    count: page.accounts.length,
+    next: encodeCursor(page.next),
+  });
 });
 
 // GET /record/:type/:slug — the record view: the back office of one node —

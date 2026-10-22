@@ -362,9 +362,12 @@ body.ev-page .adai-embed-retry::before { content: '↻'; font-size: 12px; }
 .ev-account-title { font-size: 13px; color: var(--text, #E8E6E1); margin: 0 0 4px; }
 .ev-account-text { font-size: 13px; line-height: 1.6; color: #c8c6c1; }
 .ev-account-text p { margin: 0 0 8px; }
-.ev-account-more summary, .ev-accounts-rest summary { cursor: pointer; color: #8a8a8c; font-size: 12px; }
-.ev-accounts-rest { margin-bottom: 8px; }
-.ev-accounts-rest[open] > summary { margin-bottom: 16px; }
+.ev-account-more summary { cursor: pointer; color: #8a8a8c; font-size: 12px; }
+.ev-accounts-next {
+  font: inherit; font-size: 12px; color: #8a8a8c; cursor: pointer;
+  background: none; border: none; padding: 0; text-decoration: underline dotted; text-underline-offset: 3px;
+}
+.ev-accounts-next:hover { color: var(--text, #E8E6E1); }
 .ev-account-withheld { font-size: 12px; color: #6a6a6c; font-style: italic; margin: 0 0 4px; }
 .ev-account-by { font-size: 11px; color: #6a6a6c; margin: 4px 0 0; }
 .ev-accounts-type { font-size: 12px; font-weight: 400; color: #8a8a8c; letter-spacing: 0.06em; text-transform: lowercase; margin: 0 0 12px; }
