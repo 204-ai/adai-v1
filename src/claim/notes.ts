@@ -177,7 +177,9 @@ export function auditNotesFor(db: DatabaseSync, nodeId: string): AuditNote[] {
          LEFT JOIN contributors c ON c.id = rn.contributor_id
          LEFT JOIN nodes n ON n.id = rn.node_id
          LEFT JOIN signals s ON s.id = rn.signal_id
-        WHERE rn.source_id = ? OR rn.target_id = ? OR (rn.meta_key IS NOT NULL AND rn.node_id = ?)
+        -- the audit reaches every note written from or about the node: an
+        -- objection carries only node_id + queue_ref, no relation or key
+        WHERE rn.source_id = ? OR rn.target_id = ? OR rn.node_id = ?
         ORDER BY rn.created_at ASC, rn.signal_id ASC`
     )
     .all(nodeId, nodeId, nodeId) as any[]).map((r) => ({

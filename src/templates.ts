@@ -78,6 +78,16 @@ export const HTML_HEADERS = {
   "Content-Type": "text/html; charset=utf-8",
 } as const;
 
+/**
+ * A page whose content depends on who is asking (a curator's audit, the
+ * review queue, someone's own log): never stored by a shared cache, and
+ * not kept by the browser either.
+ */
+export const PRIVATE_HTML_HEADERS = {
+  ...HTML_HEADERS,
+  "Cache-Control": "private, no-store",
+} as const;
+
 export const JSON_HEADERS = {
   "Content-Type": "application/json",
   "Access-Control-Allow-Origin": "*",

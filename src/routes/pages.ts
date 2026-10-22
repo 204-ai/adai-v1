@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getDb } from "../db.js";
-import { htmlPage, htmlEscape, CSS, HTML_HEADERS } from "../templates.js";
+import { htmlPage, htmlEscape, CSS, HTML_HEADERS, PRIVATE_HTML_HEADERS } from "../templates.js";
 import { fieldPath } from "../utils/site.js";
 import { topKByNodeId, withMetadata, type Neighbour } from "../embed/neighbours.js";
 import { buildEmbeddingSections } from "../embed/sections.js";
@@ -163,7 +163,7 @@ function profileHandler(req: any, res: any) {
   const db = getDb();
   const node = nodeAt(db, req.params.type, req.params.slug) as any;
   if (!node) {
-    res.status(404).set(HTML_HEADERS).send(notFoundPage());
+    res.status(404).set(PRIVATE_HTML_HEADERS).send(notFoundPage());
     return;
   }
   const slug = node.slug;
@@ -461,7 +461,8 @@ function profileHandler(req: any, res: any) {
   body += ` <a href='${htmlEscape(fieldPath(node))}' class='btn'>View in field</a>`;
   body += ` <a href='/${encodeURIComponent(node.type)}/${encodeURIComponent(slug)}/history' class='btn'>History</a>`;
 
-  res.set(HTML_HEADERS).send(htmlPage(node.name, body, "", { fieldNode: node }));
+  // a curator sees the audit view on this same URL: never cached for anyone
+  res.set(PRIVATE_HTML_HEADERS).send(htmlPage(node.name, body, "", { fieldNode: node }));
 }
 
 // Render the "Style kin", "Visually affine", and "AI-suggested attributions"
@@ -939,7 +940,7 @@ router.get("/review", (req, res) => {
   const db = getDb();
   const session = readSession(db, req);
   if (!session || session.contributor.scope !== "admin") {
-    res.status(session ? 403 : 401).set(HTML_HEADERS).send(htmlPage("Review Queue", curatorSignIn(!!session)));
+    res.status(session ? 403 : 401).set(PRIVATE_HTML_HEADERS).send(htmlPage("Review Queue", curatorSignIn(!!session)));
     return;
   }
   const tab = String(req.query.kind ?? "human_signal");
@@ -1109,7 +1110,7 @@ fetch('/api/review/'+id+'/'+action,{method:'POST',headers:{'Content-Type':'appli
 }
 </script>`;
 
-  res.set(HTML_HEADERS).send(htmlPage("Review Queue", body));
+  res.set(PRIVATE_HTML_HEADERS).send(htmlPage("Review Queue", body));
 });
 
 // GET /field — data-driven p5-derived dot-field view (assets in public/field).

@@ -218,6 +218,7 @@ export function relationNoteAuditHtml(n: AuditNote): string {
   const who = `${esc(n.by ?? n.contributor_id)}${n.handle ? ` (page handle @${esc(n.handle)})` : ""}`;
   const about = n.relation
     ? `${esc(n.relation.source_id)} ${esc(n.relation.edge_type)} ${esc(n.relation.target_id)}`
-    : n.meta_key ? `value of ${esc(n.meta_key)} on ${esc(n.node_id)}` : esc(n.node_id);
+    : n.meta_key ? `value of ${esc(n.meta_key)} on ${esc(n.node_id)}`
+    : n.queue_ref ? `review item ${esc(n.queue_ref)} (from ${esc(n.node_id)})` : esc(n.node_id);
   return `<div class='meta' data-audit-note='${esc(n.signal_id)}'><span class='tag'>${labels.map(esc).join("</span> <span class='tag'>")}</span> ${who} on ${about}: “${esc(n.note)}”</div>`;
 }

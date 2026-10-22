@@ -306,6 +306,12 @@ it("relation rows: one public-note filter — anonymous, structural_only and rev
   note.run("so", "contest", "Structural words.", "open", "2026-10-27T09:00:00Z");
   sig.run("rv", "2026-10-27T10:00:00Z", "attributed", "full_commons", "revoked");
   note.run("rv", "context", "Revoked words.", "live", "2026-10-27T10:00:00Z");
+  const ob = db.prepare(`INSERT INTO relation_notes (signal_id, kind, queue_ref, node_id, contributor_id, note, state, created_at)
+    VALUES (?, 'objection', 'q-x', 'practitioner:artist-b', 'c-b', ?, ?, ?)`);
+  sig.run("ob-open", "2026-10-27T11:00:00Z", "attributed", "full_commons", "active");
+  ob.run("ob-open", "Open objection words.", "open", "2026-10-27T11:00:00Z");
+  sig.run("ob-done", "2026-10-27T12:00:00Z", "attributed", "full_commons", "active");
+  ob.run("ob-done", "Settled objection words.", "settled", "2026-10-27T12:00:00Z");
   const { server, base } = await serve(pages);
   try {
     const [page, overlay] = await both(base, "/practitioner/artist-b", "practitioner:artist-b");
@@ -363,6 +369,12 @@ it("/record: the public filter for visitors, the full labelled audit view for a 
   note.run("so", "contest", "Structural words.", "open", "2026-10-27T09:00:00Z");
   sig.run("rv", "2026-10-27T10:00:00Z", "attributed", "full_commons", "revoked");
   note.run("rv", "context", "Revoked words.", "live", "2026-10-27T10:00:00Z");
+  const ob = db.prepare(`INSERT INTO relation_notes (signal_id, kind, queue_ref, node_id, contributor_id, note, state, created_at)
+    VALUES (?, 'objection', 'q-x', 'practitioner:artist-b', 'c-b', ?, ?, ?)`);
+  sig.run("ob-open", "2026-10-27T11:00:00Z", "attributed", "full_commons", "active");
+  ob.run("ob-open", "Open objection words.", "open", "2026-10-27T11:00:00Z");
+  sig.run("ob-done", "2026-10-27T12:00:00Z", "attributed", "full_commons", "active");
+  ob.run("ob-done", "Settled objection words.", "settled", "2026-10-27T12:00:00Z");
   const cur = ensureContributorForEmail(db, { email: "curator@adai.test", name: "Cura", invite: true });
   const cookie = cookieHeader(issueSession(db, cur.id).signed, 100, false).split(";")[0]!;
   const { server, base } = await serve(pages);
@@ -370,8 +382,16 @@ it("/record: the public filter for visitors, the full labelled audit view for a 
     const visitor = await (await fetch(`${base}/record/practitioner/artist-b`)).text();
     assert.doesNotMatch(visitor, /Structural words|Revoked words|curator audit/);
     assert.match(visitor, /“Anonymous words\.” — someone/);
-    const curator = await (await fetch(`${base}/record/practitioner/artist-b`, { headers: { cookie } })).text();
-    assert.match(curator, /notes — curator audit \(3\)/);
+    const vres = await fetch(`${base}/record/practitioner/artist-b`);
+    assert.equal(vres.headers.get("cache-control"), "private, no-store", "never stored by a shared cache, for anyone");
+    const cres = await fetch(`${base}/record/practitioner/artist-b`, { headers: { cookie } });
+    assert.equal(cres.headers.get("cache-control"), "private, no-store");
+    const curator = await cres.text();
+    assert.match(curator, /notes — curator audit \(5\)/);
+    // objections (node_id + queue_ref only): in the audit, never public
+    assert.match(curator, /data-audit-note='ob-open'>.*objection · open.*review item q-x \(from practitioner:artist-b\).*Open objection words\./);
+    assert.match(curator, /data-audit-note='ob-done'>.*objection · settled.*Settled objection words\./);
+    assert.doesNotMatch(visitor, /objection words/);
     assert.match(curator, /data-audit-note='rv'>.*signal revoked — hidden from the public.*Revoked words\./);
     assert.match(curator, /data-audit-note='an'>.*anonymous — the public sees “someone”.*Artist A.*Anonymous words\./);
     assert.match(curator, /data-audit-note='so'>.*structural only — the public does not see these words.*Structural words\./);
