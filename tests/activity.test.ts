@@ -104,7 +104,7 @@ it("/api/activity: off by default; ACTIVITY_FEED=on (or the setting) turns it on
   const get = async () => {
     const r = await fetch(`${base}/api/activity`);
     assert.equal(r.status, 200);
-    assert.match(String(r.headers.get("cache-control")), /max-age=30/);
+    assert.equal(r.headers.get("cache-control"), "no-store");
     return (await r.json()) as any;
   };
   try {
@@ -193,6 +193,25 @@ it("anonymous: no speaker's name, slug or id anywhere in the response; an anonym
   db.prepare("INSERT INTO node_claims (id, node_id, contributor_id, status, via) VALUES ('cq1', 'practitioner:quiet-person', 'cq', 'approved', 'invite')").run();
   const s = signal("Quiet Person", { attribution: "anonymous" });
   queue(s, "Quiet Person", ago(2), [{ op: "create_node", type: "practitioner", slug: "quiet-person" }], null);
+  const anon = () => signal("Quiet Person", { attribution: "anonymous" });
+  const QP = "practitioner:quiet-person";
+  // … an account of their own page
+  queue(anon(), "Quiet Person", ago(3), null, null, QP);
+  // … a connection with their page as the source, and one with it as the target
+  const s4 = anon();
+  edge(QP, "project:glitch-show", "PARTICIPATED_IN", s4);
+  queue(s4, "Quiet Person", ago(4), null, [{ source_id: QP, target_id: "project:glitch-show", edge_type: "PARTICIPATED_IN" }]);
+  const s5 = anon();
+  edge("artwork:glitch-1", QP, "CREATED_BY", s5);
+  queue(s5, "Quiet Person", ago(5), null, [{ source_id: "artwork:glitch-1", target_id: QP, edge_type: "CREATED_BY" }]);
+  // … and a folded group whose first target is their page
+  const s6 = anon();
+  edge("artwork:glitch-2", QP, "CREATED_BY", s6);
+  edge("artwork:glitch-3", QP, "CREATED_BY", s6);
+  queue(s6, "Quiet Person", ago(6), null, [
+    { source_id: "artwork:glitch-2", target_id: QP, edge_type: "CREATED_BY" },
+    { source_id: "artwork:glitch-3", target_id: QP, edge_type: "CREATED_BY" },
+  ]);
   const { default: activityRoutes2 } = await import("../src/routes/activity.js");
   process.env.ACTIVITY_FEED = "on";
   const app = express();
@@ -200,10 +219,18 @@ it("anonymous: no speaker's name, slug or id anywhere in the response; an anonym
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((r) => server.once("listening", r));
   try {
-    const res = await fetch(`http://127.0.0.1:${(server.address() as any).port}/api/activity`);
+    const res = await fetch(`http://127.0.0.1:${(server.address() as any).port}/api/activity?limit=20`);
     const body = await res.text();
     const j = JSON.parse(body);
-    assert.deepEqual(j.events.map((e: any) => e.text), ["Someone added context to a relation with Artist B", "Someone added an artist"]);
+    assert.deepEqual(j.events.map((e: any) => e.text), [
+      "Someone added context to a relation with Artist B",
+      "Someone added an artist",
+      "Someone wrote an account",
+      "Someone connected GLITCH Show to a page",
+      "Someone connected Glitch One to a page",
+      "Someone made 2 connections",
+    ]);
+    assert.deepEqual(j.events.slice(2).map((e: any) => e.href), [null, "/project/glitch-show", "/artwork/glitch-1", null]);
     assert.doesNotMatch(body, /artist-a|Artist A|quiet-person|Quiet Person/, "the whole response");
   } finally {
     delete process.env.ACTIVITY_FEED;

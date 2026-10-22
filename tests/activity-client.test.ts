@@ -137,3 +137,68 @@ it("pure helpers: the window and the next deadline", () => {
   assert.equal(nextExpiry(live(ev, now), now), H);
   assert.equal(nextExpiry([], now), null);
 });
+
+// ---- second review round ------------------------------------------------------------------
+
+/** A harness whose answers are deferred: each request waits until resolved by hand. */
+function deferredHarness() {
+  const pending: Array<(v: any) => void> = [];
+  const timers: Array<{ id: number; f: () => void }> = [];
+  let seq = 0;
+  const renders: string[][] = [];
+  let stopped = 0;
+  const ctx: any = {};
+  vm.runInNewContext(SRC, ctx);
+  const now = Date.parse("2026-10-27T12:00:00Z");
+  const feed = ctx.ADAI_ACTIVITY_CORE.create({
+    fetchJson: () => new Promise((r) => pending.push(r)),
+    render: (events: any[]) => renders.push(Array.from(events, (e: any) => String(e.text))),
+    stop: () => { stopped++; },
+    now: () => now,
+    setTimeout: (f: () => void) => { const id = ++seq; timers.push({ id, f }); return id; },
+    clearTimeout: (id: number) => { const i = timers.findIndex((t) => t.id === id); if (i >= 0) timers.splice(i, 1); },
+    hidden: () => false,
+  });
+  const live = (text: string) => ({ enabled: true, events: [{ at: new Date(now - H).toISOString(), text }] });
+  return { feed, pending, timers, renders, live, get stopped() { return stopped; } };
+}
+
+it("out-of-order answers: an older 'enabled' answer cannot resurrect a feed a newer one stopped", async () => {
+  const h = deferredHarness();
+  const first = h.feed.poll();   // request 1
+  const second = h.feed.poll();  // request 2 (a refresh)
+  h.pending[1]({ enabled: false, events: [] }); // the newer answer: switched off
+  await second;
+  assert.equal(h.stopped, 1);
+  h.pending[0](h.live("ghost"));  // the older answer arrives late
+  await first;
+  assert.equal(h.feed.stopped, true);
+  assert.deepEqual(h.renders, [], "nothing rendered after the stop");
+  assert.equal(h.timers.length, 0, "no polling or expiry timer revived");
+});
+
+it("out-of-order answers: the latest answer wins, a late older one is discarded", async () => {
+  const h = deferredHarness();
+  const first = h.feed.poll();
+  const second = h.feed.poll();
+  h.pending[1](h.live("newer"));
+  await second;
+  h.pending[0](h.live("older"));
+  await first;
+  assert.deepEqual(h.renders.at(-1), ["newer"]);
+  assert.equal(h.timers.length, 2, "one poll timer and one expiry timer, not duplicates");
+});
+
+it("refresh with a timer outstanding clears it before polling at once", async () => {
+  const h = deferredHarness();
+  const p = h.feed.poll();
+  h.pending[0](h.live("a"));
+  await p;
+  const pollTimers = () => h.timers.length;
+  assert.equal(pollTimers(), 2); // the next poll + the expiry
+  const r = h.feed.poll(); // refresh()
+  assert.equal(h.timers.length, 1, "the scheduled poll was cleared (the expiry timer stays)");
+  h.pending[1](h.live("b"));
+  await r;
+  assert.equal(h.timers.length, 2, "exactly one poll scheduled again");
+});

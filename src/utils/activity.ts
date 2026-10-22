@@ -192,7 +192,9 @@ function compute(db: DatabaseSync, limit: number, nowMs: number): ActivityEvent[
 
   // ---- contributions: grouped by batch (a URL-intake confirm is one), folded by kind and attribution ----
   type Item = { node: ActivityNode | null; actor: string | null };
-  type Group = { at: string; created: Map<string, Item[]>; images: Map<string, Item[]>; updated: Map<string, Item[]>; conns: Map<string, Array<Item & { s: ActivityNode; t: ActivityNode }>>; wrote: Map<string, Item[]> };
+  // a connection: either end may be the anonymous author's own page (sHidden / tHidden)
+  type Conn = Item & { s: ActivityNode; t: ActivityNode; sHidden: boolean; tHidden: boolean };
+  type Group = { at: string; created: Map<string, Item[]>; images: Map<string, Item[]>; updated: Map<string, Item[]>; conns: Map<string, Conn[]>; wrote: Map<string, Item[]> };
   const groups = new Map<string, Group>();
   const add = <T extends Item>(m: Map<string, T[]>, actor: string | null, item: T) => {
     const k = actor ?? "\u0000anon";
@@ -233,12 +235,14 @@ function compute(db: DatabaseSync, limit: number, nowMs: number): ActivityEvent[
       if (!s || !t || !a) continue;
       // the edge this contribution's own evidence made, still live
       if (!q.evidenceEdge.get(evidence, e.source_id, e.edge_type, e.target_id)) continue;
-      add(g.conns, a.actor, { node: t, actor: a.actor, s, t });
+      const anon = a.actor === null;
+      add(g.conns, a.actor, { node: t, actor: a.actor, s, t, sHidden: anon && ownPage(s, a.raw), tHidden: anon && ownPage(t, a.raw) });
     }
     if (!ops.length && !edges.length && r.target_node) {
       const node = nodeOf(r.target_node);
       const a = actorOf(r.signal_id, r.submitted_by);
-      if (node && a) add(g.wrote, a.actor, { node, actor: a.actor });
+      // an anonymous account of the author's own page would name them: no page, no link
+      if (node && a) add(g.wrote, a.actor, { node: a.actor === null && ownPage(node, a.raw) ? null : node, actor: a.actor });
     }
   }
   for (const g of groups.values()) {
@@ -258,7 +262,15 @@ function compute(db: DatabaseSync, limit: number, nowMs: number): ActivityEvent[
     for (const [, list] of g.conns) {
       const c = list[0];
       const works = c.s.type === "artwork" && c.t.type === "artwork";
-      push({ at: g.at, kind: "connected", actor: c.actor, count: list.length, node: c.t,
+      if (list.length === 1 && (c.sHidden || c.tHidden)) {
+        // one end is the anonymous author's own page: name and link only the other end
+        const other = c.sHidden && c.tHidden ? null : c.sHidden ? c.t : c.s;
+        push({ at: g.at, kind: "connected", actor: c.actor, count: 1, node: other,
+          text: (w) => other ? `${w} connected ${other.name} to a page` : `${w} made a connection` });
+        continue;
+      }
+      const anyHidden = list.some((i) => i.sHidden || i.tHidden);
+      push({ at: g.at, kind: "connected", actor: c.actor, count: list.length, node: anyHidden ? null : c.t,
         text: (w) => list.length === 1
           ? (works ? `${w} connected two works: ${c.s.name} and ${c.t.name}` : `${w} connected ${c.s.name} and ${c.t.name}`)
           : `${w} made ${list.length} connections` });
@@ -272,8 +284,10 @@ function compute(db: DatabaseSync, limit: number, nowMs: number): ActivityEvent[
     }
     for (const [, list] of g.wrote) {
       const one = list[0];
-      push({ at: g.at, kind: "wrote", actor: one.actor, count: list.length, node: one.node,
-        text: (w) => list.length === 1 && one.node ? `${w} wrote about ${one.node.name}` : `${w} wrote ${list.length} accounts` });
+      push({ at: g.at, kind: "wrote", actor: one.actor, count: list.length, node: list.length === 1 ? one.node : null,
+        text: (w) => list.length === 1
+          ? (one.node ? `${w} wrote about ${one.node.name}` : `${w} wrote an account`)
+          : `${w} wrote ${list.length} accounts` });
     }
   }
 

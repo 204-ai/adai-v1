@@ -14,9 +14,9 @@ const router = Router();
 
 router.get("/api/activity", (req, res) => {
   const db = getDb();
-  // Short-lived: the field polls once a minute, and an old answer is the one
-  // thing this feed must never show.
-  res.set({ ...JSON_HEADERS, "Cache-Control": "public, max-age=30" });
+  // An old answer is the one thing this feed must never show. Never cached outside: the server keeps its own 25 s cache (re-filtered by
+  // the window), so a browser or proxy can never hold an old answer
+  res.set({ ...JSON_HEADERS, "Cache-Control": "no-store" });
   if (!activityEnabled(db)) {
     res.json({ enabled: false, events: [] });
     return;

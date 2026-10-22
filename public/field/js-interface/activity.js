@@ -54,6 +54,7 @@
     let pollTimer = null;
     let expiryTimer = null;
     let stopped = false;
+    let generation = 0; // each request's number: only the latest one's answer counts
 
     function show() {
       events = live(events, o.now());
@@ -69,10 +70,15 @@
     }
 
     async function poll() {
-      pollTimer = null;
+      // an immediate poll (refresh, the tab coming back) replaces the scheduled one
+      if (pollTimer) { o.clearTimeout(pollTimer); pollTimer = null; }
       if (stopped || o.hidden()) return;
+      const mine = ++generation;
       let j = null;
       try { j = await o.fetchJson(); } catch { j = null; }
+      // A newer request was made since, or the feed stopped meanwhile: this
+      // answer is stale — it may neither resurrect nor clear anything.
+      if (stopped || mine !== generation) return;
       if (j && j.enabled === false) {
         stopped = true;
         events = [];
