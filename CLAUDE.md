@@ -310,7 +310,10 @@ email failed). Events store references and are re-checked when the mail is
 written (claim still approved, node not retired, nothing rejected / withdrawn
 / revoked; consent read then). Emails are reserved as leased batches before any
 network I/O and sent with the batch id as Resend's `Idempotency-Key`, so
-overlapping passes or a crash never send twice. Deliveries are per channel
+overlapping passes or a crash never send twice (lease-fenced writes; the whole
+provider request frozen; preference, claims and every line re-checked before
+each attempt; past Resend's 24 h key window an unresolved batch becomes
+`state='reconcile'` for a person, never resent). Deliveries are per channel
 (`claimant_deliveries`), so web push can join email later.
 
 ### Contributor API (`/api/v1/*`) — bearer-token, AI-driven

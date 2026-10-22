@@ -291,7 +291,7 @@ function byOf(s: any, fallback: string | null = null): string {
 }
 
 /** The event's sentence now — or why it is no longer to be sent. */
-export function renderEvent(db: DatabaseSync, ev: EventRow): Rendered {
+export function renderEvent(db: DatabaseSync, ev: EventRow, opts: { asProposed?: boolean } = {}): Rendered {
   const n = db.prepare("SELECT id, name, type, metadata FROM nodes WHERE id = ?").get(ev.node_id) as any;
   if (!n) return { suppress: "node_gone" };
   if (parse(n.metadata)?.retired === true) return { suppress: "retired" };
@@ -338,7 +338,7 @@ export function renderEvent(db: DatabaseSync, ev: EventRow): Rendered {
   if (q.status === "rejected") return { suppress: "rejected" };
   const s = signalRow(db, ref.signal_id);
   if (!live(s)) return { suppress: "revoked" };
-  const approved = q.status === "approved";
+  const approved = q.status === "approved" && !opts.asProposed;
   if (ref.edge) {
     const phrase = relationPhrase(db, subj, ref.edge.edge_type, ref.edge.direction, ref.edge.other_id, ref.edge.other_name);
     return { line: approved ? `${byOf(s)} added that ${phrase}.` : `${byOf(s)} proposed that ${phrase} (waiting for a curator).` };
@@ -357,8 +357,10 @@ export function eventLines(db: DatabaseSync, contributorId: string): string[] {
 
 export interface RenderedClaimantEmail { to: string; subject: string; text: string; html: string }
 
-const LEASE_MS = 10 * 60_000;
+export const LEASE_MS = 10 * 60_000;
 export const MAX_ATTEMPTS = 3;
+/** Resend keeps an idempotency key for 24 h; past this, an unresolved batch is never resent automatically. */
+export const IDEMPOTENCY_SAFE_MS = 23 * 3600_000;
 const isoAt = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 
 function claimApproved(db: DatabaseSync, contributorId: string, nodeId: string): boolean {
@@ -384,48 +386,71 @@ function settle(db: DatabaseSync, eventIds: string[], state: string, reason: str
   for (const id of eventIds) ins.run(id, state, reason);
 }
 
-/**
- * Bind events to a new batch, atomically: an event already taken by another
- * pass (this process or another one) is skipped. Returns the batch id, or
- * null when nothing was left to take. Never spans network I/O.
- */
-export function reserveBatch(db: DatabaseSync, contributorId: string, eventIds: string[]): string | null {
-  const id = `cnb_${crypto.randomBytes(8).toString("hex")}`;
+const newOwner = () => `own_${crypto.randomBytes(6).toString("hex")}`;
+
+function tx<T>(db: DatabaseSync, fn: () => T): T {
   db.exec("BEGIN IMMEDIATE");
   try {
-    db.prepare("INSERT INTO claimant_batches (id, contributor_id, channel, state, lease_until) VALUES (?, ?, 'email', 'reserved', ?)")
-      .run(id, contributorId, isoAt(Date.now() + LEASE_MS));
+    const r = fn();
+    db.exec("COMMIT");
+    return r;
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+}
+
+/**
+ * Bind events to a new batch, atomically, under a lease held by `owner`: an
+ * event already taken by another pass (this process or another one) is
+ * skipped. Returns the batch id, or null when nothing was left to take.
+ * Never spans network I/O.
+ */
+export function reserveBatch(db: DatabaseSync, contributorId: string, eventIds: string[], owner = newOwner()): string | null {
+  const id = `cnb_${crypto.randomBytes(8).toString("hex")}`;
+  return tx(db, () => {
+    db.prepare("INSERT INTO claimant_batches (id, contributor_id, channel, state, lease_owner, lease_until) VALUES (?, ?, 'email', 'reserved', ?, ?)")
+      .run(id, contributorId, owner, isoAt(Date.now() + LEASE_MS));
     const ins = db.prepare("INSERT OR IGNORE INTO claimant_deliveries (event_id, channel, state, batch_id) VALUES (?, 'email', 'reserved', ?)");
     let taken = 0;
     for (const e of eventIds) taken += Number(ins.run(e, id).changes);
     if (!taken) db.prepare("DELETE FROM claimant_batches WHERE id = ?").run(id);
-    db.exec("COMMIT");
     return taken ? id : null;
-  } catch (e) {
-    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
-    throw e;
-  }
+  });
 }
 
-/** Take over a reserved batch whose lease ran out (a crash, a failed attempt waiting its turn). */
-function takeOver(db: DatabaseSync, batchId: string): boolean {
+/**
+ * Acquire (or renew) the lease on a reserved batch for `owner`: only when it
+ * is free (lease ran out) or already ours. The fencing token for every later
+ * write to the batch.
+ */
+export function acquireLease(db: DatabaseSync, batchId: string, owner: string): boolean {
   const now = isoAt(Date.now());
-  return Number(db.prepare("UPDATE claimant_batches SET lease_until = ?, updated_at = ? WHERE id = ? AND state = 'reserved' AND lease_until <= ?")
-    .run(isoAt(Date.now() + LEASE_MS), now, batchId, now).changes) === 1;
+  return Number(db.prepare(
+    `UPDATE claimant_batches SET lease_owner = ?, lease_until = ?, updated_at = ?
+      WHERE id = ? AND state = 'reserved' AND (lease_owner = ? OR lease_until IS NULL OR lease_until <= ?)`
+  ).run(owner, isoAt(Date.now() + LEASE_MS), now, batchId, owner, now).changes) === 1;
 }
 
-function finishBatch(db: DatabaseSync, batchId: string, state: "sent" | "failed" | "suppressed", fields: { ref?: string | null; error?: string | null; reason?: string | null }): void {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    db.prepare("UPDATE claimant_batches SET state = ?, ref = COALESCE(?, ref), error = ?, lease_until = NULL, updated_at = ? WHERE id = ?")
-      .run(state, fields.ref ?? null, fields.error ?? null, isoAt(Date.now()), batchId);
-    db.prepare("UPDATE claimant_deliveries SET state = ?, reason = ?, at = ? WHERE batch_id = ? AND channel = 'email' AND state = 'reserved'")
-      .run(state, fields.reason ?? null, isoAt(Date.now()), batchId);
-    db.exec("COMMIT");
-  } catch (e) {
-    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
-    throw e;
-  }
+/** A write to a reserved batch, fenced by its lease owner: false if the lease was lost. */
+function fenced(db: DatabaseSync, batchId: string, owner: string, set: string, ...args: any[]): boolean {
+  return Number(db.prepare(`UPDATE claimant_batches SET ${set}, updated_at = ? WHERE id = ? AND state = 'reserved' AND lease_owner = ?`)
+    .run(...args, isoAt(Date.now()), batchId, owner).changes) === 1;
+}
+
+/** Terminal: only from reserved, only by the lease owner; never changes again. */
+function finishBatch(db: DatabaseSync, batchId: string, owner: string, state: "sent" | "failed" | "suppressed" | "skipped" | "reconcile", fields: { ref?: string | null; error?: string | null; reason?: string | null }): boolean {
+  return tx(db, () => {
+    const ok = Number(db.prepare(
+      `UPDATE claimant_batches SET state = ?, ref = COALESCE(?, ref), error = COALESCE(?, error), lease_until = NULL, updated_at = ?
+        WHERE id = ? AND state = 'reserved' AND lease_owner = ?`
+    ).run(state, fields.ref ?? null, fields.error ?? null, isoAt(Date.now()), batchId, owner).changes) === 1;
+    if (ok) {
+      db.prepare("UPDATE claimant_deliveries SET state = ?, reason = ?, at = ? WHERE batch_id = ? AND channel = 'email' AND state = 'reserved'")
+        .run(state, fields.reason ?? null, isoAt(Date.now()), batchId);
+    }
+    return ok;
+  });
 }
 
 export function renderClaimantEmail(db: DatabaseSync, to: string, mode: EmailMode, events: Array<{ node_id: string; line: string }>, link: string): RenderedClaimantEmail {
@@ -454,74 +479,133 @@ export function renderClaimantEmail(db: DatabaseSync, to: string, mode: EmailMod
   return { to, subject, text, html: textToHtml(text) };
 }
 
+/** The provider request, frozen whole on the first attempt: every retry sends exactly this. */
+export interface FrozenRequest { from: string; to: string[]; reply_to: string[]; subject: string; text: string; html: string }
+export interface FrozenPayload { request: FrozenRequest; lines: Array<{ event_id: string; node_id: string; line: string }> }
+
 export interface DeliverResult {
   sent: number;           // emails handed to the transport (or logged by stdout / held by staging)
   events: number;         // events they carried
   skipped: number;        // events not mailed by setting (off) or for want of an address
   suppressed: number;     // events no longer true or no longer theirs
   failed: number;         // emails that did not go through on this pass (retried later until MAX_ATTEMPTS)
+  reconcile: number;      // batches left for a person: an unresolved send older than Resend's key window
   emails: RenderedClaimantEmail[];
 }
 
 /**
- * Send one reserved batch this pass holds the lease on. The first attempt
- * re-checks every event and freezes the message; a retry re-checks only that
- * it is still theirs to receive (claims, address) and sends the frozen
- * message under the same idempotency key, so a crash after Resend accepted
- * it cannot produce a second email.
+ * Is the frozen message still permissible, member by member? Every member is
+ * re-rendered now; the batch may go only if each one still renders, and to
+ * the very line that was frozen — a revoked signal, a withdrawn note, a
+ * rejected proposal, a consent or wording change all stop the whole batch
+ * (never a rewritten body under the same key). Policy for a proposal
+ * approved since freezing: its frozen "proposed … (waiting for a curator)"
+ * line is left as it is — still true of when it was written.
  */
-async function sendBatch(db: DatabaseSync, batchId: string, result: DeliverResult): Promise<void> {
+function frozenStillTrue(db: DatabaseSync, members: EventRow[], frozen: FrozenPayload): string | null {
+  const byId = new Map(members.map((m) => [m.id, m]));
+  if (frozen.lines.length !== members.length) return "members_changed";
+  for (const l of frozen.lines) {
+    const m = byId.get(l.event_id);
+    if (!m) return "members_changed";
+    const now = eligibility(db, m);
+    if (!("line" in now)) return now.suppress;
+    if (now.line === l.line) continue;
+    if (m.kind === "pending") {
+      const asWas = renderEvent(db, m, { asProposed: true });
+      if ("line" in asWas && asWas.line === l.line) continue;
+    }
+    return "content_changed";
+  }
+  return null;
+}
+
+/**
+ * One attempt at a reserved batch, holding its lease as `owner`. Before
+ * every attempt — the first or a retry, ours or taken over after a crash —
+ * the preference, the address, the attempt count, the age of the first
+ * attempt and every member are checked again. The first attempt freezes the
+ * whole provider request; a retry sends that exact request under the same
+ * idempotency key (the batch id). Every write is fenced by the lease owner,
+ * so a worker that lost its lease mid-send cannot complete or fail the batch.
+ */
+export async function sendBatch(db: DatabaseSync, batchId: string, owner: string, result: DeliverResult): Promise<void> {
+  if (!acquireLease(db, batchId, owner)) return;
   const b = db.prepare("SELECT * FROM claimant_batches WHERE id = ?").get(batchId) as any;
   if (!b || b.state !== "reserved") return;
   const members = db.prepare(
     `SELECT e.id, e.contributor_id, e.node_id, e.kind, e.ref, e.at FROM claimant_deliveries d JOIN claimant_events e ON e.id = d.event_id
       WHERE d.batch_id = ? AND d.channel = 'email' AND d.state = 'reserved' ORDER BY e.node_id, e.at, e.created_at`
   ).all(batchId) as unknown as EventRow[];
-  const to = deliverableEmailFor(db, b.contributor_id);
-  if (!to) { result.skipped += members.length; finishBatch(db, batchId, "suppressed", { reason: "no_address" }); return; }
 
-  let payload = parse(b.payload) as RenderedClaimantEmail | null;
-  if (!payload) {
-    const keep: Array<{ id: string; node_id: string; line: string }> = [];
+  // the setting, now
+  if (getNotifyPrefs(db, b.contributor_id).email === "off") {
+    if (finishBatch(db, batchId, owner, "skipped", { reason: "off" })) result.skipped += members.length;
+    return;
+  }
+  const to = deliverableEmailFor(db, b.contributor_id);
+  if (!to) {
+    if (finishBatch(db, batchId, owner, "suppressed", { reason: "no_address" })) result.suppressed += members.length;
+    return;
+  }
+  // bounded: a crashed attempt counted too
+  if (b.attempts >= MAX_ATTEMPTS) {
+    if (finishBatch(db, batchId, owner, "failed", { reason: "max_attempts", error: b.error ?? "max attempts" })) result.failed++;
+    return;
+  }
+  // an earlier attempt may have reached Resend; past its key window a resend could duplicate
+  if (b.attempts > 0 && b.first_attempt_at && Date.now() - Date.parse(b.first_attempt_at) > IDEMPOTENCY_SAFE_MS) {
+    if (finishBatch(db, batchId, owner, "reconcile", { reason: "unresolved_past_key_window" })) {
+      result.reconcile++;
+      console.error(`[notify:claimants] batch ${batchId} needs a person: an attempt from ${b.first_attempt_at} is unresolved and Resend's idempotency window has passed`);
+    }
+    return;
+  }
+
+  let frozen = parse(b.payload) as FrozenPayload | null;
+  if (!frozen) {
+    const keep: Array<{ event_id: string; node_id: string; line: string }> = [];
     for (const m of members) {
       const r = eligibility(db, m);
-      if ("line" in r) keep.push({ id: m.id, node_id: m.node_id, line: r.line });
+      if ("line" in r) keep.push({ event_id: m.id, node_id: m.node_id, line: r.line });
       else {
-        db.prepare("UPDATE claimant_deliveries SET state = 'suppressed', reason = ?, batch_id = NULL WHERE event_id = ? AND channel = 'email'").run(r.suppress, m.id);
+        db.prepare("UPDATE claimant_deliveries SET state = 'suppressed', reason = ?, batch_id = NULL WHERE event_id = ? AND channel = 'email' AND batch_id = ?").run(r.suppress, m.id, batchId);
         result.suppressed++;
       }
     }
-    if (!keep.length) { finishBatch(db, batchId, "suppressed", { reason: "nothing_left" }); return; }
+    if (!keep.length) { finishBatch(db, batchId, owner, "suppressed", { reason: "nothing_left" }); return; }
     const mode = getNotifyPrefs(db, b.contributor_id).email;
     const link = issueMagicLink(db, { email: to, purpose: "receipt", redirect: `/me?node=${encodeURIComponent(keep[0].node_id)}` }).url;
-    payload = renderClaimantEmail(db, to, mode === "off" ? "daily" : mode, keep, link);
-    db.prepare("UPDATE claimant_batches SET payload = ? WHERE id = ?").run(JSON.stringify(payload), batchId);
+    const msg = renderClaimantEmail(db, to, mode, keep, link);
+    frozen = { request: { from: fromAddress(), to: [to], reply_to: replyTo(), subject: msg.subject, text: msg.text, html: msg.html }, lines: keep };
+    if (!fenced(db, batchId, owner, "payload = ?", JSON.stringify(frozen))) return; // lost the lease
   } else {
-    // A retry: the words are frozen; only whether it may still go is asked.
-    const gone = members.find((m) => !claimApproved(db, m.contributor_id, m.node_id) || retired(db, m.node_id));
-    if (gone || payload.to !== to) {
-      result.suppressed += members.length;
-      finishBatch(db, batchId, "suppressed", { reason: gone ? "claim_ended" : "address_changed" });
+    const live = members.filter((m) => frozen!.lines.some((l) => l.event_id === m.id));
+    const why = live.length !== members.length ? "members_changed" : frozenStillTrue(db, members, frozen);
+    if (why || frozen.request.to.length !== 1 || frozen.request.to[0] !== to) {
+      if (finishBatch(db, batchId, owner, "suppressed", { reason: why ?? "address_changed" })) result.suppressed += members.length;
       return;
     }
   }
-  const carried = Number((db.prepare("SELECT COUNT(*) AS n FROM claimant_deliveries WHERE batch_id = ? AND state = 'reserved'").get(batchId) as any).n);
-  result.emails.push(payload);
-  db.prepare("UPDATE claimant_batches SET attempts = attempts + 1, updated_at = ? WHERE id = ?").run(isoAt(Date.now()), batchId);
+  // the attempt is recorded before the request leaves (a crash counts)
+  if (!fenced(db, batchId, owner, "attempts = attempts + 1, first_attempt_at = COALESCE(first_attempt_at, ?), lease_until = ?", isoAt(Date.now()), isoAt(Date.now() + LEASE_MS))) return;
+  const req = frozen.request;
+  result.emails.push({ to: req.to[0], subject: req.subject, text: req.text, html: req.html });
   try {
-    const r = await sendMail({ from: fromAddress(), to: [payload.to], replyTo: replyTo(), subject: payload.subject, text: payload.text, html: payload.html, idempotencyKey: batchId });
-    finishBatch(db, batchId, "sent", { ref: r.id || r.transport });
-    result.sent++;
-    result.events += carried;
+    const r = await sendMail({ from: req.from, to: req.to, replyTo: req.reply_to, subject: req.subject, text: req.text, html: req.html, idempotencyKey: batchId });
+    if (finishBatch(db, batchId, owner, "sent", { ref: r.id || r.transport })) {
+      result.sent++;
+      result.events += frozen.lines.length;
+    }
   } catch (e: any) {
     result.failed++;
     const attempts = Number((db.prepare("SELECT attempts FROM claimant_batches WHERE id = ?").get(batchId) as any).attempts);
     const message = String(e?.message ?? e).slice(0, 500);
     if (e instanceof MailError && e.transient && attempts < MAX_ATTEMPTS) {
-      // Wait its turn: the lease runs out, a later pass takes it over.
-      db.prepare("UPDATE claimant_batches SET lease_until = ?, error = ? WHERE id = ?").run(isoAt(Date.now() + 2 ** attempts * 60_000), message, batchId);
+      // Wait its turn: the lease runs out at the backoff, a later pass takes it over.
+      fenced(db, batchId, owner, "lease_until = ?, error = ?", isoAt(Date.now() + 2 ** attempts * 60_000), message);
     } else {
-      finishBatch(db, batchId, "failed", { error: message, reason: "send_failed" });
+      finishBatch(db, batchId, owner, "failed", { error: message, reason: e instanceof MailError && e.code ? e.code : "send_failed" });
     }
     console.error(`[notify:claimants] batch ${batchId} to ${b.contributor_id} failed (attempt ${attempts}): ${message}`);
   }
@@ -533,7 +617,8 @@ async function sendBatch(db: DatabaseSync, batchId: string, result: DeliverResul
  * Either also takes over any batch whose lease ran out.
  */
 export async function deliverClaimantEmails(db: DatabaseSync, opts: { mode: "immediate" | "daily"; dryRun?: boolean }): Promise<DeliverResult> {
-  const result: DeliverResult = { sent: 0, events: 0, skipped: 0, suppressed: 0, failed: 0, emails: [] };
+  const result: DeliverResult = { sent: 0, events: 0, skipped: 0, suppressed: 0, failed: 0, reconcile: 0, emails: [] };
+  const owner = newOwner();
   const contributors = db.prepare(
     `SELECT DISTINCT e.contributor_id FROM claimant_events e
       WHERE NOT EXISTS (SELECT 1 FROM claimant_deliveries d WHERE d.event_id = e.id AND d.channel = 'email')`
@@ -569,15 +654,15 @@ export async function deliverClaimantEmails(db: DatabaseSync, opts: { mode: "imm
       result.emails.push(renderClaimantEmail(db, to, prefs.email, lines, `${baseUrl()}/me?node=${encodeURIComponent(ok[0].node_id)}`));
       continue;
     }
-    const batch = reserveBatch(db, contributor_id, ok.map((e) => e.id));
+    const batch = reserveBatch(db, contributor_id, ok.map((e) => e.id), owner);
     if (batch) mine.push(batch);
   }
   if (opts.dryRun) return result;
   // Batches left by a crash or waiting to retry, whose lease ran out.
   const due = db.prepare("SELECT id FROM claimant_batches WHERE channel = 'email' AND state = 'reserved' AND lease_until <= ?").all(isoAt(Date.now())) as any[];
-  for (const { id } of due) if (!mine.includes(id) && takeOver(db, id)) mine.push(id);
+  for (const { id } of due) if (!mine.includes(id) && acquireLease(db, id, owner)) mine.push(id);
   // Keep going past a failure: each batch is its own email.
-  for (const id of mine) await sendBatch(db, id, result);
+  for (const id of mine) await sendBatch(db, id, owner, result);
   return result;
 }
 

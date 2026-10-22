@@ -387,7 +387,7 @@ it("a crash after reserving (or after Resend accepted) retries under the same id
   res = await withResend(() => ok("re_9"), () => N.deliverClaimantEmails(db, { mode: "daily" }));
   assert.equal(res.calls.length, 1);
   assert.equal(res.calls[0].key, key);
-  assert.equal(res.calls[0].body.subject, JSON.parse(b1.payload).subject);
+  assert.equal(res.calls[0].body.subject, JSON.parse(b1.payload).request.subject);
   assert.equal(res.out.sent, 1);
   // a crash right after reserving: the next pass takes it over once
   relate(a, "practitioner:artist-a", "practitioner:artist-b", "COLLABORATES_WITH");
@@ -440,6 +440,179 @@ it("failures: a rejected send is counted, the others still go; bounded retries; 
     });
     assert.equal(run.status, 1, run.stderr);
     assert.match(run.stderr, /1 failed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- second review round (#81 review of 0e40911) -------------------------------------------
+
+const expireLeases = (db: any) => db.prepare("UPDATE claimant_batches SET lease_until = '2000-01-01T00:00:00Z' WHERE state = 'reserved'").run();
+const lost = () => { throw new TypeError("socket hang up (the response was lost)"); };
+const batchRow = (db: any) => db.prepare("SELECT * FROM claimant_batches ORDER BY created_at DESC, rowid DESC LIMIT 1").get() as any;
+
+/** One event for B, its first attempt lost after freezing (as if Resend got it but the answer never came). */
+async function frozenAfterLostResponse() {
+  const s = setup();
+  s.relate(s.a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  N.scanClaimantEvents(s.db);
+  const first = await withResend(lost, () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(first.calls.length, 1);
+  assert.equal(batchRow(s.db).state, "reserved");
+  return { ...s, first };
+}
+
+it("after the payload is frozen: the preference, revocation and consent are checked again before every attempt", async () => {
+  // turned off → skipped, nothing sent
+  let s = await frozenAfterLostResponse();
+  N.setEmailMode(s.db, s.b.id, "off");
+  expireLeases(s.db);
+  let r = await withResend(() => ok(), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(r.calls.length, 0);
+  assert.equal(batchRow(s.db).state, "skipped");
+
+  // the signal revoked → the whole batch suppressed
+  s = await frozenAfterLostResponse();
+  s.db.prepare("UPDATE signals SET status = 'revoked'").run();
+  expireLeases(s.db);
+  r = await withResend(() => ok(), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(r.calls.length, 0);
+  assert.deepEqual([batchRow(s.db).state, r.out.suppressed], ["suppressed", 1]);
+
+  // made anonymous since → the frozen "Artist A added …" may not go
+  s = await frozenAfterLostResponse();
+  s.db.prepare("UPDATE signals SET consent_attribution = 'anonymous'").run();
+  expireLeases(s.db);
+  r = await withResend(() => ok(), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(r.calls.length, 0);
+  assert.equal(batchRow(s.db).state, "suppressed");
+  assert.match(String(s.db.prepare("SELECT reason FROM claimant_deliveries").get()?.reason), /content_changed/);
+});
+
+it("policy: a proposal approved after its line was frozen goes as frozen ('proposed …')", async () => {
+  const { db, b, probation } = setup();
+  const pSig = insertSignal(db, { contributor: probation, title: "show", content: "{}" });
+  const q = insertIntake(db, { contributor: probation, signal_id: pSig, target_node: "practitioner:artist-b", proposed_edges: [{ source_id: "institution:glitch", target_id: "practitioner:artist-b", edge_type: "REPRESENTS" }] });
+  N.scanClaimantEvents(db);
+  await withResend(lost, () => N.deliverClaimantEmails(db, { mode: "daily" }));
+  approveIntakeItem(db, q.intake_id, "curator");
+  expireLeases(db);
+  const r = await withResend(() => ok(), () => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(r.calls.length, 1);
+  assert.match(r.calls[0].body.text, /New Person proposed that GLITCH represents you \(waiting for a curator\)/);
+  void b;
+});
+
+it("a lost response: inside 24 h the same request goes again under the same key; past it, left for a person", async () => {
+  let s = await frozenAfterLostResponse();
+  expireLeases(s.db);
+  const again = await withResend(() => ok("re_2"), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(again.calls.length, 1);
+  assert.equal(again.calls[0].key, s.first.calls[0].key);
+  assert.deepEqual(again.calls[0].body, s.first.calls[0].body, "the full request, byte for byte (from, reply_to included)");
+  assert.equal(batchRow(s.db).state, "sent");
+
+  s = await frozenAfterLostResponse();
+  s.db.prepare("UPDATE claimant_batches SET first_attempt_at = ?").run(new Date(Date.now() - 25 * 3600_000).toISOString().replace(/\.\d{3}Z$/, "Z"));
+  expireLeases(s.db);
+  const late = await withResend(() => ok(), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(late.calls.length, 0, "never resent automatically");
+  assert.equal(late.out.reconcile, 1);
+  assert.equal(batchRow(s.db).state, "reconcile");
+});
+
+it("MAX_ATTEMPTS is enforced before sending, crashed attempts included", async () => {
+  const s = await frozenAfterLostResponse();
+  s.db.prepare("UPDATE claimant_batches SET attempts = ?").run(N.MAX_ATTEMPTS);
+  expireLeases(s.db);
+  const r = await withResend(() => ok(), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(r.calls.length, 0);
+  assert.equal(batchRow(s.db).state, "failed");
+});
+
+it("lease fencing: a worker whose lease ran out mid-send cannot complete or fail the batch the next one took over", async () => {
+  const s = setup();
+  s.relate(s.a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  N.scanClaimantEvents(s.db);
+  let release!: (r: Response) => void;
+  const keys: string[] = [];
+  const realFetch = globalThis.fetch;
+  delete process.env.MAIL_TRANSPORT;
+  process.env.RESEND_API_KEY = "re_test";
+  const err = console.error; console.error = () => {};
+  try {
+    // worker A: its request hangs
+    globalThis.fetch = (async (_u: any, init: any) => { keys.push(init.headers["Idempotency-Key"]); return new Promise<Response>((r) => { release = r; }); }) as any;
+    const a = N.deliverClaimantEmails(s.db, { mode: "daily" });
+    await new Promise((r) => setTimeout(r, 20));
+    // its lease runs out; worker B takes the batch over and is answered at once
+    expireLeases(s.db);
+    globalThis.fetch = (async (_u: any, init: any) => { keys.push(init.headers["Idempotency-Key"]); return ok("re_B"); }) as any;
+    const b = await N.deliverClaimantEmails(s.db, { mode: "daily" });
+    assert.equal(b.sent, 1);
+    // A's answer finally comes: it changes nothing
+    release(ok("re_A"));
+    const ra = await a;
+    assert.equal(ra.sent, 0);
+    const row = batchRow(s.db);
+    assert.deepEqual([row.state, row.ref], ["sent", "re_B"]);
+    assert.equal(keys[0], keys[1], "the same idempotency key: Resend sends it once");
+  } finally {
+    globalThis.fetch = realFetch;
+    console.error = err;
+    delete process.env.RESEND_API_KEY;
+    process.env.MAIL_TRANSPORT = "stdout";
+  }
+});
+
+it("409: concurrent_idempotent_requests waits and retries; invalid_idempotent_request fails for good", async () => {
+  let s = setup();
+  s.relate(s.a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  N.scanClaimantEvents(s.db);
+  let r = await withResend(() => new Response('{"name":"concurrent_idempotent_requests","message":"busy"}', { status: 409 }), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(r.out.failed, 1);
+  assert.equal(batchRow(s.db).state, "reserved");
+  expireLeases(s.db);
+  r = await withResend(() => ok(), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(batchRow(s.db).state, "sent");
+
+  s = setup();
+  s.relate(s.a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  N.scanClaimantEvents(s.db);
+  r = await withResend(() => new Response('{"name":"invalid_idempotent_request","message":"different body"}', { status: 409 }), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(r.out.failed, 1);
+  const row = batchRow(s.db);
+  assert.equal(row.state, "failed");
+  expireLeases(s.db);
+  r = await withResend(() => ok(), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(r.calls.length, 0);
+});
+
+it("schema: a DB with the earlier notification tables is upgraded at boot", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "adai-81-schema-"));
+  try {
+    const path = join(dir, "old.db");
+    const old = initDb(path);
+    // the f344ef7 shapes
+    old.exec(`DROP TABLE claimant_deliveries; DROP TABLE claimant_batches; DROP TABLE claimant_events;
+      CREATE TABLE claimant_events (id TEXT PRIMARY KEY NOT NULL, contributor_id TEXT NOT NULL, node_id TEXT NOT NULL, event_key TEXT NOT NULL,
+        kind TEXT NOT NULL, line TEXT NOT NULL, at TEXT, created_at TEXT, UNIQUE (contributor_id, node_id, event_key));
+      CREATE TABLE claimant_deliveries (event_id TEXT NOT NULL, channel TEXT NOT NULL, state TEXT NOT NULL, at TEXT, ref TEXT, PRIMARY KEY (event_id, channel));
+      INSERT INTO claimant_events (id, contributor_id, node_id, event_key, kind, line) VALUES ('cev_old', 'c', 'n', 'k', 'relation', 'old line');
+      INSERT OR REPLACE INTO settings (key, value) VALUES ('claimant_notify_since', '2000-01-01T00:00:00Z');`);
+    old.close();
+    const db = initDb(path); // boots without failing on db.sql's indexes
+    const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as any[]).map((c) => c.name);
+    assert.ok(cols("claimant_events").includes("ref"));
+    assert.ok(cols("claimant_deliveries").includes("batch_id"));
+    assert.ok(cols("claimant_batches").includes("lease_owner"));
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM claimant_events").get() as any).n, 0);
+    assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'claimant_notify_since'").get(), undefined, "the baseline restarts");
+    db.close();
+    initDb(path).close(); // and again: a current shape is left alone
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

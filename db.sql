@@ -444,17 +444,21 @@ CREATE TABLE IF NOT EXISTS claimant_events (
 CREATE INDEX IF NOT EXISTS idx_claimant_events_contributor ON claimant_events(contributor_id, created_at);
 
 -- One email (or, later, one push) to one claimant: reserved with a lease
--- before any network I/O, its events bound to it in claimant_deliveries, its
--- rendering frozen on the first attempt so a retry sends the same message
--- under the same Resend Idempotency-Key (the batch id).
+-- before any network I/O, its events bound to it in claimant_deliveries, the
+-- whole provider request frozen on the first attempt so a retry sends the
+-- same request under the same Resend Idempotency-Key (the batch id). Every
+-- write to a reserved batch is fenced by its lease owner; terminal states
+-- never change again.
 CREATE TABLE IF NOT EXISTS claimant_batches (
     id              TEXT PRIMARY KEY NOT NULL,       -- 'cnb_' + 16 hex; also the idempotency key
     contributor_id  TEXT NOT NULL,
     channel         TEXT NOT NULL,                   -- email (push later)
-    state           TEXT NOT NULL,                   -- reserved | sent | failed | suppressed
+    state           TEXT NOT NULL,                   -- reserved | sent | failed | suppressed | skipped | reconcile
+    lease_owner     TEXT,                            -- the pass holding the lease (a fencing token)
     lease_until     TEXT,                            -- a reserved batch past its lease may be taken over
     attempts        INTEGER NOT NULL DEFAULT 0,
-    payload         TEXT,                            -- JSON {to, subject, text, html}, frozen at the first attempt
+    first_attempt_at TEXT,                           -- Resend keeps idempotency keys 24 h: past ~23 h, no automatic resend
+    payload         TEXT,                            -- JSON {request: {from,to,reply_to,subject,text,html}, lines: [{event_id,line}]}
     ref             TEXT,                            -- the transport's message id
     error           TEXT,
     created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
