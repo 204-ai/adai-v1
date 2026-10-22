@@ -14,6 +14,7 @@
     "embed:calibrate": "tsx src/embed/cli.ts calibrate",
     "embed:report-drift": "tsx src/embed/cli.ts report-drift",
     "embed:backfill": "tsx src/embed/cli.ts backfill",
+    "embed:import": "tsx src/embed/cli.ts import",
     "token:issue": "tsx src/cli/issue-token.ts",
     "token:revoke": "tsx src/cli/revoke-token.ts",
     "token:restore": "tsx src/cli/restore-tokens.ts",

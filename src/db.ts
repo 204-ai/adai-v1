@@ -10,7 +10,11 @@ const PROJECT_ROOT = join(__dirname, "..");
 let db: DatabaseSync;
 
 export function initDb(dbPath: string): DatabaseSync {
-  db = new DatabaseSync(dbPath, { allowExtension: true });
+  // timeout = SQLite busy_timeout: wait up to 15 s for another connection's
+  // write lock instead of failing at once with "database is locked". The
+  // server and the operator CLIs (embed backfill / derive / import over SSH)
+  // write the same file; without it either side fails the moment they meet.
+  db = new DatabaseSync(dbPath, { allowExtension: true, timeout: 15_000 });
   db.loadExtension(extensionPath);
 
   const schema = readFileSync(join(PROJECT_ROOT, "db.sql"), "utf-8");

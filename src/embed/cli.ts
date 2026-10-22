@@ -10,6 +10,9 @@
 //                                notices when re-tuning is warranted (we don't
 //                                auto-recalibrate — that's how the graph
 //                                silently changes shape).
+//   npm run embed:import -- --from=<db>
+//                              — reuse vectors computed elsewhere, where the
+//                                content hashes match (src/embed/import.ts).
 //   npm run embed:backfill     — embed any node missing an identity vector
 //                                (catches anything that slipped past the
 //                                embed-on-write path in the contributor API)
@@ -32,6 +35,7 @@ import { derive } from "./derive.js";
 import { loadAll, cosine } from "./vectors.js";
 import { embedNodeNow } from "./server.js";
 import { embedModel, embedProvider } from "./provider.js";
+import { importVectors } from "./import.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -368,6 +372,19 @@ async function cmdBackfill() {
   if (err > 0) process.exit(1);
 }
 
+function cmdImport() {
+  const fromArg = process.argv.find((a) => a.startsWith("--from="));
+  const from = fromArg?.slice("--from=".length);
+  if (!from) {
+    console.error("usage: embed:import --from=<other.db> [--dry-run]");
+    process.exit(2);
+  }
+  const db = initDb(dbPath);
+  const stats = importVectors(db, from, { dryRun: process.argv.includes("--dry-run") });
+  console.log(JSON.stringify(stats, null, 2));
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+}
+
 async function main(): Promise<void> {
   const cmd = process.argv[2];
   switch (cmd) {
@@ -386,11 +403,15 @@ async function main(): Promise<void> {
     case "backfill":
       await cmdBackfill();
       break;
+    case "import":
+      cmdImport();
+      break;
     default:
       console.error(
-        "usage: tsx src/embed/cli.ts {derive|centroids|calibrate|report-drift|backfill} [--dry-run] [--limit=N]\n" +
+        "usage: tsx src/embed/cli.ts {derive|centroids|calibrate|report-drift|backfill|import} [--dry-run] [--limit=N] [--from=db]\n" +
           "  derive          runs centroids first by default.\n" +
-          "  backfill        embeds every node missing a current-model identity vector (--limit=N to cap)."
+          "  backfill        embeds every node missing a current-model identity vector (--limit=N to cap).\n" +
+          "  import          copies current-model vectors from another DB where the content hashes match (--from=, --dry-run)."
       );
       process.exit(2);
   }
