@@ -31,6 +31,9 @@ import { isStaging } from "../utils/staging.js";
 import { embedBaseUrl, embedImageMimes, embedKey, embedKeyVar, embedModel, embedProvider } from "./provider.js";
 export const TASK_PREFIX = "task: sentence similarity | query: ";
 
+// Raw bytes; base64 grows them by 4/3, so 14 MB stays under a 20 MB cap.
+const EMBED_IMAGE_MAX_BYTES = 14 * 1024 * 1024;
+
 const EMBEDDABLE_TYPES = new Set([
   "artwork",
   "practitioner",
@@ -315,7 +318,9 @@ export async function embedNodeNow(db: DatabaseSync, nodeId: string): Promise<Em
     if (url) image = await fetchImage(url);
     // A format the provider can't read (AVIF, SVG, …) would fail the whole
     // call: embed the text alone instead, as the Gemini-era rows did.
-    if (image && !embedImageMimes().has(image.mime)) image = null;
+    // Likewise an image over the provider's size cap (DeepInfra: 20 MB per
+    // input, base64-encoded — hit by a few huge animated GIFs).
+    if (image && (!embedImageMimes().has(image.mime) || image.bytes.length > EMBED_IMAGE_MAX_BYTES)) image = null;
   }
 
   if (!text && !image) {
