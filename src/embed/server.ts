@@ -27,9 +27,8 @@
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { encodeBlob, l2normalise, DIMS, invalidateVectorCache } from "./vectors.js";
-import { geminiKey, isStaging } from "../utils/staging.js";
-
-const EMBED_MODEL = process.env.EMBED_MODEL || "gemini-embedding-2";
+import { isStaging } from "../utils/staging.js";
+import { embedBaseUrl, embedImageMimes, embedKey, embedKeyVar, embedModel, embedProvider } from "./provider.js";
 export const TASK_PREFIX = "task: sentence similarity | query: ";
 
 const EMBEDDABLE_TYPES = new Set([
@@ -61,10 +60,10 @@ let cachedClient: any = null;
 
 async function getClient(): Promise<any> {
   if (cachedClient) return cachedClient;
-  const apiKey = geminiKey();
+  const apiKey = embedKey();
   if (!apiKey) {
     throw new Error(
-      "GEMINI_API_KEY missing — set as a Fly secret on production, in .env locally"
+      `${embedKeyVar()} missing — set as a Fly secret on production, in .env locally`
     );
   }
   const { GoogleGenAI } = await import("@google/genai");
@@ -220,6 +219,57 @@ interface GeminiPart {
  * l2normalise the result before comparing against node_embeddings.
  */
 export async function embedOnce(text: string, image: { bytes: Buffer; mime: string } | null): Promise<Float32Array> {
+  if (embedProvider() === "openai") return embedOnceOpenAI(text, image);
+  return embedOnceGemini(text, image);
+}
+
+/**
+ * OpenAI-compatible /embeddings (DeepInfra, vLLM, …). Text and image go as
+ * the content parts of ONE input item, which the model fuses into one
+ * vector — the same shape as the Gemini call. No `task` field: the text
+ * already carries its EmbeddingGemma task prefix (TASK_PREFIX), and the
+ * endpoint adds none of its own when `task` is absent.
+ */
+async function embedOnceOpenAI(text: string, image: { bytes: Buffer; mime: string } | null): Promise<Float32Array> {
+  const apiKey = embedKey();
+  if (!apiKey) throw new Error(`${embedKeyVar()} missing — set as a Fly secret on production, in .env locally`);
+  const parts: Array<Record<string, unknown>> = [];
+  if (text) parts.push({ type: "text", text });
+  if (image) {
+    parts.push({
+      type: "image_url",
+      image_url: { url: `data:${image.mime};base64,${image.bytes.toString("base64")}` },
+    });
+  }
+  if (!parts.length) throw new Error("nothing to embed");
+  const input = parts.length === 1 && !image ? text : parts;
+
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 60_000);
+  let res: Response;
+  try {
+    res = await fetch(`${embedBaseUrl()}/embeddings`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: embedModel(), input: [input], dimensions: DIMS, encoding_format: "float" }),
+      signal: ctl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) {
+    const body = (await res.text().catch(() => "")).slice(0, 300);
+    throw new Error(`embeddings endpoint returned ${res.status}: ${body}`);
+  }
+  const json = (await res.json()) as { data?: Array<{ embedding?: number[] }> };
+  const values = json?.data?.[0]?.embedding;
+  if (!Array.isArray(values) || values.length !== DIMS) {
+    throw new Error(`embedding wrong shape: got ${Array.isArray(values) ? values.length : "null"}`);
+  }
+  return new Float32Array(values);
+}
+
+async function embedOnceGemini(text: string, image: { bytes: Buffer; mime: string } | null): Promise<Float32Array> {
   const client = await getClient();
   const contents: GeminiPart[] = [{ text }];
   if (image) {
@@ -228,7 +278,7 @@ export async function embedOnce(text: string, image: { bytes: Buffer; mime: stri
     });
   }
   const res = await client.models.embedContent({
-    model: EMBED_MODEL,
+    model: embedModel(),
     contents,
     config: { outputDimensionality: DIMS },
   });
@@ -263,6 +313,9 @@ export async function embedNodeNow(db: DatabaseSync, nodeId: string): Promise<Em
   if (TYPES_WITH_IMAGE.has(node.type)) {
     const url = pickImageUrl(md);
     if (url) image = await fetchImage(url);
+    // A format the provider can't read (AVIF, SVG, …) would fail the whole
+    // call: embed the text alone instead, as the Gemini-era rows did.
+    if (image && !embedImageMimes().has(image.mime)) image = null;
   }
 
   if (!text && !image) {
@@ -274,9 +327,16 @@ export async function embedNodeNow(db: DatabaseSync, nodeId: string): Promise<Em
 
   // Idempotency: same (text_hash, image_hash) as existing row → skip.
   const existing = db
-    .prepare("SELECT text_hash, image_hash FROM node_embeddings WHERE node_id = ? AND kind = 'identity'")
-    .get(nodeId) as { text_hash: string | null; image_hash: string | null } | undefined;
-  if (existing && existing.text_hash === textHash && (existing.image_hash ?? null) === imageHash) {
+    .prepare("SELECT model, text_hash, image_hash FROM node_embeddings WHERE node_id = ? AND kind = 'identity'")
+    .get(nodeId) as { model: string; text_hash: string | null; image_hash: string | null } | undefined;
+  // A row from another model is never "unchanged": its vector lives in a
+  // different space, so a model switch re-embeds every node.
+  if (
+    existing &&
+    existing.model === embedModel() &&
+    existing.text_hash === textHash &&
+    (existing.image_hash ?? null) === imageHash
+  ) {
     return {
       status: "skipped_unchanged",
       has_image: !!image,
@@ -306,7 +366,7 @@ export async function embedNodeNow(db: DatabaseSync, nodeId: string): Promise<Em
        created_at = excluded.created_at`
   ).run(
     nodeId,
-    EMBED_MODEL,
+    embedModel(),
     DIMS,
     encodeBlob(normed),
     image ? 1 : 0,
@@ -327,7 +387,7 @@ export async function embedNodeNow(db: DatabaseSync, nodeId: string): Promise<Em
 // but never throw into the request handler — the daily backfill catches
 // anything that fails here.
 export function embedNodeAsync(db: DatabaseSync, nodeId: string): void {
-  if (isStaging() && !geminiKey()) return; // gemini switched off on staging
+  if (isStaging() && !embedKey()) return; // embeddings switched off on staging
   embedNodeNow(db, nodeId)
     .then((r) => {
       if (r.status === "error") {

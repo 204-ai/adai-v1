@@ -8,6 +8,7 @@
 // Vectors are stored L2-normalised, so dot product == cosine similarity.
 
 import type { DatabaseSync } from "node:sqlite";
+import { embedModel } from "./provider.js";
 
 export const DIMS = 768;
 
@@ -101,14 +102,17 @@ export function loadAll(db: DatabaseSync, opts: { fresh?: boolean } = {}): Map<s
   // centroids, calibration, and the neighbours surfaces — without this JOIN
   // the nightly re-derive would resurrect edges pointing at retired nodes
   // from their still-present vectors.
+  // Only the current model's rows (src/embed/provider.ts): during a model
+  // switch the table holds vectors of two spaces, which must never meet.
   const rows = db
     .prepare(
       `SELECT ne.node_id, ne.kind, ne.model, ne.dims, ne.vector, ne.has_image, ne.image_hash, ne.text_hash
        FROM node_embeddings ne
        JOIN nodes n ON n.id = ne.node_id
-       WHERE json_extract(n.metadata,'$.retired') IS NOT 1`
+       WHERE json_extract(n.metadata,'$.retired') IS NOT 1
+         AND ne.model = ?`
     )
-    .all() as Array<{
+    .all(embedModel()) as Array<{
       node_id: string;
       kind: string;
       model: string;

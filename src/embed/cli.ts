@@ -12,8 +12,11 @@
 //                                silently changes shape).
 //   npm run embed:backfill     — embed any node missing an identity vector
 //                                (catches anything that slipped past the
-//                                embed-on-write path in the contributor API).
-//                                Calls Gemini, requires GEMINI_API_KEY.
+//                                embed-on-write path in the contributor API)
+//                                or holding one of another model (a model
+//                                switch re-embeds everything; see provider.ts).
+//                                Calls the embedding provider: GEMINI_API_KEY,
+//                                or EMBED_API_KEY with EMBED_PROVIDER=openai.
 //
 // All commands read/write the live DB. Path resolution via resolveCliDbPath:
 // explicit DB_PATH wins, otherwise /data/adai.db if present (Fly volume),
@@ -28,6 +31,7 @@ import { computeIslands } from "./islands.js";
 import { derive } from "./derive.js";
 import { loadAll, cosine } from "./vectors.js";
 import { embedNodeNow } from "./server.js";
+import { embedModel, embedProvider } from "./provider.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -331,14 +335,14 @@ async function cmdBackfill() {
          AND json_extract(n.metadata,'$.retired') IS NOT 1
          AND NOT EXISTS (
            SELECT 1 FROM node_embeddings ne
-           WHERE ne.node_id = n.id AND ne.kind = 'identity'
+           WHERE ne.node_id = n.id AND ne.kind = 'identity' AND ne.model = ?
          )
        ORDER BY n.id`
     )
-    .all() as Array<{ id: string }>;
+    .all(embedModel()) as Array<{ id: string }>;
 
   const targets = limit > 0 ? rows.slice(0, limit) : rows;
-  console.log(`backfill: ${targets.length} nodes missing identity vectors${limit > 0 ? ` (limit=${limit})` : ""}`);
+  console.log(`backfill (${embedProvider()} / ${embedModel()}): ${targets.length} nodes missing a current-model identity vector${limit > 0 ? ` (limit=${limit})` : ""}`);
 
   let ok = 0;
   let skipped = 0;
@@ -386,7 +390,7 @@ async function main(): Promise<void> {
       console.error(
         "usage: tsx src/embed/cli.ts {derive|centroids|calibrate|report-drift|backfill} [--dry-run] [--limit=N]\n" +
           "  derive          runs centroids first by default.\n" +
-          "  backfill        calls Gemini for every node missing an identity vector (--limit=N to cap)."
+          "  backfill        embeds every node missing a current-model identity vector (--limit=N to cap)."
       );
       process.exit(2);
   }

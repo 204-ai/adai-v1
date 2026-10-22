@@ -20,7 +20,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { encodeBlob, keyFor, loadAll, meanAndNormalise, invalidateVectorCache, type VectorRow, DIMS } from "./vectors.js";
 
-const EMBED_MODEL_TAG = "gemini-embedding-2";
+import { embedModel } from "./provider.js";
 
 export interface CentroidStats {
   creators_with_centroid: number;
@@ -76,7 +76,7 @@ export function computeCentroids(db: DatabaseSync): CentroidStats {
         continue;
       }
       const centroid = meanAndNormalise(arts);
-      insertEmb.run(creator, EMBED_MODEL_TAG, DIMS, encodeBlob(centroid));
+      insertEmb.run(creator, embedModel(), DIMS, encodeBlob(centroid));
       wrote++;
     }
     db.exec("COMMIT");

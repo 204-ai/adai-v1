@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extensionPath } from "@shards-lang/crsqlite";
+import { embedModel } from "../src/embed/provider.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
@@ -89,6 +90,6 @@ export function insertIdentityEmbedding(
 ): void {
   db.prepare(
     `INSERT INTO node_embeddings (node_id, kind, model, dims, vector, has_image, image_hash, text_hash, created_at)
-     VALUES (?, 'identity', 'test-model', ?, ?, 1, 'imghash-' || ?, 'texthash-' || ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))`
-  ).run(nodeId, vec.length, encodeF32(vec), nodeId, nodeId);
+     VALUES (?, 'identity', ?, ?, ?, 1, 'imghash-' || ?, 'texthash-' || ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))`
+  ).run(nodeId, embedModel(), vec.length, encodeF32(vec), nodeId, nodeId);
 }
