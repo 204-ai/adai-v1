@@ -24,6 +24,7 @@
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { isAutoMerge, type AuthedContributor } from "../auth.js";
+import { contributionWritten } from "../notify/kick.js";
 
 export type ProposedNodeOp =
   | { op: "create_node"; type: string; name: string; slug: string; metadata?: any; aliases?: Array<{ source: string; external_id: string }> }
@@ -126,6 +127,9 @@ export function insertSignal(db: DatabaseSync, args: CreateSignalArgs): string {
     args.batch_id ?? null,
     args.provenance_chain ?? null
   );
+  // Claimants hear about it (issue #81): the listener only schedules a pass,
+  // after this write's transaction has had time to commit.
+  contributionWritten();
   return signalId;
 }
 

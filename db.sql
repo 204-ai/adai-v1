@@ -410,3 +410,45 @@ CREATE TABLE IF NOT EXISTS relation_notes (
 CREATE INDEX IF NOT EXISTS idx_relation_notes_triple ON relation_notes(source_id, edge_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_relation_notes_node ON relation_notes(node_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_relation_notes_queue_ref ON relation_notes(queue_ref);
+
+-- Telling claimants when something is added about them (issue #81). All
+-- local (never CRRs): they hold who gets mail and when, keyed by
+-- contributor id; the addresses stay in contributor_emails.
+--
+-- How often a contributor hears about their claimed pages. One row per
+-- contributor once they change it; no row = the defaults below.
+CREATE TABLE IF NOT EXISTS notify_prefs (
+    contributor_id  TEXT PRIMARY KEY NOT NULL,
+    email           TEXT NOT NULL DEFAULT 'daily',   -- immediate | daily | off
+    push            TEXT NOT NULL DEFAULT 'off',     -- reserved for web push (not wired yet)
+    updated_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- One thing that happened to a claimed page, for one claimant: found by the
+-- scan in src/notify/claimants.ts. `event_key` names the underlying change
+-- (the same relation seen pending and then live is one event), so a rescan
+-- never repeats itself. `line` is the consent-filtered sentence the mail
+-- shows; nothing else about the contribution is copied here.
+CREATE TABLE IF NOT EXISTS claimant_events (
+    id              TEXT PRIMARY KEY NOT NULL,       -- 'cev_' + 16 hex
+    contributor_id  TEXT NOT NULL,
+    node_id         TEXT NOT NULL,
+    event_key       TEXT NOT NULL,
+    kind            TEXT NOT NULL,                   -- relation | ended | edit | note | pending
+    line            TEXT NOT NULL,
+    at              TEXT,                            -- when it happened in the commons
+    created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE (contributor_id, node_id, event_key)
+);
+CREATE INDEX IF NOT EXISTS idx_claimant_events_contributor ON claimant_events(contributor_id, created_at);
+
+-- Delivery of an event on one channel ('email' now; 'push' later). No row =
+-- not yet delivered on that channel. state: sent | skipped (setting was off).
+CREATE TABLE IF NOT EXISTS claimant_deliveries (
+    event_id        TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    state           TEXT NOT NULL,
+    at              TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    ref             TEXT,                            -- the transport's message id
+    PRIMARY KEY (event_id, channel)
+);

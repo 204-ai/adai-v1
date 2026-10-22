@@ -137,6 +137,7 @@ const app = $('#app');
 const params = new URLSearchParams(location.search);
 const VERBS = { CREATED_BY: 'was created by', EXHIBITED_AT: 'was exhibited at', HELD_BY: 'is held by', PARTICIPATED_IN: 'took part in', PRESENTED_BY: 'was presented by', CURATED_BY: 'was curated by', REPRESENTS: 'represents', USES_TECHNIQUE: 'uses the technique', EMBODIES: 'embodies', BELONGS_TO: 'belongs to', COLLABORATES_WITH: 'collaborates with', INFLUENCES: 'influences', RESPONDS_TO: 'responds to', PRACTICES: 'practices', CLASSIFIED_BY: 'is classified by' };
 let L = null;
+let N = null;
 function href(id, slug) { const t = id.split(':')[0]; return '/' + t + '/' + encodeURIComponent(slug || id.slice(t.length + 1).replace(/ /g, '-')); }
 function alertMsg(m, ok) { const d = document.createElement('div'); d.className = 'msg ' + (ok ? 'msg-ok' : 'msg-err'); d.textContent = m; app.prepend(d); setTimeout(() => d.remove(), 7000); }
 function relLine(r) {
@@ -155,13 +156,17 @@ function relRow(r, i) {
   return '<div class="rel" data-i="' + i + '"><div class="line">' + relLine(r) + '</div>' +
     '<div class="src">' + (r.sources.length ? 'claimed by ' + r.sources.map(esc).join(', ') : '') + (r.since ? ' · since ' + esc(r.since.slice(0, 10)) : '') + '</div>' +
     pub.map(n => noteHtml(n, false)).join('') + r.my_notes.map(n => noteHtml(n, true)).join('') +
-    '<div class="acts"><button class="btn" data-act="context">Add context</button><button class="btn" data-act="contest">Contest</button>' + (r.can_invite ? '<button class="btn" data-act="invite">Invite ' + esc(r.other.name) + '</button>' : '') + '</div><div class="slot"></div></div>';
+    '<div class="acts"><button class="btn" data-act="confirm">Confirm</button><button class="btn" data-act="context">Add context</button><button class="btn" data-act="contest">Contest</button>' + (r.can_invite ? '<button class="btn" data-act="invite">Invite ' + esc(r.other.name) + '</button>' : '') + '</div><div class="slot"></div></div>';
 }
 function openForm(row, act) {
   const r = L.relations[+row.dataset.i];
   const slot = $('.slot', row);
   if (act === 'invite') {
     slot.innerHTML = '<form><label>their email</label><input type="email" name="email" required><label>a note from you (optional)</label><textarea name="message" maxlength="1000"></textarea><button class="btn primary" type="submit">Send invite</button> <span class="lede">' + L.invites_left + ' of ' + L.invites_per_week + ' invites left this week. They can claim ' + esc(r.other.name) + ' straight away.</span></form>';
+  } else if (act === 'confirm') {
+    // Confirming is your word on the record (issue #81): a context note, so it
+    // shows with the relation like any other.
+    slot.innerHTML = '<form><textarea name="note" required maxlength="2000">I confirm this.</textarea><button class="btn primary" type="submit">Confirm</button> <span class="lede">Shown with the relation, in your name. Add when, how, what it meant if you like.</span></form>';
   } else {
     slot.innerHTML = '<form><textarea name="note" required maxlength="2000" placeholder="' + (act === 'contest' ? 'What is wrong with this relation? A curator reads this and decides; until then it shows as contested.' : 'Context for this relation: when, how, what it meant.') + '"></textarea><button class="btn primary" type="submit">' + (act === 'contest' ? 'Contest' : 'Add context') + '</button></form>';
   }
@@ -170,7 +175,7 @@ function openForm(row, act) {
     const f = e.target;
     const res = act === 'invite'
       ? await api('POST', '/api/me/invite', { node_id: r.other.id, email: f.email.value, message: f.message.value })
-      : await api('POST', '/api/me/' + act, { node_id: L.node.id, relation: r.relation, note: f.note.value });
+      : await api('POST', '/api/me/' + (act === 'confirm' ? 'context' : act), { node_id: L.node.id, relation: r.relation, note: f.note.value });
     if (res.ok) { alertMsg(act === 'invite' ? 'Invite sent.' : act === 'contest' ? 'Contest filed — it shows on the page now; a curator decides.' : (res.json.note.state === 'live' ? 'Context added.' : 'Context sent to a curator.'), true); load(); }
     else alertMsg((res.json && res.json.message) || ('error ' + res.status));
   };
@@ -210,7 +215,15 @@ function render() {
   h += '<section><h3>Your notes</h3>' + (L.my_notes.map(x => '<div class="ev"><span class="pill">' + esc(x.kind) + '</span> <span class="pill">' + esc(x.state) + '</span> ' + esc(x.note) + (x.resolution ? ' — <i>' + esc(x.resolution) + '</i>' : '') + '</div>').join('') || '<p class="lede">None yet.</p>') + '</section>';
   h += '<section><h3>Invites (' + L.invites_left + ' left this week)</h3>' + (L.invites.map(x => '<div class="ev">' + esc(x.name) + ' · ' + esc(x.invitee || '') + ' · ' + esc((x.created_at || '').slice(0, 10)) + ' <span class="pill">' + esc(x.status) + '</span></div>').join('') || '<p class="lede">None sent.</p>') + '</section>';
   h += '<section><h3>History</h3>' + (L.history.map(evRow).join('') || '<p class="lede">Nothing yet.</p>') + '</section>';
+  h += '<section><h3>Email me</h3><p class="lede">When someone adds a relation, an edit or a note about a page you claimed (not your own contributions).</p><form id="notif">' +
+    [['immediate', 'as it happens'], ['daily', 'once a day (digest)'], ['off', 'never']].map(([v, t]) => '<label style="display:block"><input type="radio" name="email" value="' + v + '"' + (N && N.email === v ? ' checked' : '') + '> ' + t + '</label>').join('') + '</form></section>';
   app.innerHTML = h;
+  const nf = $('#notif');
+  if (nf) nf.onchange = async () => {
+    const v = nf.querySelector('input[name=email]:checked');
+    const r = v && await api('POST', '/api/me/notifications', { email: v.value });
+    if (r && r.ok) { N = r.json; alertMsg('Saved.', true); } else alertMsg('could not save');
+  };
   app.querySelectorAll('.rel [data-act]').forEach(b => b.onclick = () => openForm(b.closest('.rel'), b.dataset.act));
   app.querySelectorAll('[data-wd]').forEach(a => a.onclick = async (e) => { e.preventDefault(); await api('POST', '/api/me/notes/' + encodeURIComponent(a.dataset.wd) + '/withdraw', {}); load(); });
   app.querySelectorAll('form.obj').forEach(f => f.onsubmit = async (e) => {
@@ -232,6 +245,8 @@ async function load() {
   const r = await api('GET', '/api/me/log' + (params.get('node') ? '?node=' + encodeURIComponent(params.get('node')) : ''));
   if (!r.ok) return alertMsg('could not load your log');
   L = r.json;
+  const n = await api('GET', '/api/me/notifications');
+  N = n.ok ? n.json : null;
   render();
 }
 load();`;

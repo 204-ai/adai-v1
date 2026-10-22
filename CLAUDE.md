@@ -298,6 +298,16 @@ opens on a signed-in claimant's node; `m` / the chip veils everything beyond
 2 hops (1 past 500 nodes). Receipts (`/batch/:id`) ask "is one of these you?".
 Code: `src/claim/*`, `src/routes/claim.ts`; SKILL.md §1.9 + §4.6c.
 
+Claimants are **told** when someone else adds a relation (live or in review), an
+edit or a note about their page (issue #81, `src/notify/claimants.ts`): a scan
+over `nodeHistory` + the review queue records `claimant_events`, mail goes out
+per the `/me` setting (`notify_prefs.email` = immediate | daily (default) | off;
+`GET/POST /api/me/notifications`), consent-filtered ("Someone …"), never about
+their own contributions. Immediate: the server, ~90 s after a contribution
+(`src/notify/kick.ts`; `NOTIFY_CLAIMANTS=off` disables it). Daily:
+`node dist/cli/notify-claimants.js` in `notify-digest.yml`. Deliveries are
+per channel (`claimant_deliveries`), so web push can join email later.
+
 ### Contributor API (`/api/v1/*`) — bearer-token, AI-driven
 
 The write surface for AI assistants. Every endpoint requires

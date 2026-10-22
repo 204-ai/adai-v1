@@ -15,6 +15,8 @@ import { startSpawnerInterval, isSpawnerConfigured } from "./intake/spawn.js";
 import { isSessionConfigured } from "./intake/auth.js";
 import { getDb } from "./db.js";
 import { backfillInviteClaims } from "./claim/store.js";
+import { startClaimantNotifier } from "./notify/claimants.js";
+import { onContribution } from "./notify/kick.js";
 import { htmlPage, HTML_HEADERS } from "./templates.js";
 import { isStaging, publicSwitches, stagingBanner } from "./utils/staging.js";
 
@@ -46,6 +48,10 @@ console.log("Database initialized.");
   const n = backfillInviteClaims(getDb());
   if (n) console.log(`[claims] ${n} invite(s) became approved claims`);
 }
+// Claimants hear when something is added about them (issue #81): an
+// immediate pass after contributions; the daily digest is the
+// notify-claimants CLI. NOTIFY_CLAIMANTS=off disables the in-server pass.
+if (process.env.NOTIFY_CLAIMANTS !== "off") startClaimantNotifier(getDb(), onContribution);
 
 const app = express();
 // 12 MB matches the multer cap on /api/v1/images and gives base64 payloads

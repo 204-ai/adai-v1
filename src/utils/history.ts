@@ -240,7 +240,10 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
     };
     const addSig = signal(e.signal_id);
     const src = sourceOf(addSig);
-    const added: HistoryEvent = { ...base, change: "added", at: e.valid_from ?? null, by: src?.by ?? e.created_by ?? null, source: src };
+    // With a signal, its consent decides who is shown (an anonymous one hides
+    // the name that edges.created_by may also carry); without one, the edge's
+    // own created_by is all there is.
+    const added: HistoryEvent = { ...base, change: "added", at: e.valid_from ?? null, by: src ? src.by : e.created_by ?? null, source: src };
     seqOf.set(added, Number(addSig?.seq ?? 0));
     relEvents.push(added);
     if (e.valid_until) {
