@@ -69,7 +69,7 @@ function relationLine(db: DatabaseSync, r: { source_id: string; edge_type: strin
 }
 
 /** The pending claim / contest / context cards on /review. */
-export function claimReviewCards(db: DatabaseSync, kind: "claim" | "contest" | "context"): string {
+export function claimReviewCards(db: DatabaseSync, kind: "claim" | "contest" | "context" | "reading"): string {
   const items = db
     .prepare("SELECT id, target_node, submitted_by, trust_tier, created_at FROM intake_queue WHERE status = 'pending' AND kind = ? ORDER BY created_at ASC")
     .all(kind) as any[];
@@ -103,7 +103,10 @@ export function claimReviewCards(db: DatabaseSync, kind: "claim" | "contest" | "
     } else {
       const n = noteByQueueId(db, item.id);
       if (!n) { html += `<p class='meta'>note row missing</p></div>`; continue; }
-      const who = `${esc(n.by ?? item.submitted_by)}${n.handle ? ` (@${esc(n.handle)})` : ""}, claimant of ${nodeLink(db, n.node_id)}`;
+      // a reading needs no claim: its writer is just a contributor
+      const who = n.kind === "reading"
+        ? `${esc(n.by ?? item.submitted_by)} · trust <span class='tag'>${esc(item.trust_tier)}</span>`
+        : `${esc(n.by ?? item.submitted_by)}${n.handle ? ` (@${esc(n.handle)})` : ""}, claimant of ${nodeLink(db, n.node_id)}`;
       if (n.relation) {
         html += `<h3>${relationLine(db, n.relation)}</h3>`;
         const sources = collapseClaims(db
@@ -114,10 +117,15 @@ export function claimReviewCards(db: DatabaseSync, kind: "claim" | "contest" | "
       } else if (n.meta_key) {
         html += `<h3>${nodeLink(db, n.node_id)} · <code>${esc(n.meta_key)}</code></h3><p class='meta'>Written by signal <code>${esc(n.edit_signal_id)}</code>. Upholding restores the value from before that edit, when one was recorded.</p>`;
       }
-      html += `<p class='meta'>${kind === "contest" ? "Contested" : "Note"} by ${who} · ${esc(item.created_at)}</p><blockquote style='border-left:2px solid #444;padding-left:0.8rem;margin:0.5rem 0'>${esc(n.note)}</blockquote>`;
+      const sig = db.prepare("SELECT source_url, consent_scope, consent_attribution FROM signals WHERE id = ?").get(n.signal_id) as any;
+      const consent = [
+        sig?.consent_attribution === "anonymous" ? "anonymous — the public sees “someone”" : "",
+        sig?.consent_scope === "structural_only" ? "structural only — the public does not see these words" : "",
+      ].filter(Boolean).map((c) => `<span class='tag'>${esc(c)}</span>`).join(" ");
+      html += `<p class='meta'>${kind === "contest" ? "Contested" : kind === "reading" ? "A reading" : "Note"} by ${who} · ${esc(item.created_at)}${consent ? ` · ${consent}` : ""}${kind === "reading" && typeof sig?.source_url === "string" && /^https?:\/\//i.test(sig.source_url) ? ` · <a href='${esc(sig.source_url)}' target='_blank' rel='noopener'>source</a>` : ""}</p><blockquote style='border-left:2px solid #444;padding-left:0.8rem;margin:0.5rem 0'>${esc(n.note)}</blockquote>`;
       html += kind === "contest"
         ? buttons(item.id, n.relation ? "Uphold — end the relation" : "Uphold — restore the value", "Dismiss")
-        : buttons(item.id, "Publish note", "Reject");
+        : buttons(item.id, kind === "reading" ? "Publish reading" : "Publish note", "Reject");
     }
     html += `</div>`;
   }
@@ -194,6 +202,7 @@ export function relationNotesHtml(notes: RelationNote[] | undefined): string {
       const a = noteAuthor(n);
       const who = esc(a.who);
       const words = n.withheld ? "<em>words kept off the public page</em>" : esc(n.note);
+      if (n.kind === "reading") return `<div class='meta' data-reading='${esc(n.signal_id)}'>a reading by ${who}: ${n.withheld ? words : `“${words}”`}</div>`;
       return n.kind === "contest"
         ? `<div class='meta' style='color:#d4a574'>⚑ contested ${a.subject ? `by the subject (${who})` : `by ${who}`}: ${words}</div>`
         : `<div class='meta'>${n.withheld ? words : `“${words}”`} — ${who}</div>`;
@@ -213,7 +222,7 @@ export function relationNoteAuditHtml(n: AuditNote): string {
     n.signal_status !== "active" ? `signal ${n.signal_status} — hidden from the public` : "",
     n.consent_attribution === "anonymous" ? "anonymous — the public sees “someone”" : "",
     n.consent_scope === "structural_only" ? "structural only — the public does not see these words" : "",
-    n.subject_now ? "" : "claim ended — not shown as the subject",
+    n.kind === "reading" ? "a reading — never shown as the subject" : n.subject_now ? "" : "claim ended — not shown as the subject",
   ].filter(Boolean);
   const who = `${esc(n.by ?? n.contributor_id)}${n.handle ? ` (page handle @${esc(n.handle)})` : ""}`;
   const about = n.relation

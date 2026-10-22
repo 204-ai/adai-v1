@@ -345,7 +345,28 @@ body.ev-page .adai-embed-retry::before { content: '↻'; font-size: 12px; }
 /* The subject's word on a relation (claims): contests and context. */
 .ev-rel-note { font-size: 12px; color: #8a8a8c; padding: 0 0 6px 234px; line-height: 1.45; }
 .ev-rel-note--contest { color: #d4a574; }
-@media (max-width: 768px) { .ev-rel-note { padding-left: 0; } }
+/* A reading (#80 part 3): any contributor's, labelled — not the subject's voice. */
+.ev-rel-note--reading { color: #a8a6a1; }
+.ev-rel-note-label { color: #8a8a8c; font-style: italic; }
+.ev-rel-note-src { color: #8a8a8c; text-decoration: underline dotted; text-underline-offset: 3px; }
+/* Signed-in contributors: "+ reading" on a relation row, quiet until the row is hovered or focused. */
+.ev-rel-read {
+  font: inherit; font-size: 11px; color: #6a6a6c; background: none; border: none; cursor: pointer;
+  padding: 0 0 4px 234px; opacity: 0; transition: opacity 120ms;
+}
+.ev-rel-list > li:hover .ev-rel-read, .ev-rel-read:focus-visible, .ev-rel-read[aria-expanded="true"] { opacity: 1; }
+.ev-rel-read:hover { color: var(--text, #E8E6E1); text-decoration: underline dotted; text-underline-offset: 3px; }
+@media (hover: none) { .ev-rel-read { opacity: 1; } }
+.ev-reading-form { padding: 0 0 12px 234px; display: grid; gap: 6px; font-size: 12px; color: #8a8a8c; }
+.ev-reading-form textarea, .ev-reading-form input[type="url"] {
+  font: inherit; font-size: 13px; color: var(--text, #E8E6E1); background: rgba(255,255,255,0.03);
+  border: 1px solid #2a2a2c; padding: 6px 8px; width: 100%; box-sizing: border-box;
+}
+.ev-reading-form textarea { min-height: 72px; resize: vertical; }
+.ev-reading-form label { display: flex; gap: 6px; align-items: baseline; }
+.ev-reading-form button { justify-self: start; font: inherit; font-size: 12px; color: var(--text, #E8E6E1); background: none; border: 1px solid #4a4a4c; padding: 3px 10px; cursor: pointer; }
+.ev-reading-msg { font-size: 12px; color: #8a8a8c; padding: 0 0 8px 234px; }
+@media (max-width: 768px) { .ev-rel-note, .ev-rel-read, .ev-reading-form, .ev-reading-msg { padding-left: 0; } }
 /* A collection's holdings (works held): the maker under the title. */
 .ev-held-by { color: #8a8a8c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 6px; }
 /* Accounts (issue #80): written contributions, side by side, oldest first.

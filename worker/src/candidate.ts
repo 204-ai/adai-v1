@@ -8,7 +8,7 @@ export type Origin = "site" | "graph" | "embedding" | "contributor";
 export type CandidateNodeType = "practitioner" | "artwork" | "project" | "institution" | "collective" | "concept" | "platform";
 export type SuggestableEdgeType =
   | "CREATED_BY" | "EXHIBITED_AT" | "HELD_BY" | "PARTICIPATED_IN" | "PRESENTED_BY" | "CURATED_BY"
-  | "REPRESENTS" | "USES_TECHNIQUE" | "EMBODIES" | "BELONGS_TO" | "COLLABORATES_WITH";
+  | "REPRESENTS" | "USES_TECHNIQUE" | "EMBODIES" | "BELONGS_TO" | "COLLABORATES_WITH" | "DOCUMENTS";
 export type Confidence = "high" | "medium" | "low";
 
 export interface LinkCheck { url: string; status: number | null; reason: "http" | "dns" | "timeout" | "unreachable"; checked_at: string }

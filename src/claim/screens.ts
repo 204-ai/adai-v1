@@ -135,7 +135,7 @@ export function mePage(): string {
   const script = `${helpers}${LOGIN}
 const app = $('#app');
 const params = new URLSearchParams(location.search);
-const VERBS = { CREATED_BY: 'was created by', EXHIBITED_AT: 'was exhibited at', HELD_BY: 'is held by', PARTICIPATED_IN: 'took part in', PRESENTED_BY: 'was presented by', CURATED_BY: 'was curated by', REPRESENTS: 'represents', USES_TECHNIQUE: 'uses the technique', EMBODIES: 'embodies', BELONGS_TO: 'belongs to', COLLABORATES_WITH: 'collaborates with', INFLUENCES: 'influences', RESPONDS_TO: 'responds to', PRACTICES: 'practices', CLASSIFIED_BY: 'is classified by' };
+const VERBS = { CREATED_BY: 'was created by', EXHIBITED_AT: 'was exhibited at', HELD_BY: 'is held by', PARTICIPATED_IN: 'took part in', PRESENTED_BY: 'was presented by', CURATED_BY: 'was curated by', REPRESENTS: 'represents', USES_TECHNIQUE: 'uses the technique', EMBODIES: 'embodies', BELONGS_TO: 'belongs to', COLLABORATES_WITH: 'collaborates with', INFLUENCES: 'influences', RESPONDS_TO: 'responds to', PRACTICES: 'practices', CLASSIFIED_BY: 'is classified by', DOCUMENTS: 'documents' };
 let L = null;
 function href(id, slug) { const t = id.split(':')[0]; return '/' + t + '/' + encodeURIComponent(slug || id.slice(t.length + 1).replace(/ /g, '-')); }
 function alertMsg(m, ok) { const d = document.createElement('div'); d.className = 'msg ' + (ok ? 'msg-ok' : 'msg-err'); d.textContent = m; app.prepend(d); setTimeout(() => d.remove(), 7000); }
@@ -146,6 +146,10 @@ function relLine(r) {
   return r.direction === 'out' ? me + ' ' + verb + ' ' + other : other + ' ' + verb + ' ' + me;
 }
 function noteHtml(n, mine) {
+  if (n.kind === 'reading') {
+    const state = mine ? ' <span class="pill">' + esc(n.state) + '</span>' + (['pending','live'].includes(n.state) ? ' <a href="#" data-wd="' + esc(n.signal_id) + '">withdraw</a>' : '') : '';
+    return '<div class="n-context">a reading by ' + esc(n.by || 'someone') + ': “' + esc(n.note) + '”' + state + '</div>';
+  }
   const who = n.handle ? '@' + n.handle : (n.by || 'the subject');
   const state = mine ? ' <span class="pill">' + esc(n.state) + '</span>' + (['open','pending','live'].includes(n.state) ? ' <a href="#" data-wd="' + esc(n.signal_id) + '">withdraw</a>' : '') : '';
   return '<div class="' + (n.kind === 'contest' ? 'n-contest' : 'n-context') + '">' + (n.kind === 'contest' ? '⚑ contested' : '“') + (n.kind === 'contest' ? ' by ' + esc(who) + ': ' : '') + esc(n.note) + (n.kind === 'context' ? '” — ' + esc(who) : '') + state + '</div>';
@@ -183,7 +187,7 @@ function pendingRow(p) {
 }
 function evRow(e) {
   if (e.kind === 'note') {
-    return '<div class="ev">' + esc((e.at || '').slice(0, 10)) + ' · <b>' + (e.note_kind === 'contest' ? 'contested' : 'context') + '</b> <span class="pill">' + esc(e.state) + '</span> ' + esc(e.note) + (e.by ? ' · by ' + esc(e.by) : '') + '</div>';
+    return '<div class="ev">' + esc((e.at || '').slice(0, 10)) + ' · <b>' + (e.note_kind === 'contest' ? 'contested' : e.note_kind === 'reading' ? 'a reading' : 'context') + '</b> <span class="pill">' + esc(e.state) + '</span> ' + esc(e.note) + (e.by ? ' · by ' + esc(e.by) : '') + '</div>';
   }
   if (e.kind === 'relation') {
     const verb = esc(VERBS[e.edge_type] || e.edge_type);

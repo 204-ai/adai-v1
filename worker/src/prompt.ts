@@ -23,6 +23,7 @@ Suggestable from a web page, with the page as evidence (quote required):
 | EMBODIES          | artwork -> concept                         | page's own description; default confidence low |
 | BELONGS_TO        | practitioner -> collective                 | page states membership |
 | COLLABORATES_WITH | practitioner <-> practitioner              | only with a quote naming the other party |
+| DOCUMENTS         | publication -> project/artwork             | page is (or names) a catalogue, book or journal issue that documents the show or work; the publication must already be in the graph (resolve it), never proposed as a new node |
 
 Never from a site: INFLUENCES, RESPONDS_TO, STYLE_KIN, VISUALLY_AFFINE, CLASSIFIED_BY.
 INFLUENCES and RESPONDS_TO reach the graph only through ask_contributor, answered yes by the contributor in their own words.

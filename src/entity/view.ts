@@ -23,7 +23,7 @@ import { CLAIMABLE_TYPES } from "../claim/store.js";
 import { approvedClaimsFor } from "../claim/store.js";
 import { accountsSection } from "./accounts.js";
 import { SHOWCASE, type Showcase, type ShowcaseWork } from "./showcase.js";
-import { noteAuthor, notesByTriple, publicNotesFor, type RelationNote } from "../claim/notes.js";
+import { noteAuthor, notesByTriple, publicNotesFor, type RelationNote, type RelationRef } from "../claim/notes.js";
 import { tripleKey } from "../utils/claims.js";
 import { edgeLabel } from "../utils/edge-labels.js";
 import { fieldPath } from "../utils/site.js";
@@ -373,27 +373,46 @@ function worksSection(node: EntityNode, gathered: ReturnType<typeof gatherWorks>
       </section>`;
 }
 
-/** The subject's word on a relation: an open contest, or context (docs/CLAIM-SPEC.md). */
+/**
+ * Words on a relation: the subject's (an open contest, or context —
+ * docs/CLAIM-SPEC.md), and any contributor's reading (#80 part 3), which is
+ * labelled as such and never as the subject.
+ */
 function notesHtml(notes: RelationNote[]): string {
   return notes.map((n) => {
     // publicNotesFor has applied consent; an ended claim is no longer the subject.
     const a = noteAuthor(n);
     const who = esc(a.who);
     const words = n.withheld ? `<em>words kept off the public page</em>` : esc(n.note);
+    if (n.kind === "reading") {
+      let src = "";
+      if (n.source_url) {
+        let host = n.source_url;
+        try { host = new URL(n.source_url).host.replace(/^www\./, ""); } catch { /* keep the url */ }
+        src = ` <a class="ev-rel-note-src" href="${esc(n.source_url)}" target="_blank" rel="noopener">${esc(host)} ↗</a>`;
+      }
+      return `<div class="ev-rel-note ev-rel-note--reading" data-signal-id="${esc(n.signal_id)}"><span class="ev-rel-note-label">a reading by ${who}:</span> ${n.withheld ? words : `“${words}”`}${src}</div>`;
+    }
     return n.kind === "contest"
       ? `<div class="ev-rel-note ev-rel-note--contest">⚑ contested ${a.subject ? `by the subject (${who})` : `by ${who}`}: ${words}</div>`
       : `<div class="ev-rel-note">${n.withheld ? words : `“${words}”`} — ${who}</div>`;
   }).join("");
 }
 
-function relRow(p: { id: string; type: string; slug: string; name: string }, tag: string, nameHtml: string, qualifier: string, notes: RelationNote[] = []): string {
+/** A signed-in contributor's way in to a reading of this one relation (entity-view.js opens the form). */
+function readingButton(rel: RelationRef | undefined, peerName: string): string {
+  if (!rel) return "";
+  return `<button type="button" class="ev-rel-read" data-source-id="${esc(rel.source_id)}" data-edge-type="${esc(rel.edge_type)}" data-target-id="${esc(rel.target_id)}" title="add your reading of this relation with ${esc(peerName)}">+ reading</button>`;
+}
+
+function relRow(p: { id: string; type: string; slug: string; name: string }, tag: string, nameHtml: string, qualifier: string, notes: RelationNote[] = [], readable?: RelationRef): string {
   return `
           <li><a class="ev-rel-row" href="${nodePath(p)}" data-node-id="${esc(p.id)}" title="open ${esc(p.name)}">
             <span class="ev-rel-leader">··········</span>
             <span class="ev-rel-tag">[${esc(tag)}]</span>
             <span class="ev-rel-name">${nameHtml}</span>
             <span class="ev-rel-qualifier">${esc(qualifier)}</span>
-          </a>${notesHtml(notes)}</li>`;
+          </a>${readingButton(readable, p.name)}${notesHtml(notes)}</li>`;
 }
 
 // ---------- relations, read off the graph (issue #57) ----------
@@ -423,11 +442,14 @@ const GROUP_HEAD: Record<string, string> = {
   "PRACTICES:out": "practices", "PRACTICES:in": "practised by",
   "EMBODIES:out": "embodies", "EMBODIES:in": "embodied by",
   "USES_TECHNIQUE:out": "techniques", "USES_TECHNIQUE:in": "used in",
+  // a publication documenting a show or a work (#80 part 4)
+  "DOCUMENTS:out": "documents", "DOCUMENTS:in": "documented in",
 };
 
 const GROUP_ORDER = [
   "via:HELD_BY", "via:EXHIBITED_AT", "PARTICIPATED_IN:out", "via:PRESENTED_BY", "via:CURATED_BY", "REPRESENTS:in",
   "CREATED_BY:out", "HELD_BY:out", "EXHIBITED_AT:out", "HELD_BY:in", "EXHIBITED_AT:in",
+  "DOCUMENTS:in", "DOCUMENTS:out",
   "PRESENTED_BY:out", "CURATED_BY:out", "PARTICIPATED_IN:in", "PRESENTED_BY:in", "CURATED_BY:in", "REPRESENTS:out",
   "COLLABORATES_WITH", "BELONGS_TO:out", "BELONGS_TO:in", "INFLUENCES:in", "INFLUENCES:out", "RESPONDS_TO:out", "RESPONDS_TO:in",
   "PRACTICES:out", "EMBODIES:out", "USES_TECHNIQUE:out", "PRACTICES:in", "EMBODIES:in", "USES_TECHNIQUE:in", "CREATED_BY:in",
@@ -435,7 +457,7 @@ const GROUP_ORDER = [
 
 const GROUP_ROW_CAP = 100;
 
-interface GroupItem { peer: Peer; qualifier: string; notes: RelationNote[] }
+interface GroupItem { peer: Peer; qualifier: string; notes: RelationNote[]; relation?: RelationRef }
 interface Group { key: string; head: string; items: GroupItem[] }
 
 export function groupHead(key: string): string {
@@ -497,7 +519,8 @@ function relationGroups(db: DatabaseSync, node: EntityNode, edges: LiveEdge[], s
     if (worksFromGraph && e.other.type === "artwork" && e.dir === "in" && (e.edge_type === "CREATED_BY" || e.edge_type === "EMBODIES") && WORKS_TYPES.has(node.type)) continue;
     const key = SYMMETRIC.has(e.edge_type) ? e.edge_type : `${e.edge_type}:${e.dir}`;
     const group = byKey.get(key) ?? new Map<string, GroupItem>();
-    const item = group.get(e.other.id) ?? { peer: e.other, qualifier: qualifiers[e.other.id] ?? e.other.year ?? "", notes: [] };
+    const relation = { source_id: e.source_id, edge_type: e.edge_type, target_id: e.target_id };
+    const item = group.get(e.other.id) ?? { peer: e.other, qualifier: qualifiers[e.other.id] ?? e.other.year ?? "", notes: [], relation };
     item.notes.push(...(notes.get(tripleKey(e)) ?? []));
     group.set(e.other.id, item);
     byKey.set(key, group);
@@ -512,8 +535,8 @@ function relationGroups(db: DatabaseSync, node: EntityNode, edges: LiveEdge[], s
   return groups.sort((a, b) => rank(a.key) - rank(b.key) || a.head.localeCompare(b.head));
 }
 
-function groupSection(g: Group): string {
-  const rows = g.items.slice(0, GROUP_ROW_CAP).map((it) => relRow(it.peer, it.peer.type, esc(it.peer.name), it.qualifier, it.notes)).join("");
+function groupSection(g: Group, canRead = false): string {
+  const rows = g.items.slice(0, GROUP_ROW_CAP).map((it) => relRow(it.peer, it.peer.type, esc(it.peer.name), it.qualifier, it.notes, canRead ? it.relation : undefined)).join("");
   const more = g.items.length > GROUP_ROW_CAP ? `<li class="ev-list-row ev-mono-dim">and ${g.items.length - GROUP_ROW_CAP} more</li>` : "";
   return `
       <section class="ev-section" data-group="${esc(g.key)}">
@@ -679,7 +702,7 @@ export function renderEntityView(db: DatabaseSync, node: EntityNode, viewer: Ent
         ${practiceSections(meta)}
         ${rosterSection(db, node)}
         ${heldWorksSection(db, node)}
-        ${relationGroups(db, node, edges, showcase, notesByTriple(publicNotesFor(db, node.id)), gathered.source === "graph").map(groupSection).join("")}
+        ${relationGroups(db, node, edges, showcase, notesByTriple(publicNotesFor(db, node.id)), gathered.source === "graph").map((g) => groupSection(g, !!viewer.contributorId && meta.retired !== true)).join("")}
         ${accountsSection(db, node)}
         ${embeddingsPlaceholder()}
         ${listSection("collections (editorial)", showcase?.collections ?? [])}

@@ -11,6 +11,8 @@
 //   GET  /api/me/log?node=
 //   POST /api/me/contest | /context | /objection | /invite
 //   POST /api/me/notes/:signal_id/withdraw
+//   POST /api/readings | /api/v1/readings      any contributor's reading of a relation (#80 part 3)
+//   POST /api/readings/:signal_id/withdraw | /api/v1/readings/:signal_id/withdraw
 //   POST /api/review/access/approve | /reject   curator: a signed-out claim request
 
 import { Router, type Request, type Response } from "express";
@@ -26,7 +28,8 @@ import {
   ClaimError, CLAIMABLE_TYPES, approveClaim, contributorById, endClaim, handleAvailability, normaliseHandle,
   requestClaim, resolveHandle, setHandle, suggestHandle, HANDLE_RULE,
 } from "../claim/store.js";
-import { checkInvite, fileNote, recordPeerInviteClaim, withdrawNote } from "../claim/notes.js";
+import { checkInvite, fileNote, fileReading, getNote, recordPeerInviteClaim, withdrawNote } from "../claim/notes.js";
+import { requireToken } from "../auth.js";
 import { buildLog, myNodes } from "../claim/log.js";
 import { sendAdminClaimRequestEmail, sendClaimConflictEmail, sendClaimDecisionEmail, sendPeerInviteEmail } from "../claim/mail.js";
 import { claimPage, mePage } from "../claim/screens.js";
@@ -237,6 +240,54 @@ router.post("/api/me/notes/:signal_id/withdraw", json, requireContributor, (req,
     res.set(JSON_HEADERS).json({ note: withdrawNote(getDb(), String(req.params.signal_id), req.contributor!.id) });
   } catch (e) { fail(res, e); }
 });
+
+// ---- readings (issue #80 part 3) -----------------------------------------------------
+// Any signed-in contributor (session, from the relation row) or token holder
+// (/api/v1, SKILL.md) attaches a labelled reading to one live relation.
+
+const BATCH_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/;
+
+function readingRoute(req: Request, res: Response): void {
+  const b = req.body ?? {};
+  const rel = b.relation && typeof b.relation === "object" ? b.relation : b;
+  const batch = b.batch_id == null || b.batch_id === "" ? null : String(b.batch_id);
+  if (batch !== null && !BATCH_RE.test(batch)) {
+    res.status(400).set(JSON_HEADERS).json({ error: "invalid batch_id", message: "batch_id must be 1-120 chars: letters/digits then letters, digits, '.', '_', ':', '-'" });
+    return;
+  }
+  try {
+    const n = fileReading(getDb(), {
+      contributor: req.contributor!,
+      relation: { source_id: str(rel.source_id, 300), edge_type: str(rel.edge_type, 60), target_id: str(rel.target_id, 300) },
+      note: typeof b.note === "string" ? b.note : "",
+      source_url: typeof b.source_url === "string" ? b.source_url : null,
+      consent_scope: typeof b.consent_scope === "string" ? b.consent_scope : null,
+      consent_attribution: typeof b.consent_attribution === "string" ? b.consent_attribution : null,
+      batch_id: batch,
+    });
+    res.status(201).set(JSON_HEADERS).json({
+      reading: { signal_id: n.signal_id, relation: n.relation, note: n.note, state: n.state, queue_id: n.queue_id, created_at: n.created_at },
+      status: n.state === "live" ? "live" : "pending",
+      signal_id: n.signal_id,
+      intake_id: n.queue_id,
+    });
+  } catch (e) { fail(res, e); }
+}
+
+function withdrawReadingRoute(req: Request, res: Response): void {
+  const db = getDb();
+  const id = String(req.params.signal_id);
+  const n = getNote(db, id);
+  if (!n || n.kind !== "reading") { res.status(404).set(JSON_HEADERS).json({ error: "reading_not_found", message: id }); return; }
+  try {
+    res.set(JSON_HEADERS).json({ reading: withdrawNote(db, id, req.contributor!.id) });
+  } catch (e) { fail(res, e); }
+}
+
+router.post("/api/readings", json, requireContributor, readingRoute);
+router.post("/api/readings/:signal_id/withdraw", json, requireContributor, withdrawReadingRoute);
+router.post("/api/v1/readings", json, requireToken, readingRoute);
+router.post("/api/v1/readings/:signal_id/withdraw", json, requireToken, withdrawReadingRoute);
 
 router.post("/api/me/invite", json, requireContributor, async (req, res) => {
   const db = getDb();

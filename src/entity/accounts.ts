@@ -11,7 +11,10 @@
 //     this node (intake_queue.target_node), whose content is prose — never a
 //     structured API body, never a pending, revoked or superseded one;
 //   - the claimants' public notes on its relations and edits: context that
-//     is live, contests that are open (src/claim/notes.ts).
+//     is live, contests that are open (src/claim/notes.ts);
+//   - any contributor's readings of its relations (#80 part 3), live and
+//     while the relation is: labelled "a reading by X" — never the subject's
+//     words, even when X claims one end (a claimant speaks through context).
 //
 // What is an account is decided by what the record says the write was, not
 // by how its text looks: a signal of source_type 'contribution' (the
@@ -35,7 +38,8 @@
 //
 // Account types (part 1 of #80: documentation / intention / reading /
 // testimony) are not stored yet; `account_type` is carried as null and
-// rendered as a data attribute, so a grouping can be added on top.
+// rendered as a data attribute, so a grouping can be added on top — except a
+// reading on a relation (part 3), which is one by construction ('reading').
 
 import type { DatabaseSync } from "node:sqlite";
 import { htmlEscape as esc } from "../templates.js";
@@ -43,7 +47,7 @@ import { edgeLabel } from "../utils/edge-labels.js";
 import { proseDate } from "../utils/signal-prose.js";
 import { countPublicNotes, publicNotesFor } from "../claim/notes.js";
 
-export type AccountKind = "contribution" | "context" | "contest";
+export type AccountKind = "contribution" | "context" | "contest" | "reading";
 
 export interface AccountNodeRef { id: string; type: string; slug: string; name: string }
 
@@ -161,11 +165,13 @@ function notes(db: DatabaseSync, nodeId: string, cursor: AccountCursor | null, l
   const refs = nodeRefs(db, page.flatMap(({ n }) => [n.node_id, n.relation?.source_id ?? "", n.relation?.target_id ?? ""]));
   const list = page.map(({ n }): Account => {
     const fromHere = n.node_id === nodeId;
-    const standing = !n.anonymous && !!n.subject_now;
+    // publicNotesFor already clears subject_now and the handle on a reading
+    const reading = n.kind === "reading";
+    const standing = !reading && !n.anonymous && !!n.subject_now;
     return {
       signal_id: n.signal_id,
-      kind: n.kind as "context" | "contest",
-      account_type: null,
+      kind: n.kind as "context" | "contest" | "reading",
+      account_type: reading ? "reading" : null,
       title: null,
       text: n.withheld ? null : n.note,
       withheld: !!n.withheld,
@@ -180,7 +186,7 @@ function notes(db: DatabaseSync, nodeId: string, cursor: AccountCursor | null, l
         : null,
       meta_key: n.meta_key,
       at: n.created_at ?? null,
-      source_url: null,
+      source_url: reading ? n.source_url ?? null : null,
     };
   });
   return list;
@@ -246,7 +252,7 @@ function label(a: Account, node: { name: string }): string {
   else if (a.speaking_for) parts.push(`<span class="ev-account-voice">${linkTo(a.speaking_for, a.speaking_for.name)}, in their own words</span>`);
   if (a.relation) {
     const rel = `${linkTo(a.relation.source, a.relation.source_id)} → ${esc(edgeLabel(a.relation.edge_type))} → ${linkTo(a.relation.target, a.relation.target_id)}`;
-    parts.push(a.kind === "contest" ? `contests: ${rel}` : `context on: ${rel}`);
+    parts.push(a.kind === "contest" ? `contests: ${rel}` : a.kind === "reading" ? `a reading of: ${rel}` : `context on: ${rel}`);
   } else if (a.meta_key) {
     parts.push(`${a.kind === "contest" ? "contests" : "context on"} the value of ${esc(a.meta_key)}`);
   }
@@ -255,7 +261,9 @@ function label(a: Account, node: { name: string }): string {
 
 function byline(a: Account): string {
   const parts: string[] = [];
-  parts.push(a.by ? `by ${a.by_node ? linkTo(a.by_node, a.by) : esc(a.by)}` : "anonymous");
+  const who = a.by ? (a.by_node ? linkTo(a.by_node, a.by) : esc(a.by)) : null;
+  if (a.kind === "reading") parts.push(`a reading by ${who ?? "someone"}`);
+  else parts.push(who ? `by ${who}` : "anonymous");
   const day = proseDate(a.at);
   if (day) parts.push(esc(day));
   if (a.source_url) {

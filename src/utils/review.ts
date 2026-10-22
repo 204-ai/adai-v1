@@ -46,7 +46,8 @@ function reviewClaimKind(
     } else if (item.kind === "contest") {
       if (action === "approve") upholdContest(db, item.id, { by, reason });
       else dismissContest(db, item.id, { by, reason: reason ?? "dismissed" });
-    } else if (item.kind === "context") {
+    } else if (item.kind === "context" || item.kind === "reading") {
+      // a reading (any contributor's, #80 part 3) passes the same gate as context
       if (action === "approve") approveContext(db, item.id, { by });
       else rejectContext(db, item.id, { by, reason: reason ?? "rejected" });
     }
@@ -57,7 +58,7 @@ function reviewClaimKind(
   return { ok: true, intake_id: item.id };
 }
 
-export const CLAIM_KINDS = ["claim", "contest", "context"];
+export const CLAIM_KINDS = ["claim", "contest", "context", "reading"];
 
 const sha256Hex = (s: string): string =>
   crypto.createHash("sha256").update(s).digest("hex");

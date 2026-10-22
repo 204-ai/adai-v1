@@ -395,6 +395,7 @@ Suggestable from a web page, with the page as evidence:
 | EMBODIES | artwork -> concept | page's own description, low confidence default |
 | BELONGS_TO | practitioner -> collective | page states membership |
 | COLLABORATES_WITH | practitioner <-> practitioner | only with a quote naming the other party |
+| DOCUMENTS | publication -> project/artwork | page is (or names) a catalogue, book or journal issue that documents the show or work; the publication must already be a node (the intake does not create publications) |
 
 Never from a site: `INFLUENCES`, `RESPONDS_TO`, `STYLE_KIN`, `VISUALLY_AFFINE`, `CLASSIFIED_BY`. `INFLUENCES` and `RESPONDS_TO` only through a `question` the contributor answered yes to, in their own words; the answer becomes the signal content with `source_type='contributor_attested'`. Same rule as `src/embed/derive.ts`, one policy across the codebase.
 

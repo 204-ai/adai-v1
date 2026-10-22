@@ -15,7 +15,7 @@ import { checkQuote } from "./evidence.js";
 type Tool = Anthropic.Messages.Tool;
 
 const NODE_TYPES = ["practitioner", "artwork", "project", "institution", "collective", "concept", "platform"];
-const EDGE_TYPES = ["CREATED_BY", "EXHIBITED_AT", "HELD_BY", "PARTICIPATED_IN", "PRESENTED_BY", "CURATED_BY", "REPRESENTS", "USES_TECHNIQUE", "EMBODIES", "BELONGS_TO", "COLLABORATES_WITH"];
+const EDGE_TYPES = ["CREATED_BY", "EXHIBITED_AT", "HELD_BY", "PARTICIPATED_IN", "PRESENTED_BY", "CURATED_BY", "REPRESENTS", "USES_TECHNIQUE", "EMBODIES", "BELONGS_TO", "COLLABORATES_WITH", "DOCUMENTS"];
 const QUESTION_EDGE_TYPES = [...EDGE_TYPES, "INFLUENCES", "RESPONDS_TO"];
 
 const evidenceProps = {
@@ -66,7 +66,8 @@ export const TOOLS: Tool[] = [
       type: "object",
       properties: {
         name: { type: "string" },
-        type: { type: "string", enum: NODE_TYPES },
+        // publication too: a DOCUMENTS edge links an existing publication node (never proposed)
+        type: { type: "string", enum: [...NODE_TYPES, "publication"] },
         hints: { type: "object", properties: { year: { type: "string" }, url: { type: "string" }, country: { type: "string" } } },
       },
       required: ["name"],
