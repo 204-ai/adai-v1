@@ -25,7 +25,7 @@
 import fs from "node:fs";
 import { initDb, getDb } from "../db.js";
 import { resolveCliDbPath } from "../utils/db-path.js";
-import { runClaimantNotifications } from "../notify/claimants.js";
+import { outstandingReconcile, runClaimantNotifications } from "../notify/claimants.js";
 
 async function main(): Promise<void> {
   try {
@@ -49,9 +49,17 @@ async function main(): Promise<void> {
       `${dryRun ? r.emails.length : r.sent} email(s), ${r.events} event(s) delivered, ${r.skipped} skipped, ` +
       `${r.suppressed} suppressed, ${r.failed} failed, ${r.reconcile} to reconcile by hand`
   );
-  // A failed email, or one left for a person (an unresolved send older than
-  // Resend's 24 h idempotency window: check Resend's log before resending).
-  if (r.failed || r.reconcile) process.exitCode = 1;
+  // Left for a person, by this pass or any earlier one (the server's too):
+  // an unresolved send older than Resend's 24 h idempotency window. Check
+  // Resend's log for the batch id (its Idempotency-Key), then settle the row
+  // by hand — nothing requeues it.
+  const outstanding = outstandingReconcile(getDb());
+  if (outstanding.length) {
+    console.error(`[notify:claimants] ${outstanding.length} batch(es) to reconcile by hand: ` +
+      outstanding.map((b) => `${b.id} (contributor ${b.contributor_id}, first attempt ${b.first_attempt_at ?? "?"})`).join(", "));
+  }
+  // A failed email, or any batch still left for a person.
+  if (r.failed || r.reconcile || outstanding.length) process.exitCode = 1;
 }
 
 main().catch((e) => {

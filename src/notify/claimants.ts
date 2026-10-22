@@ -301,9 +301,10 @@ export function renderEvent(db: DatabaseSync, ev: EventRow, opts: { asProposed?:
 
   if (ref.kind === "relation" || ref.kind === "ended") {
     const s = signalRow(db, ref.signal_id);
+    // the signal that added — or ended — the relation, revoked since: not news
+    if (!live(s)) return { suppress: "revoked" };
     const phrase = relationPhrase(db, subj, ref.edge_type, ref.direction, ref.other_id);
     if (ref.kind === "relation") {
-      if (!live(s)) return { suppress: "revoked" };
       return { line: `${byOf(s, ref.by_fallback)} added that ${phrase}.` };
     }
     const by = s ? byOf(s) : ref.by_fallback;
@@ -664,6 +665,17 @@ export async function deliverClaimantEmails(db: DatabaseSync, opts: { mode: "imm
   // Keep going past a failure: each batch is its own email.
   for (const id of mine) await sendBatch(db, id, owner, result);
   return result;
+}
+
+/**
+ * Batches waiting for a person (state 'reconcile': an unresolved send older
+ * than Resend's idempotency window), whichever pass marked them — they are
+ * never requeued automatically; the CLI reports them on every run.
+ */
+export function outstandingReconcile(db: DatabaseSync): Array<{ id: string; contributor_id: string; first_attempt_at: string | null }> {
+  return db.prepare(
+    "SELECT id, contributor_id, first_attempt_at FROM claimant_batches WHERE state = 'reconcile' ORDER BY first_attempt_at, id"
+  ).all() as any[];
 }
 
 /** One pass: find what is new, then email whoever this pass is for. */

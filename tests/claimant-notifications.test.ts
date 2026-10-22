@@ -602,7 +602,10 @@ it("schema: a DB with the earlier notification tables is upgraded at boot", asyn
         kind TEXT NOT NULL, line TEXT NOT NULL, at TEXT, created_at TEXT, UNIQUE (contributor_id, node_id, event_key));
       CREATE TABLE claimant_deliveries (event_id TEXT NOT NULL, channel TEXT NOT NULL, state TEXT NOT NULL, at TEXT, ref TEXT, PRIMARY KEY (event_id, channel));
       INSERT INTO claimant_events (id, contributor_id, node_id, event_key, kind, line) VALUES ('cev_old', 'c', 'n', 'k', 'relation', 'old line');
-      INSERT OR REPLACE INTO settings (key, value) VALUES ('claimant_notify_since', '2000-01-01T00:00:00Z');`);
+      INSERT OR REPLACE INTO settings (key, value) VALUES ('claimant_notify_since', '2000-01-01T00:00:00Z');
+      INSERT OR REPLACE INTO settings (key, value) VALUES ('sentinel_setting', 'keep me');
+      INSERT INTO notify_prefs (contributor_id, email) VALUES ('c-keep', 'immediate');
+      INSERT INTO nodes (id, type, name, slug, metadata) VALUES ('practitioner:keep', 'practitioner', 'Keep', 'keep', '{}');`);
     old.close();
     const db = initDb(path); // boots without failing on db.sql's indexes
     const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as any[]).map((c) => c.name);
@@ -611,8 +614,91 @@ it("schema: a DB with the earlier notification tables is upgraded at boot", asyn
     assert.ok(cols("claimant_batches").includes("lease_owner"));
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM claimant_events").get() as any).n, 0);
     assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'claimant_notify_since'").get(), undefined, "the baseline restarts");
+    // only the three notification tables (and the baseline) are touched
+    assert.equal((db.prepare("SELECT value FROM settings WHERE key = 'sentinel_setting'").get() as any).value, "keep me");
+    assert.equal((db.prepare("SELECT email FROM notify_prefs WHERE contributor_id = 'c-keep'").get() as any).email, "immediate");
+    assert.ok(db.prepare("SELECT 1 FROM nodes WHERE id = 'practitioner:keep'").get());
+    // a current shape is left alone: sentinel notification rows and the baseline survive a reboot
+    db.exec(`INSERT INTO claimant_events (id, contributor_id, node_id, event_key, kind, ref) VALUES ('cev_keep', 'c', 'n', 'k', 'relation', '{}');
+      INSERT INTO claimant_batches (id, contributor_id, channel, state) VALUES ('cnb_keep', 'c', 'email', 'sent');
+      INSERT INTO claimant_deliveries (event_id, channel, state, batch_id) VALUES ('cev_keep', 'email', 'sent', 'cnb_keep');
+      INSERT OR REPLACE INTO settings (key, value) VALUES ('claimant_notify_since', '2026-10-01T00:00:00Z');`);
     db.close();
-    initDb(path).close(); // and again: a current shape is left alone
+    const again = initDb(path);
+    assert.ok(again.prepare("SELECT 1 FROM claimant_events WHERE id = 'cev_keep'").get());
+    assert.ok(again.prepare("SELECT 1 FROM claimant_batches WHERE id = 'cnb_keep'").get());
+    assert.ok(again.prepare("SELECT 1 FROM claimant_deliveries WHERE event_id = 'cev_keep'").get());
+    assert.equal((again.prepare("SELECT value FROM settings WHERE key = 'claimant_notify_since'").get() as any).value, "2026-10-01T00:00:00Z");
+    again.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("ended relations: an ending signal revoked since is not news — before the first delivery and after freezing", async () => {
+  // before the first delivery
+  let s = setup();
+  s.relate(s.a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  N.scanClaimantEvents(s.db);
+  await quiet(() => N.deliverClaimantEmails(s.db, { mode: "daily" })); // the 'added' one goes
+  const end = insertSignal(s.db, { contributor: s.a, title: "end", content: "{}" });
+  s.db.prepare("UPDATE edges SET valid_until = strftime('%Y-%m-%dT%H:%M:%SZ','now'), invalidated_by = ?").run(end);
+  N.scanClaimantEvents(s.db);
+  assert.ok(N.eventLines(s.db, s.b.id).some((l) => /ended the record/.test(l)));
+  s.db.prepare("UPDATE signals SET status = 'revoked' WHERE id = ?").run(end);
+  assert.ok(!N.eventLines(s.db, s.b.id).some((l) => /ended the record/.test(l)));
+  let r = await withResend(() => ok(), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(r.calls.length, 0);
+  assert.equal(r.out.suppressed, 1);
+
+  // after freezing: the batch goes nowhere
+  s = setup();
+  s.relate(s.a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  N.scanClaimantEvents(s.db);
+  await quiet(() => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  const end2 = insertSignal(s.db, { contributor: s.a, title: "end", content: "{}" });
+  s.db.prepare("UPDATE edges SET valid_until = strftime('%Y-%m-%dT%H:%M:%SZ','now'), invalidated_by = ?").run(end2);
+  N.scanClaimantEvents(s.db);
+  await withResend(lost, () => N.deliverClaimantEmails(s.db, { mode: "daily" })); // frozen, answer lost
+  s.db.prepare("UPDATE signals SET status = 'revoked' WHERE id = ?").run(end2);
+  expireLeases(s.db);
+  r = await withResend(() => ok(), () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+  assert.equal(r.calls.length, 0);
+  assert.equal(batchRow(s.db).state, "suppressed");
+});
+
+it("reconcile: batches a server pass left for a person are counted, listed and fail the CLI until settled", async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "adai-81-rec-"));
+  try {
+    const path = join(dir, "t.db");
+    const s = setup(path);
+    s.relate(s.a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+    N.scanClaimantEvents(s.db);
+    // a server pass: lost answer, then — 25 h later — it marks the batch for a person
+    await withResend(lost, () => N.deliverClaimantEmails(s.db, { mode: "daily" }));
+    s.db.prepare("UPDATE claimant_batches SET first_attempt_at = ?").run(new Date(Date.now() - 25 * 3600_000).toISOString().replace(/\.\d{3}Z$/, "Z"));
+    expireLeases(s.db);
+    const server = await withResend(() => ok(), () => N.deliverClaimantEmails(s.db, { mode: "immediate" }));
+    assert.equal(server.out.reconcile, 1);
+    const id = batchRow(s.db).id;
+    assert.deepEqual(N.outstandingReconcile(s.db).map((b) => b.id), [id]);
+    s.db.close();
+    // the daily CLI, later, has nothing new to do — and still reports it and fails
+    const stub = join(dir, "stub.mjs");
+    writeFileSync(stub, "globalThis.fetch = async () => { throw new Error('no network'); };\n");
+    const run = spawnSync(process.execPath, ["--import", "tsx", "--import", stub, "src/cli/notify-claimants.ts"], {
+      env: { ...process.env, DB_PATH: path, MAIL_TRANSPORT: "stdout", NOTIFY_CLAIMANTS: "off" }, encoding: "utf8",
+    });
+    assert.equal(run.status, 1, run.stderr);
+    assert.match(run.stderr, new RegExp(`1 batch\\(es\\) to reconcile by hand: ${id}`));
+    // still 'reconcile': nothing requeued it
+    const db = initDb(path);
+    assert.equal((db.prepare("SELECT state FROM claimant_batches WHERE id = ?").get(id) as any).state, "reconcile");
+    db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
