@@ -239,7 +239,7 @@ function metadataRows(db: DatabaseSync, node: EntityNode, meta: any, showcase: S
     if (showcase.pronunciation) rows.push(["pronunciation", esc(showcase.pronunciation)]);
     if (showcase.disciplines_full?.length) rows.push(["disciplines", showcase.disciplines_full.map(esc).join(" · ")]);
     if (showcase.movements?.length) rows.push(["movements", showcase.movements.map(esc).join(" · ")]);
-    return rows;
+    return [...rows, ...linkRows(db, node, meta)];
   }
   const profile = meta.full_profile ?? meta;
   const info = profile?.basic_info ?? {};
@@ -256,6 +256,13 @@ function metadataRows(db: DatabaseSync, node: EntityNode, meta: any, showcase: S
   // ("confirmed", "seed", "draft") with no review behind it, which a visitor
   // would read as A(DAI) verification. It stays on /record; what the system
   // does know (claimed by @handle) is the claim line beside the title.
+  return [...rows, ...linkRows(db, node, meta)];
+}
+
+/** The node's own site and its platform pages, as links (issue #86). */
+function linkRows(db: DatabaseSync, node: EntityNode, meta: any): Array<[string, string]> {
+  const rows: Array<[string, string]> = [];
+  const info = (meta.full_profile ?? meta)?.basic_info ?? {};
   const aliases = db.prepare("SELECT source, external_id FROM node_aliases WHERE node_id = ? ORDER BY source, external_id").all(node.id) as Array<{ source: string; external_id: string }>;
   const web = [info.url, meta.homepage, meta.website, meta.url, ...aliases.filter((a) => a.source === "web").map((a) => a.external_id)].find(isHttp);
   if (web) rows.push(["web", `<a href="${esc(web)}" target="_blank" rel="noopener">${esc(web.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/$/, ""))} ↗</a>`]);
@@ -611,13 +618,22 @@ function contributedByNodes(db: DatabaseSync, node: EntityNode): StandsFor[] {
   return [...out.values()];
 }
 
+/** A showcase's source_origin as a visitor reads it. */
+function showcaseOrigin(origin: string | undefined): string {
+  if (origin === "ai_assisted") return "AI-assisted profile";
+  return origin ? `source: ${origin.replace(/_/g, " ")}` : "source not recorded";
+}
+
 function provenance(db: DatabaseSync, node: EntityNode, meta: any, showcase: Showcase | null, viewer: EntityViewer): string {
   const links: string[] = [];
   if (showcase) {
-    links.push(`<span class="ev-prov-tag">source_origin: ${esc(showcase.source_origin || "unknown")}</span>`);
-    links.push(`<span class="ev-prov-tag">confidence: ${esc(showcase.confidence || "unknown")}</span>`);
-    if (showcase.review_pending) links.push(`<span class="ev-prov-tag ev-prov-warn">review pending</span>`);
-    links.push(`<span class="ev-prov-tag">last_updated: ${esc(showcase.last_updated || "—")}</span>`);
+    // The editorial disclosure stays (AI-assisted showcase data says so), in
+    // words rather than field names (issue #86). Not `confidence`: a grade the
+    // drafter gave itself, with no review behind it — the same kind of label
+    // as metadata.status; it stays in src/entity/showcase.ts.
+    links.push(`<span class="ev-prov-tag">${esc(showcaseOrigin(showcase.source_origin))}</span>`);
+    if (showcase.review_pending) links.push(`<span class="ev-prov-tag ev-prov-warn">not yet reviewed</span>`);
+    if (showcase.last_updated) links.push(`<span class="ev-prov-tag">updated ${esc(showcase.last_updated)}</span>`);
   } else {
     const src = sourceLabel(meta) || "community contribution";
     const href = isHttp(meta.source_url) ? meta.source_url : /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(src) ? `https://${src}` : null;
