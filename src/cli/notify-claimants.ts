@@ -13,9 +13,11 @@
 //                       delivered (found events are still recorded).
 //   --immediate         only contributors whose setting is `immediate`.
 //
+// Any email that fails exits 1 (after the others were tried); transient
+// failures are retried by later passes, up to MAX_ATTEMPTS per email.
 // Mail goes through src/utils/mail.ts: stdout without RESEND_API_KEY, and
 // staging's mail switch decides who gets real mail there.
-// Exit codes: 0 success · 1 failure.
+// Exit codes: 0 success · 1 failure (a run error, or any email not sent).
 
 import fs from "node:fs";
 import { initDb, getDb } from "../db.js";
@@ -41,8 +43,10 @@ async function main(): Promise<void> {
   }
   console.error(
     `[notify:claimants] ${mode}${dryRun ? " (dry run)" : ""}: ${r.found} new event(s); ` +
-      `${dryRun ? r.emails.length : r.sent} email(s), ${r.events} event(s) delivered, ${r.skipped} skipped`
+      `${dryRun ? r.emails.length : r.sent} email(s), ${r.events} event(s) delivered, ${r.skipped} skipped, ` +
+      `${r.suppressed} suppressed, ${r.failed} failed`
   );
+  if (r.failed) process.exitCode = 1;
 }
 
 main().catch((e) => {

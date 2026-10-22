@@ -29,8 +29,8 @@ const quiet = async <T>(fn: () => Promise<T>): Promise<T> => {
   try { return await fn(); } finally { console.log = log; }
 };
 
-function setup() {
-  const db = initDb(":memory:");
+function setup(path = ":memory:", opts: { baseline?: string | null } = {}) {
+  const db = initDb(path);
   const node = (id: string, type: string, name: string) =>
     db.prepare("INSERT INTO nodes (id, type, name, slug, metadata) VALUES (?, ?, ?, ?, '{}')").run(id, type, name, id.split(":")[1]);
   node("practitioner:artist-a", "practitioner", "Artist A");
@@ -51,7 +51,7 @@ function setup() {
   claim(a, "practitioner:artist-a");
   claim(b, "practitioner:artist-b");
   // the starting line: as if the feature had been running all along
-  db.prepare("INSERT INTO settings (key, value) VALUES ('claimant_notify_since', '2000-01-01T00:00:00Z')").run();
+  if (opts.baseline !== null) db.prepare("INSERT INTO settings (key, value) VALUES ('claimant_notify_since', ?)").run(opts.baseline ?? "2000-01-01T00:00:00Z");
   const relate = (who: any, s: string, t: string, type: string, extra: any = {}) => {
     const sig = insertSignal(db, { contributor: who, title: `${s} ${type} ${t}`, content: "{}", ...extra });
     materialiseEdge(db, { source_id: s, target_id: t, edge_type: type }, { signalId: sig, createdBy: who.name });
@@ -60,8 +60,7 @@ function setup() {
   return { db, a, b, anon, probation, relate };
 }
 
-const linesFor = (db: any, who: any) =>
-  (db.prepare("SELECT line FROM claimant_events WHERE contributor_id = ? ORDER BY created_at, rowid").all(who.id) as any[]).map((r) => r.line);
+const linesFor = (db: any, who: any) => N.eventLines(db, who.id);
 
 it("claimant events: what others add, never your own; anonymous is 'someone'; pending then live is one event", async () => {
   const { db, a, b, anon, probation, relate } = setup();
@@ -97,10 +96,12 @@ it("claimant events: what others add, never your own; anonymous is 'someone'; pe
   // A hears about what B and others did to A, not about A's own
   assert.ok(!linesFor(db, a).some((l) => /^Artist A /.test(l)));
 
-  // rescans and the proposal going live add nothing new
+  // rescans and the proposal going live add nothing new — the one event now reads as added
   assert.equal(N.scanClaimantEvents(db), 0);
   assert.equal(approveIntakeItem(db, q.intake_id, "curator").ok, true);
   assert.equal(N.scanClaimantEvents(db), 0);
+  assert.ok(linesFor(db, b).includes("New Person added that GLITCH represents you."), linesFor(db, b).join("\n"));
+  assert.ok(!linesFor(db, b).some((l) => /waiting for a curator/.test(l)));
 
   // a note on a relation touching B, by the other end's claimant
   fileNote(db, { contributor: a, kind: "contest", node_id: "practitioner:artist-a", note: "We never collaborated.", relation: { source_id: "practitioner:artist-a", edge_type: "COLLABORATES_WITH", target_id: "practitioner:artist-b" } });
@@ -153,12 +154,7 @@ it("claimant emails: daily by default, immediate on request, off skips; one emai
   assert.throws(() => N.setEmailMode(db, b.id, "hourly"));
 });
 
-it("claimant notifications: the first run only sets the starting line; staging's mail switch holds the mail", async () => {
-  const db = initDb(":memory:");
-  db.prepare("INSERT INTO nodes (id, type, name, slug, metadata) VALUES ('practitioner:x', 'practitioner', 'X', 'x', '{}')").run();
-  assert.equal(N.scanClaimantEvents(db), 0);
-  assert.ok((db.prepare("SELECT value FROM settings WHERE key = 'claimant_notify_since'").get() as any).value);
-
+it("claimant notifications: staging's mail switch holds the mail", async () => {
   const { db: db2, a, b, relate } = setup();
   relate(a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
   process.env.ADAI_ENV = "staging";
@@ -224,5 +220,227 @@ it("/api/me/notifications: read and set the email setting; /me offers it", async
     assert.match(me, /data-act="confirm"/);
   } finally {
     server.close();
+  }
+});
+
+// ---- review fixes (#81 review of f344ef7) -------------------------------------------------
+
+/** Real Resend path with a stubbed fetch: returns the calls made. */
+async function withResend<T>(respond: (n: number, init: any) => Response | Promise<Response>, fn: () => Promise<T>): Promise<{ out: T; calls: Array<{ key: string | null; body: any }> }> {
+  const calls: Array<{ key: string | null; body: any }> = [];
+  const realFetch = globalThis.fetch;
+  delete process.env.MAIL_TRANSPORT;
+  process.env.RESEND_API_KEY = "re_test";
+  globalThis.fetch = (async (_url: any, init: any) => {
+    calls.push({ key: init?.headers?.["Idempotency-Key"] ?? null, body: JSON.parse(init.body) });
+    return respond(calls.length, init);
+  }) as any;
+  const err = console.error;
+  console.error = () => {};
+  try {
+    return { out: await fn(), calls };
+  } finally {
+    globalThis.fetch = realFetch;
+    console.error = err;
+    delete process.env.RESEND_API_KEY;
+    process.env.MAIL_TRANSPORT = "stdout";
+  }
+}
+const ok = (id = "re_1") => new Response(JSON.stringify({ id }), { status: 200 });
+
+it("baseline: set at start, not by the first scan; same-second contributions count; a restart keeps it", async () => {
+  const { db, a, b, relate } = setup(":memory:", { baseline: null });
+  // the server starts: the starting line is set before it serves
+  const stop = N.startClaimantNotifier(db, onContribution, { delayMs: 60_000, everyMs: 60_000 });
+  const since = (db.prepare("SELECT value FROM settings WHERE key = 'claimant_notify_since'").get() as any).value;
+  // claims approved long ago; a contribution in the very same second as the baseline
+  relate(a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  db.prepare("UPDATE edges SET valid_from = ?").run(since);
+  // restart before the timer fired: the baseline stays where it was
+  stop();
+  const stop2 = N.startClaimantNotifier(db, onContribution, { delayMs: 60_000, everyMs: 60_000 });
+  assert.equal((db.prepare("SELECT value FROM settings WHERE key = 'claimant_notify_since'").get() as any).value, since);
+  stop2();
+  assert.equal(N.scanClaimantEvents(db), 1, "the first scan finds what came after the start");
+  assert.deepEqual(N.eventLines(db, b.id), ["Artist A added that you made Glitch Piece."]);
+  assert.equal(N.scanClaimantEvents(db), 0, "inclusive, and deduplicated");
+});
+
+it("revalidated before sending: claim withdrawn or revoked, invite revoked — suppressed for good", async () => {
+  const { db, a, b, relate } = setup();
+  relate(a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  N.scanClaimantEvents(db);
+  // the claim is withdrawn between scan and send
+  db.prepare("UPDATE node_claims SET status = 'withdrawn' WHERE contributor_id = ?").run(b.id);
+  let r = await quiet(() => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(r.sent, 0);
+  assert.equal(r.suppressed, 1);
+  // a later re-approval does not let the old event leak
+  db.prepare("UPDATE node_claims SET status = 'approved' WHERE contributor_id = ?").run(b.id);
+  r = await quiet(() => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(r.sent, 0);
+
+  // revoked claim, after the batch was reserved (a retry finds it gone)
+  relate(a, "practitioner:artist-a", "practitioner:artist-b", "COLLABORATES_WITH");
+  N.scanClaimantEvents(db);
+  const ev = db.prepare("SELECT id FROM claimant_events WHERE contributor_id = ? AND id NOT IN (SELECT event_id FROM claimant_deliveries)").all(b.id) as any[];
+  const batch = N.reserveBatch(db, b.id, ev.map((e) => e.id))!;
+  db.prepare("UPDATE claimant_batches SET lease_until = '2000-01-01T00:00:00Z' WHERE id = ?").run(batch);
+  db.prepare("UPDATE node_claims SET status = 'revoked' WHERE contributor_id = ?").run(b.id);
+  r = await quiet(() => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(r.sent, 0);
+  assert.equal((db.prepare("SELECT state FROM claimant_batches WHERE id = ?").get(batch) as any).state, "suppressed");
+
+  // an invite revoked: no eligible address, nothing sent
+  db.prepare("UPDATE node_claims SET status = 'approved' WHERE contributor_id = ?").run(b.id);
+  relate(a, "practitioner:artist-b", "institution:glitch", "PARTICIPATED_IN");
+  N.scanClaimantEvents(db);
+  db.prepare("UPDATE contributor_emails SET revoked_at = '2026-10-22T00:00:00Z' WHERE contributor_id = ?").run(b.id);
+  const sent = await withResend(() => ok(), () => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(sent.calls.length, 0);
+  assert.equal(sent.out.skipped, 1);
+});
+
+it("rendered when sent: a proposal rejected after the scan is never mailed as 'waiting for a curator'", async () => {
+  const { db, b, probation } = setup();
+  const pSig = insertSignal(db, { contributor: probation, title: "show", content: "{}" });
+  const q = insertIntake(db, { contributor: probation, signal_id: pSig, target_node: "practitioner:artist-b", proposed_edges: [{ source_id: "institution:glitch", target_id: "practitioner:artist-b", edge_type: "REPRESENTS" }] });
+  N.scanClaimantEvents(db);
+  assert.deepEqual(N.eventLines(db, b.id), ["New Person proposed that GLITCH represents you (waiting for a curator)."]);
+  db.prepare("UPDATE intake_queue SET status = 'rejected' WHERE id = ?").run(q.intake_id);
+  assert.deepEqual(N.eventLines(db, b.id), []);
+  const r = await quiet(() => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.deepEqual([r.sent, r.suppressed], [0, 1]);
+});
+
+it("rendered when sent: withdrawn notes, revoked signals, anonymous and structural_only notes", async () => {
+  const { db, a, b, relate } = setup();
+  const collab = relate(a, "practitioner:artist-a", "practitioner:artist-b", "COLLABORATES_WITH");
+  const n1 = fileNote(db, { contributor: { ...a, trust_tier: "auto" }, kind: "context", node_id: "practitioner:artist-a", note: "Two nights.", relation: { source_id: "practitioner:artist-a", edge_type: "COLLABORATES_WITH", target_id: "practitioner:artist-b" } });
+  const sig = relate(a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  N.scanClaimantEvents(db);
+  let lines = N.eventLines(db, b.id);
+  assert.ok(lines.includes("Artist A added context to the record that you collaborated with Artist A: “Two nights.”"), lines.join("\n"));
+  // consent changes are read when sent: anonymous names no one, structural_only keeps the words
+  db.prepare("UPDATE signals SET consent_attribution = 'anonymous', consent_scope = 'structural_only' WHERE id = ?").run(n1.signal_id);
+  lines = N.eventLines(db, b.id);
+  assert.ok(lines.includes("Someone added context to the record that you collaborated with Artist A."), lines.join("\n"));
+  // withdrawn note → gone; revoked signal → gone
+  db.prepare("UPDATE relation_notes SET state = 'withdrawn' WHERE signal_id = ?").run(n1.signal_id);
+  db.prepare("UPDATE signals SET status = 'revoked' WHERE id IN (?, ?)").run(sig, collab);
+  assert.deepEqual(N.eventLines(db, b.id), []);
+  const r = await quiet(() => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(r.sent, 0);
+  assert.equal(r.suppressed, 3);
+});
+
+it("retired pages: not scanned, and suppressed if retired before the mail", async () => {
+  const { db, a, b, relate } = setup();
+  relate(a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  N.scanClaimantEvents(db);
+  db.prepare("UPDATE nodes SET metadata = json_set(metadata, '$.retired', json('true')) WHERE id = 'practitioner:artist-b'").run();
+  const r = await quiet(() => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(r.sent, 0);
+  assert.equal(r.suppressed, 1);
+  relate(a, "practitioner:artist-a", "practitioner:artist-b", "COLLABORATES_WITH");
+  assert.equal(N.scanClaimantEvents(db), 0);
+  void b;
+});
+
+it("overlapping passes (server and CLI, two connections) send one email", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "adai-81-"));
+  try {
+    const { db, a, b, relate } = setup(join(dir, "t.db"));
+    relate(a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+    const other = initDb(join(dir, "t.db")); // the CLI's own connection
+    const { out, calls } = await withResend(async () => { await new Promise((r) => setTimeout(r, 50)); return ok(); }, () =>
+      Promise.all([N.runClaimantNotifications(db, { mode: "daily" }), N.runClaimantNotifications(other, { mode: "daily" })]));
+    assert.equal(calls.length, 1);
+    assert.equal(out[0].sent + out[1].sent, 1);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM claimant_deliveries WHERE state = 'sent'").get() as any).n, 1);
+    db.close(); other.close();
+    void b;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("a crash after reserving (or after Resend accepted) retries under the same idempotency key, once", async () => {
+  const { db, a, b, relate } = setup();
+  relate(a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  N.scanClaimantEvents(db);
+  // first attempt: Resend is unreachable (transient)
+  let res = await withResend(() => { throw new TypeError("fetch failed"); }, () => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(res.out.failed, 1);
+  const key = res.calls[0].key;
+  assert.match(String(key), /^cnb_/);
+  const b1 = db.prepare("SELECT state, attempts, payload FROM claimant_batches WHERE id = ?").get(key) as any;
+  assert.deepEqual([b1.state, b1.attempts], ["reserved", 1]);
+  // not before its lease runs out
+  res = await withResend(() => ok(), () => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(res.calls.length, 0);
+  // the lease ran out: same key, same frozen message
+  db.prepare("UPDATE claimant_batches SET lease_until = '2000-01-01T00:00:00Z'").run();
+  res = await withResend(() => ok("re_9"), () => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(res.calls.length, 1);
+  assert.equal(res.calls[0].key, key);
+  assert.equal(res.calls[0].body.subject, JSON.parse(b1.payload).subject);
+  assert.equal(res.out.sent, 1);
+  // a crash right after reserving: the next pass takes it over once
+  relate(a, "practitioner:artist-a", "practitioner:artist-b", "COLLABORATES_WITH");
+  N.scanClaimantEvents(db);
+  const ev = db.prepare("SELECT id FROM claimant_events WHERE id NOT IN (SELECT event_id FROM claimant_deliveries)").all() as any[];
+  const batch = N.reserveBatch(db, b.id, ev.map((e) => e.id))!;
+  db.prepare("UPDATE claimant_batches SET lease_until = '2000-01-01T00:00:00Z' WHERE id = ?").run(batch);
+  res = await withResend(() => ok(), () => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.deepEqual(res.calls.map((c) => c.key), [batch]);
+  res = await withResend(() => ok(), () => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(res.calls.length, 0);
+});
+
+it("failures: a rejected send is counted, the others still go; bounded retries; the CLI exits 1", async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const { db, a, b, relate } = setup();
+  relate(a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+  relate(b, "artwork:glitch-piece", "practitioner:artist-a", "CREATED_BY");
+  N.scanClaimantEvents(db);
+  // the first email is refused for good (422), the second goes
+  let res = await withResend((n) => (n === 1 ? new Response('{"message":"invalid"}', { status: 422 }) : ok()), () => N.deliverClaimantEmails(db, { mode: "daily" }));
+  assert.equal(res.out.failed, 1);
+  assert.equal(res.out.sent, 1);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM claimant_batches WHERE state = 'failed'").get() as any).n, 1);
+  // transient errors stop after MAX_ATTEMPTS
+  relate(a, "practitioner:artist-a", "practitioner:artist-b", "COLLABORATES_WITH");
+  N.scanClaimantEvents(db);
+  for (let i = 0; i < N.MAX_ATTEMPTS + 1; i++) {
+    db.prepare("UPDATE claimant_batches SET lease_until = '2000-01-01T00:00:00Z' WHERE state = 'reserved'").run();
+    await withResend(() => new Response("busy", { status: 503 }), () => N.deliverClaimantEmails(db, { mode: "daily" }));
+  }
+  const last = db.prepare("SELECT state, attempts FROM claimant_batches ORDER BY created_at DESC, rowid DESC LIMIT 1").get() as any;
+  assert.deepEqual([last.state, last.attempts], ["failed", N.MAX_ATTEMPTS]);
+
+  // the CLI: a refused send → exit 1
+  const dir = mkdtempSync(join(tmpdir(), "adai-81-cli-"));
+  try {
+    const path = join(dir, "t.db");
+    const s = setup(path);
+    s.relate(s.a, "artwork:glitch-piece", "practitioner:artist-b", "CREATED_BY");
+    s.db.close();
+    const stub = join(dir, "stub.mjs");
+    writeFileSync(stub, `globalThis.fetch = async () => new Response('{"message":"invalid"}', { status: 422 });\n`);
+    const run = spawnSync(process.execPath, ["--import", "tsx", "--import", stub, "src/cli/notify-claimants.ts"], {
+      env: { ...process.env, DB_PATH: path, RESEND_API_KEY: "re_test", MAIL_TRANSPORT: "", NOTIFY_CLAIMANTS: "off" },
+      encoding: "utf8",
+    });
+    assert.equal(run.status, 1, run.stderr);
+    assert.match(run.stderr, /1 failed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

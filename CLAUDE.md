@@ -305,8 +305,13 @@ per the `/me` setting (`notify_prefs.email` = immediate | daily (default) | off;
 `GET/POST /api/me/notifications`), consent-filtered ("Someone …"), never about
 their own contributions. Immediate: the server, ~90 s after a contribution
 (`src/notify/kick.ts`; `NOTIFY_CLAIMANTS=off` disables it). Daily:
-`node dist/cli/notify-claimants.js` in `notify-digest.yml`. Deliveries are
-per channel (`claimant_deliveries`), so web push can join email later.
+`node dist/cli/notify-claimants.js` in `notify-digest.yml` (exits 1 if any
+email failed). Events store references and are re-checked when the mail is
+written (claim still approved, node not retired, nothing rejected / withdrawn
+/ revoked; consent read then). Emails are reserved as leased batches before any
+network I/O and sent with the batch id as Resend's `Idempotency-Key`, so
+overlapping passes or a crash never send twice. Deliveries are per channel
+(`claimant_deliveries`), so web push can join email later.
 
 ### Contributor API (`/api/v1/*`) — bearer-token, AI-driven
 

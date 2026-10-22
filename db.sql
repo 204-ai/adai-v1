@@ -427,28 +427,52 @@ CREATE TABLE IF NOT EXISTS notify_prefs (
 -- One thing that happened to a claimed page, for one claimant: found by the
 -- scan in src/notify/claimants.ts. `event_key` names the underlying change
 -- (the same relation seen pending and then live is one event), so a rescan
--- never repeats itself. `line` is the consent-filtered sentence the mail
--- shows; nothing else about the contribution is copied here.
+-- never repeats itself. `ref` holds structured references only (signal,
+-- edge, queue row, note) — the sentence is built when the mail is, from the
+-- record as it then stands (approved, rejected, withdrawn, revoked, consent).
 CREATE TABLE IF NOT EXISTS claimant_events (
     id              TEXT PRIMARY KEY NOT NULL,       -- 'cev_' + 16 hex
     contributor_id  TEXT NOT NULL,
     node_id         TEXT NOT NULL,
     event_key       TEXT NOT NULL,
     kind            TEXT NOT NULL,                   -- relation | ended | edit | note | pending
-    line            TEXT NOT NULL,
+    ref             TEXT NOT NULL,                   -- JSON: what to re-read at send time
     at              TEXT,                            -- when it happened in the commons
     created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     UNIQUE (contributor_id, node_id, event_key)
 );
 CREATE INDEX IF NOT EXISTS idx_claimant_events_contributor ON claimant_events(contributor_id, created_at);
 
--- Delivery of an event on one channel ('email' now; 'push' later). No row =
--- not yet delivered on that channel. state: sent | skipped (setting was off).
+-- One email (or, later, one push) to one claimant: reserved with a lease
+-- before any network I/O, its events bound to it in claimant_deliveries, its
+-- rendering frozen on the first attempt so a retry sends the same message
+-- under the same Resend Idempotency-Key (the batch id).
+CREATE TABLE IF NOT EXISTS claimant_batches (
+    id              TEXT PRIMARY KEY NOT NULL,       -- 'cnb_' + 16 hex; also the idempotency key
+    contributor_id  TEXT NOT NULL,
+    channel         TEXT NOT NULL,                   -- email (push later)
+    state           TEXT NOT NULL,                   -- reserved | sent | failed | suppressed
+    lease_until     TEXT,                            -- a reserved batch past its lease may be taken over
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    payload         TEXT,                            -- JSON {to, subject, text, html}, frozen at the first attempt
+    ref             TEXT,                            -- the transport's message id
+    error           TEXT,
+    created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_claimant_batches_state ON claimant_batches(channel, state, lease_until);
+
+-- An event on one channel. No row = not yet taken. state: reserved (in
+-- batch_id) | sent | failed | skipped (setting off / no address) |
+-- suppressed (no longer true or no longer theirs: claim ended, node retired,
+-- rejected, withdrawn, revoked).
 CREATE TABLE IF NOT EXISTS claimant_deliveries (
     event_id        TEXT NOT NULL,
     channel         TEXT NOT NULL,
     state           TEXT NOT NULL,
+    batch_id        TEXT,
+    reason          TEXT,
     at              TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    ref             TEXT,                            -- the transport's message id
     PRIMARY KEY (event_id, channel)
 );
+CREATE INDEX IF NOT EXISTS idx_claimant_deliveries_batch ON claimant_deliveries(batch_id);

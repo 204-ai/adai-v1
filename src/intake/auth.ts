@@ -479,6 +479,21 @@ export function emailFor(db: DatabaseSync, contributorId: string): string | null
   return row?.email ?? null;
 }
 
+/**
+ * An address that may still receive mail for this contributor: not revoked,
+ * and invited (unless the intake is open) — the same test as signing in.
+ */
+export function deliverableEmailFor(db: DatabaseSync, contributorId: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT email FROM contributor_emails
+        WHERE contributor_id = ? AND revoked_at IS NULL AND (invited_at IS NOT NULL OR ?)
+        ORDER BY created_at ASC LIMIT 1`
+    )
+    .get(contributorId, intakeOpen() ? 1 : 0) as any;
+  return row?.email ?? null;
+}
+
 /** Housekeeping: drop expired links + sessions. Called opportunistically. */
 export function sweepAuth(db: DatabaseSync): void {
   const now = nowIso();

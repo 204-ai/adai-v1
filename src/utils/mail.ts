@@ -16,6 +16,15 @@ export interface MailMessage {
   text: string;
   html: string;
   replyTo?: string[];
+  /** Resend's Idempotency-Key: a retry with the same key is not sent twice. */
+  idempotencyKey?: string;
+}
+
+/** A send that did not go through. `transient`: worth retrying later (network, 409/429/5xx). */
+export class MailError extends Error {
+  constructor(message: string, readonly status: number | null, readonly transient: boolean) {
+    super(message);
+  }
 }
 
 export interface MailResult {
@@ -56,13 +65,19 @@ export async function sendMail(msg: MailMessage): Promise<MailResult> {
     text: msg.text,
   };
   if (msg.replyTo?.length) body.reply_to = msg.replyTo;
-  const resp = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+  if (msg.idempotencyKey) headers["Idempotency-Key"] = msg.idempotencyKey;
+  let resp: Response;
+  try {
+    resp = await fetch("https://api.resend.com/emails", { method: "POST", headers, body: JSON.stringify(body) });
+  } catch (e: any) {
+    throw new MailError(`Resend unreachable: ${e?.message ?? e}`, null, true);
+  }
   const text = await resp.text();
-  if (!resp.ok) throw new Error(`Resend API ${resp.status}: ${text}`);
+  if (!resp.ok) {
+    const transient = resp.status === 409 || resp.status === 429 || resp.status >= 500;
+    throw new MailError(`Resend API ${resp.status}: ${text}`, resp.status, transient);
+  }
   try {
     return { id: (JSON.parse(text) as { id: string }).id ?? "", transport: "resend" };
   } catch {

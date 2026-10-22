@@ -15,7 +15,7 @@ import { startSpawnerInterval, isSpawnerConfigured } from "./intake/spawn.js";
 import { isSessionConfigured } from "./intake/auth.js";
 import { getDb } from "./db.js";
 import { backfillInviteClaims } from "./claim/store.js";
-import { startClaimantNotifier } from "./notify/claimants.js";
+import { ensureBaseline, startClaimantNotifier } from "./notify/claimants.js";
 import { onContribution } from "./notify/kick.js";
 import { htmlPage, HTML_HEADERS } from "./templates.js";
 import { isStaging, publicSwitches, stagingBanner } from "./utils/staging.js";
@@ -51,6 +51,9 @@ console.log("Database initialized.");
 // Claimants hear when something is added about them (issue #81): an
 // immediate pass after contributions; the daily digest is the
 // notify-claimants CLI. NOTIFY_CLAIMANTS=off disables the in-server pass.
+// The starting line is set here, before the server serves, either way: the
+// first contributions after a deploy are news too.
+ensureBaseline(getDb());
 if (process.env.NOTIFY_CLAIMANTS !== "off") startClaimantNotifier(getDb(), onContribution);
 
 const app = express();
