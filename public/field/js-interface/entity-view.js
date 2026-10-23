@@ -9,7 +9,9 @@
  *                     links navigate normally.
  *   - /field          the overlay: 'i' (or clicking the focused node) fetches
  *                     /api/entity?id=… and lays the same article over the
- *                     graph; ESC dismisses back to the previous zoom. Links
+ *                     graph; ESC dismisses back to the previous zoom. The
+ *                     address follows the open profile (issue #85, wired
+ *                     in graph-field.js / field-address.js). Links
  *                     to other nodes re-open the overlay on them (cmd/ctrl-
  *                     click still opens the standalone page in a new tab).
  *
@@ -227,12 +229,23 @@
   }
 
   // ---------- Overlay: open / close ----------
+  // The field's address follows the open profile (issue #85): graph-field.js
+  // listens for this and writes /field/<type>/<slug>.
+  // `reason` says how a close came about: 'dismiss' (the close button — the
+  // address goes back to where the profile chain began), 'field' ("view in
+  // field": settle on the node), 'escape' (Esc, which also steps the field
+  // out), or 'program' (history, other scripts).
+  function announce(reason) {
+    window.dispatchEvent(new CustomEvent('adai:entity-view', { detail: { open: STATE.open, id: STATE.currentId, reason: reason || null } }));
+  }
+
   async function open(id) {
     if (!id) return;
     const el = ensureContainer();
     const seq = ++STATE.seq;
     STATE.open = true;
     STATE.currentId = id;
+    announce();
     const name = window.ADAI_GRAPH?.byId?.get(id)?.name || id;
     el.innerHTML = `${chrome()}<article class="ev-article"><p class="ev-empty adai-embed-loading"><span class="adai-spin"></span>opening ${escapeHtml(name)}…</p></article>`;
     // Re-opens kept the previous scroll position — navigating from a card
@@ -269,16 +282,18 @@
     if (node) fillEmbeddings(node);
   }
 
-  function close() {
+  function close(reason = 'program') {
     const el = document.getElementById('entity-view');
     if (!el) return;
     el.classList.remove('is-open');
     el.setAttribute('aria-hidden', 'true');
     el.innerHTML = '';
+    const was = STATE.open;
     STATE.open = false;
     STATE.currentId = null;
     STATE.seq++;
     document.body.classList.remove('ev-locked');
+    if (was) announce(reason);
   }
 
   // ---------- Triggers ----------
@@ -325,7 +340,7 @@
 
   document.addEventListener('keydown', (e) => {
     if (STATE.open) {
-      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close('escape'); }
       return;
     }
     // 'i' opens entity view for the currently focused node — but NOT while
@@ -363,7 +378,7 @@
       e.preventDefault();
       e.stopPropagation();
       const id = STATE.currentId;
-      close();
+      close('field');
       const field = window.ADAI_GRAPH_FIELD;
       if (id && field && typeof field.zoomTo === 'function' && field.focusedId !== id) {
         try { field.zoomTo(id); } catch { /* non-fatal */ }
@@ -392,7 +407,7 @@
     }
     const action = e.target?.closest?.('[data-action]')?.dataset?.action;
     if (action === 'close') {
-      e.preventDefault(); close();
+      e.preventDefault(); close('dismiss');
     } else if (action === 'add') {
       // The + header icon → the URL intake at /contribute.
       e.preventDefault();
@@ -405,5 +420,5 @@
   });
 
   // Public API.
-  window.ADAI_ENTITY_VIEW = { open, close, get isOpen() { return STATE.open; } };
+  window.ADAI_ENTITY_VIEW = { open, close: (reason) => close(reason), get isOpen() { return STATE.open; }, get currentId() { return STATE.currentId; } };
 })();
