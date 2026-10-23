@@ -1,6 +1,6 @@
 ---
 name: adai-contribute
-description: Contribute to the A(DAI) Digital Arts Knowledge Commons graph (https://digitalartsinstitute.io) on behalf of a practitioner using their bearer token in ADAI_TOKEN. Use when the user wants to add a text signal about an existing node, create a node (practitioner, artwork, concept, scene, institution, collective, platform, etc.), add or supersede an edge (CREATED_BY, EMBODIES, PRACTICES, EXHIBITED_AT, CLASSIFIED_BY, BELONGS_TO, COLLABORATES_WITH, USES_TECHNIQUE, INFLUENCES, RESPONDS_TO, PARTICIPATED_IN, PRESENTED_BY, CURATED_BY, REPRESENTS, HELD_BY), upload an image and attach it to a node, tag a session of writes with a batch_id, review their contribution history, claim the practitioner's own page and speak for it (contest or add context to relations about them, invite the people at the other end), or — with an admin-scope token — mint/list/revoke tokens, work the curator review queue (approve/reject/bulk), revoke a signal, retire a node, or roll back a contribution batch (provenance-preserving). Talks to /api/v1/* via curl. Respects trust tiers (auto/reviewed go live, probationary queue at /review). Never infer INFLUENCES or RESPONDS_TO from style or visual similarity; both require attested artist intent.
+description: Contribute to the A(DAI) Digital Arts Knowledge Commons graph (https://digitalartsinstitute.io) on behalf of a practitioner using their bearer token in ADAI_TOKEN. Use when the user wants to add a text signal about an existing node, create a node (practitioner, artwork, concept, scene, institution, collective, platform, etc.), add or supersede an edge (CREATED_BY, EMBODIES, PRACTICES, EXHIBITED_AT, CLASSIFIED_BY, BELONGS_TO, COLLABORATES_WITH, USES_TECHNIQUE, INFLUENCES, RESPONDS_TO, PARTICIPATED_IN, PRESENTED_BY, CURATED_BY, REPRESENTS, HELD_BY, DOCUMENTS), upload an image and attach it to a node, tag a session of writes with a batch_id, review their contribution history, claim the practitioner's own page and speak for it (contest or add context to relations about them, invite the people at the other end), or — with an admin-scope token — mint/list/revoke tokens, work the curator review queue (approve/reject/bulk), revoke a signal, retire a node, or roll back a contribution batch (provenance-preserving). Talks to /api/v1/* via curl. Respects trust tiers (auto/reviewed go live, probationary queue at /review). Never infer INFLUENCES or RESPONDS_TO from style or visual similarity; both require attested artist intent.
 version: 2026-10-09
 ---
 
@@ -313,6 +313,7 @@ The graph is mostly edges. Use the curated edge types:
 | `REPRESENTS` | institution → practitioner | a gallery's core roster |
 | `CLASSIFIED_BY` | any node → classification_regime | who positioned it |
 | `COLLABORATES_WITH` | practitioner ↔ practitioner | symmetric collab |
+| `DOCUMENTS` | publication → project / artwork | a catalogue, book or journal issue documenting a show or a work (the work or show reads "documented in") |
 | `INFLUENCES` | practitioner → practitioner | **needs attestation** |
 | `RESPONDS_TO` | artwork → artwork | **needs attestation** |
 
@@ -534,6 +535,7 @@ as above. Relation policy for anything sourced from a page, verbatim:
 | EMBODIES | artwork -> concept | page's own description, low confidence |
 | BELONGS_TO | practitioner -> collective | page states membership |
 | COLLABORATES_WITH | practitioner <-> practitioner | only with a quote naming the other party |
+| DOCUMENTS | publication -> project/artwork | page is (or names) a catalogue, book or journal issue that documents the show or work |
 
 Never from a site: `INFLUENCES`, `RESPONDS_TO`, `CLASSIFIED_BY`. Put the
 supporting sentence from the page in the signal `content` and the page in
@@ -598,6 +600,47 @@ curl -s -X POST "$ADAI_BASE/api/claims/handle" … -d '{"node_id":"practitioner:
 A note is always in the practitioner's own words — draft it with them, never
 for them. A contest needs a reason a curator can check. Never invite someone
 the practitioner did not name, and never put an email address anywhere public.
+
+### 1.10 `POST /api/v1/readings` — a reading of one relation
+
+Anyone with a token — a critic, a facilitator, a curator, no claim needed —
+can attach a **reading** to one specific live relation ("this work responds
+to that one", "this show was presented by that space"). It shows on the
+relation's row and in the accounts section of **both** ends' pages, labelled
+**"a reading by <name>"**: one account beside the others, never the subject
+speaking — even when the writer claims one end (a claimant who wants to
+speak *as the subject* uses context, §1.9). It stands only while its relation
+is live.
+
+```bash
+curl -s -X POST "$ADAI_BASE/api/v1/readings" -H "Authorization: Bearer $ADAI_TOKEN" -H 'content-type: application/json' \
+  -d '{"relation":{"source_id":"artwork:a","edge_type":"EXHIBITED_AT","target_id":"project:glitch"},
+       "note":"Shown here as a record of failure rather than a glitch aesthetic.",
+       "source_url":"https://example.org/review",
+       "consent_attribution":"attributed",
+       "consent_scope":"full_commons",
+       "batch_id":"glitch-readings-2026-10"}' | jq
+# source_url (optional): where the reading is published
+# consent_attribution: "attributed" (default) or "anonymous" → "a reading by someone"
+# consent_scope: "full_commons" (default) or "structural_only" → the words stay off the page
+# batch_id (optional, as everywhere, §1.7)
+# → 201 {"status":"live"|"pending","signal_id":"signal-…","intake_id":"intake-…","reading":{…}}
+# Take it back (only its author; JSON content type required):
+curl -s -X POST "$ADAI_BASE/api/v1/readings/<signal_id>/withdraw" -H "Authorization: Bearer $ADAI_TOKEN" -H 'content-type: application/json' -d '{}'
+# A withdrawn reading leaves the page; one that was never published leaves no trace in /history.
+```
+
+Trust tiers as for every write (§3): `auto` / `reviewed` publish at once;
+`probationary` readings wait on `/review?kind=reading`. The relation must be
+live and curated (not embedding-derived); the same words twice on the same
+relation are refused (409 `already_read`). At most 2000 characters, 5 readings
+a minute and 30 a day per contributor, however they sign in (429
+`too_many_readings`). A relation row shows its latest 3 readings; the rest are
+in the page's accounts section. A reading
+is the writer's own interpretation — write it with them, in their words; a
+claim that the relation itself is wrong is not a reading (that is a
+contest, §1.9, or a curator's correction). Signed-in contributors can add one
+from the "+ reading" link on any relation row of a page.
 
 ## 2 — ID conventions
 
@@ -821,14 +864,18 @@ curl -s -X POST "$ADAI_BASE/api/v1/invites/revoke" -H "Authorization: Bearer $AD
 Treat the email addresses in these responses as private: never paste them
 into a signal, a node, or anywhere public.
 
-### 4.6c Claims, contests and subject notes
+### 4.6c Claims, contests, subject notes and readings
 
-Three more `kind`s in the review queue (§4.4 — `?kind=claim|contest|context`,
+Four more `kind`s in the review queue (§4.4 — `?kind=claim|contest|context|reading`,
 same approve / reject calls): **claim** (approve = the page is theirs; reject
 with a reason they receive by email), **contest** (approve = *uphold*: every
 live claim of that relation ends bi-temporally, or an edited value goes back
 to its before-image; reject = *dismiss*: the public mark comes off), and
-**context** (a probationary claimant's note; approve publishes it). Look at
+**context** (a probationary claimant's note; approve publishes it) and
+**reading** (a probationary contributor's reading of a relation, §1.10;
+approve publishes it, reject keeps it off the page). A published reading is
+taken down like any contribution: revoke its signal (§4.5) — or retire a
+node (§4.6) / a batch (§4.7), which ends the relations it reads. Look at
 the evidence first: the claim card on `/review` shows the email domain against
 the page's website and any drafts they ran on that site.
 

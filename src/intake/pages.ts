@@ -257,8 +257,8 @@ export function draftPage(draftId: string): string {
 <div class="modal" id="modal"><div class="box" id="modalbox"></div></div>`;
   const script = `${helpers}
 const ID = ${JSON.stringify(draftId)};
-const VERBS = { CREATED_BY: 'was created by', EXHIBITED_AT: 'was exhibited at', HELD_BY: 'is held by', PARTICIPATED_IN: 'took part in', PRESENTED_BY: 'was presented by', CURATED_BY: 'was curated by', REPRESENTS: 'represents', USES_TECHNIQUE: 'uses the technique', EMBODIES: 'embodies', BELONGS_TO: 'belongs to', COLLABORATES_WITH: 'collaborates with', INFLUENCES: 'influences', RESPONDS_TO: 'responds to' };
-const EDGE_TYPES = ['CREATED_BY','EXHIBITED_AT','HELD_BY','PARTICIPATED_IN','PRESENTED_BY','CURATED_BY','REPRESENTS','USES_TECHNIQUE','EMBODIES','BELONGS_TO','COLLABORATES_WITH'];
+const VERBS = { CREATED_BY: 'was created by', EXHIBITED_AT: 'was exhibited at', HELD_BY: 'is held by', PARTICIPATED_IN: 'took part in', PRESENTED_BY: 'was presented by', CURATED_BY: 'was curated by', REPRESENTS: 'represents', USES_TECHNIQUE: 'uses the technique', EMBODIES: 'embodies', BELONGS_TO: 'belongs to', COLLABORATES_WITH: 'collaborates with', INFLUENCES: 'influences', RESPONDS_TO: 'responds to', DOCUMENTS: 'documents' };
+const EDGE_TYPES = ['CREATED_BY','EXHIBITED_AT','HELD_BY','PARTICIPATED_IN','PRESENTED_BY','CURATED_BY','REPRESENTS','USES_TECHNIQUE','EMBODIES','BELONGS_TO','COLLABORATES_WITH','DOCUMENTS'];
 const NODE_TYPES = ['practitioner','artwork','project','institution','collective','concept','platform'];
 let D = null, timer = null, busy = false;
 const byCid = () => Object.fromEntries((D.candidates||[]).map(c => [c.cid, c]));
@@ -660,7 +660,7 @@ function leftOpenGroup(receipt: Record<string, any>): string {
 }
 
 export function batchPage(receipt: Record<string, any>, isOwner: boolean, adminEmails: string[], claimPrompt = ""): string {
-  const VERBS: Record<string, string> = { CREATED_BY: "was created by", EXHIBITED_AT: "was exhibited at", HELD_BY: "is held by", PARTICIPATED_IN: "took part in", PRESENTED_BY: "was presented by", CURATED_BY: "was curated by", REPRESENTS: "represents", USES_TECHNIQUE: "uses the technique", EMBODIES: "embodies", BELONGS_TO: "belongs to", COLLABORATES_WITH: "collaborates with", INFLUENCES: "influences", RESPONDS_TO: "responds to" };
+  const VERBS: Record<string, string> = { CREATED_BY: "was created by", EXHIBITED_AT: "was exhibited at", HELD_BY: "is held by", PARTICIPATED_IN: "took part in", PRESENTED_BY: "was presented by", CURATED_BY: "was curated by", REPRESENTS: "represents", USES_TECHNIQUE: "uses the technique", EMBODIES: "embodies", BELONGS_TO: "belongs to", COLLABORATES_WITH: "collaborates with", INFLUENCES: "influences", RESPONDS_TO: "responds to", DOCUMENTS: "documents" };
   const link = (id: string) => {
     const t = id.split(":")[0] ?? "";
     const rest = id.slice(t.length + 1);

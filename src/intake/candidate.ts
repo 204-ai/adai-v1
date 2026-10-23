@@ -39,6 +39,9 @@ export type CandidateNodeType = (typeof CANDIDATE_NODE_TYPES)[number];
 export const SUGGESTABLE_EDGE_TYPES = [
   "CREATED_BY", "EXHIBITED_AT", "HELD_BY", "PARTICIPATED_IN", "PRESENTED_BY", "CURATED_BY",
   "REPRESENTS", "USES_TECHNIQUE", "EMBODIES", "BELONGS_TO", "COLLABORATES_WITH",
+  // a catalogue / book / journal issue documenting a show or a work (#80 part 4);
+  // the publication must already be a node — the intake does not create them
+  "DOCUMENTS",
 ] as const;
 export type SuggestableEdgeType = (typeof SUGGESTABLE_EDGE_TYPES)[number];
 export const QUESTION_EDGE_TYPES = [...SUGGESTABLE_EDGE_TYPES, "INFLUENCES", "RESPONDS_TO"] as const;
@@ -62,6 +65,7 @@ export const EDGE_DIRECTIONS: Record<string, { source: readonly string[]; target
   COLLABORATES_WITH: { source: ARTIST, target: ARTIST, symmetric: true },
   INFLUENCES: { source: ["artwork", ...ARTIST], target: ["artwork", ...ARTIST] },
   RESPONDS_TO: { source: ["artwork"], target: ["artwork"] },
+  DOCUMENTS: { source: ["publication"], target: ["project", "artwork"] },
 };
 
 /**

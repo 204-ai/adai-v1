@@ -10,6 +10,13 @@
 //   objection — on a PENDING queue item about their node. No queue row of
 //               its own: the curator sees it on the item; the item's
 //               outcome settles it.
+//   reading   — issue #80 part 3: ANY contributor's labelled reading of one
+//               live relation ("a reading by X"), never the subject's voice —
+//               a claimant who wants to speak as the subject adds context.
+//               Same tier gate as context (auto/reviewed live, else queued
+//               for /review); consent as on every signal; shown only while
+//               its relation is live. Written by fileReading, not fileNote
+//               (no claim needed).
 //
 // Users never approve anything: moderators do. Every note is a signal (the
 // public record, consent-aware) plus a relation_notes row (the index).
@@ -25,7 +32,7 @@ import { insertAdminSignal } from "../utils/admin-actions.js";
 import { tripleKey } from "../utils/claims.js";
 import { ClaimError, CLAIMABLE_TYPES, approvedClaimsFor, claimedNodeIds, hasApprovedClaim, requestClaim, contributorById, type Claim } from "./store.js";
 
-export type NoteKind = "contest" | "context" | "objection";
+export type NoteKind = "contest" | "context" | "objection" | "reading";
 
 export interface RelationRef {
   source_id: string;
@@ -51,6 +58,8 @@ export interface RelationNote {
   resolved_at: string | null;
   resolution: string | null;
   created_at: string | null;
+  /** A reading's source (an essay, a review) — set by publicNotesFor, null when withheld. */
+  source_url?: string | null;
   // Set by publicNotesFor (the one filter every public surface uses):
   anonymous?: boolean;    // by / handle already blanked
   withheld?: boolean;     // structural_only: note already blanked
@@ -109,7 +118,12 @@ export function noteByQueueId(db: DatabaseSync, queueId: string): RelationNote |
 const PUBLIC_NOTES_FROM = `
          FROM relation_notes rn
          LEFT JOIN signals s ON s.id = rn.signal_id
-        WHERE ((rn.kind = 'contest' AND rn.state = 'open') OR (rn.kind = 'context' AND rn.state = 'live'))
+        WHERE ((rn.kind = 'contest' AND rn.state = 'open') OR (rn.kind = 'context' AND rn.state = 'live')
+               -- a reading stands only while its relation does (a retired node's
+               -- relations are superseded, so its readings go with them)
+               OR (rn.kind = 'reading' AND rn.state = 'live' AND EXISTS (
+                    SELECT 1 FROM edges le WHERE le.source_id = rn.source_id AND le.edge_type = rn.edge_type AND le.target_id = rn.target_id
+                       AND le.valid_until IS NULL AND COALESCE(le.created_by, '') != 'embedding-multimodal-v1')))
           AND (rn.source_id = :node OR rn.target_id = :node OR (rn.meta_key IS NOT NULL AND rn.node_id = :node))
           AND COALESCE(s.status, 'active') = 'active'`;
 
@@ -129,7 +143,7 @@ export function publicNotesFor(db: DatabaseSync, nodeId: string, page: { after?:
   return (db
     .prepare(
       `SELECT rn.*, c.name AS by_name, json_extract(n.metadata, '$.claimed.handle') AS handle,
-              s.consent_scope, s.consent_attribution,
+              s.consent_scope, s.consent_attribution, s.source_url AS signal_source_url,
               EXISTS (SELECT 1 FROM node_claims k WHERE k.contributor_id = rn.contributor_id AND k.node_id = rn.node_id AND k.status = 'approved') AS subject_now
          ${PUBLIC_NOTES_FROM.replace("FROM relation_notes rn", `FROM relation_notes rn
          LEFT JOIN contributors c ON c.id = rn.contributor_id
@@ -143,7 +157,17 @@ export function publicNotesFor(db: DatabaseSync, nodeId: string, page: { after?:
       n.anonymous = r.consent_attribution === "anonymous";
       n.withheld = r.consent_scope === "structural_only";
       n.subject_now = !!r.subject_now;
-      if (n.anonymous) { n.by = null; n.handle = null; }
+      if (n.kind === "reading") {
+        // A reading is never the subject speaking, whoever wrote it — not even
+        // a claimant (they use context) — and never under the page's handle.
+        n.subject_now = false;
+        n.handle = null;
+        n.source_url = !n.withheld && typeof r.signal_source_url === "string" && /^https?:\/\//i.test(r.signal_source_url) ? r.signal_source_url : null;
+      }
+      // anonymous: nothing that would name the writer — not their name, the
+      // handle, their contributor id, or the page they wrote from (the /me log
+      // hands these notes to the other end as JSON)
+      if (n.anonymous) { n.by = null; n.handle = null; n.contributor_id = ""; n.node_id = ""; n.queue_id = null; }
       if (n.withheld) n.note = "";
       return n;
     });
@@ -198,6 +222,8 @@ export function auditNotesFor(db: DatabaseSync, nodeId: string): AuditNote[] {
  */
 export function noteAuthor(n: RelationNote): { who: string; subject: boolean } {
   if (n.anonymous) return { who: "someone", subject: false };
+  // a reading: the writer by their own name, never the subject, never the handle
+  if (n.kind === "reading") return { who: n.by ?? "a contributor", subject: false };
   const standing = n.subject_now !== false; // notes outside publicNotesFor carry no flag: as before
   const who = standing && n.handle ? `@${n.handle}` : n.by ?? "a contributor";
   return { who, subject: standing };
@@ -345,17 +371,109 @@ export function fileNote(db: DatabaseSync, args: FileNoteArgs): RelationNote {
   }
 }
 
-/** The claimant takes back their own context note or open contest. */
+// ---- readings (issue #80 part 3) ----------------------------------------------------
+
+export interface FileReadingArgs {
+  contributor: AuthedContributor;
+  relation: RelationRef;
+  note: string;
+  source_url?: string | null;          // the essay / review the reading comes from
+  consent_scope?: string | null;       // full_commons (default) | structural_only
+  consent_attribution?: string | null; // attributed (default) | anonymous | attributed_with_notification
+  batch_id?: string | null;
+}
+
+/**
+ * Any contributor's reading of one live relation. Not a claim note: no claim
+ * is needed and none is implied — the page labels it "a reading by X", even
+ * when X happens to claim one end. Tier-gated like context: auto / reviewed
+ * publish at once, probationary go to /review (kind 'reading').
+ */
+/** Readings a contributor may file: per day, and in any one minute — one quota whichever way they sign in. */
+export const READINGS_PER_DAY = 30;
+export const READINGS_PER_MINUTE = 5;
+
+function readingQuota(db: DatabaseSync, contributorId: string): void {
+  const since = (ms: number) => new Date(Date.now() - ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const count = (ms: number) => Number((db.prepare("SELECT COUNT(*) AS n FROM relation_notes WHERE kind = 'reading' AND contributor_id = ? AND created_at >= ?").get(contributorId, since(ms)) as any).n);
+  if (count(60_000) >= READINGS_PER_MINUTE) throw new ClaimError(429, "too_many_readings", `at most ${READINGS_PER_MINUTE} readings a minute — slow down`);
+  if (count(86_400_000) >= READINGS_PER_DAY) throw new ClaimError(429, "too_many_readings", `at most ${READINGS_PER_DAY} readings a day`);
+}
+
+export function fileReading(db: DatabaseSync, args: FileReadingArgs): RelationNote {
+  const note = typeof args.note === "string" ? args.note.trim() : "";
+  if (!note) throw new ClaimError(400, "note_required", "write the reading, in a sentence or more");
+  if (note.length > NOTE_MAX) throw new ClaimError(400, "note_too_long", `at most ${NOTE_MAX} characters`);
+  const r = args.relation;
+  if (!r?.source_id || !r.edge_type || !r.target_id) throw new ClaimError(400, "relation_required", "relation needs {source_id, edge_type, target_id}");
+  if (!liveRelation(db, r)) throw new ClaimError(404, "relation_not_live", "no live relation like that");
+  const retired = db
+    .prepare("SELECT 1 FROM nodes WHERE id IN (?, ?) AND json_extract(metadata, '$.retired') IS 1 LIMIT 1")
+    .get(r.source_id, r.target_id);
+  if (retired) throw new ClaimError(404, "relation_not_live", "one end of that relation is retired");
+  const srcUrl = args.source_url == null || args.source_url === "" ? null : String(args.source_url).trim();
+  if (srcUrl !== null && (!/^https?:\/\//i.test(srcUrl) || srcUrl.length > 2000)) throw new ClaimError(400, "bad_source_url", "source_url must be an http(s) URL");
+  const rel: RelationRef = { source_id: r.source_id, edge_type: r.edge_type, target_id: r.target_id };
+  const same = db
+    .prepare("SELECT 1 FROM relation_notes WHERE kind = 'reading' AND contributor_id = ? AND source_id = ? AND edge_type = ? AND target_id = ? AND note = ? AND state IN ('pending','live')")
+    .get(args.contributor.id, rel.source_id, rel.edge_type, rel.target_id, note);
+  if (same) throw new ClaimError(409, "already_read", "you already gave this reading of this relation");
+  readingQuota(db, args.contributor.id);
+
+  const autoLive = isAutoMerge(args.contributor.trust_tier);
+  db.exec("BEGIN");
+  try {
+    const signalId = insertSignal(db, {
+      contributor: args.contributor,
+      title: `Reading: ${nodeName(db, rel.source_id)} ${rel.edge_type} ${nodeName(db, rel.target_id)}`,
+      content: JSON.stringify({ action: "reading", relation: rel, note }),
+      source_url: srcUrl,
+      source_type: "reading",
+      source_origin: "human_primary",
+      consent_scope: args.consent_scope ?? undefined,
+      consent_attribution: args.consent_attribution ?? undefined,
+      batch_id: args.batch_id ?? null,
+    });
+    const queueId = `intake-${crypto.randomBytes(8).toString("hex")}`;
+    db.prepare(
+      "INSERT INTO intake_queue (id, signal_id, target_node, submitted_by, trust_tier, status, kind, proposed_edges, reviewed_by, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, 'reading', ?, ?, ?)"
+    ).run(
+      queueId, signalId, rel.source_id, args.contributor.name, args.contributor.trust_tier,
+      autoLive ? "approved" : "pending", JSON.stringify([rel]),
+      autoLive ? "auto" : null, autoLive ? nowIso() : null
+    );
+    // node_id: what the reading is about (the relation's source) — no claim implied
+    db.prepare(
+      `INSERT INTO relation_notes (signal_id, kind, source_id, edge_type, target_id, node_id, contributor_id, note, state, queue_id)
+       VALUES (?, 'reading', ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(signalId, rel.source_id, rel.edge_type, rel.target_id, rel.source_id, args.contributor.id, note, autoLive ? "live" : "pending", queueId);
+    db.exec("COMMIT");
+    return getNote(db, signalId)!;
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+}
+
+/** The claimant takes back their own context note or open contest (or any author their reading). */
 export function withdrawNote(db: DatabaseSync, signalId: string, contributorId: string): RelationNote {
   const n = getNote(db, signalId);
   if (!n) throw new ClaimError(404, "note_not_found", signalId);
   if (n.contributor_id !== contributorId) throw new ClaimError(403, "not_your_note", "only its author can withdraw a note");
   if (!["open", "pending", "live"].includes(n.state)) throw new ClaimError(409, "note_settled", `note is ${n.state}`);
-  db.prepare("UPDATE relation_notes SET state = 'withdrawn', resolved_by = ?, resolved_at = ? WHERE signal_id = ?").run("author", nowIso(), signalId);
-  db.prepare("UPDATE signals SET status = 'superseded' WHERE id = ?").run(signalId);
-  if (n.queue_id) {
-    db.prepare("UPDATE intake_queue SET status = 'rejected', rejection_reason = 'withdrawn by author', reviewed_by = 'author', reviewed_at = ? WHERE id = ? AND status = 'pending'")
-      .run(nowIso(), n.queue_id);
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE relation_notes SET state = 'withdrawn', resolved_by = ?, resolved_at = ? WHERE signal_id = ?").run("author", nowIso(), signalId);
+    // an admin revocation stands: the author cannot turn 'revoked' back into 'superseded'
+    db.prepare("UPDATE signals SET status = 'superseded' WHERE id = ? AND status != 'revoked'").run(signalId);
+    if (n.queue_id) {
+      db.prepare("UPDATE intake_queue SET status = 'rejected', rejection_reason = 'withdrawn by author', reviewed_by = 'author', reviewed_at = ? WHERE id = ? AND status = 'pending'")
+        .run(nowIso(), n.queue_id);
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
   }
   return getNote(db, signalId)!;
 }
@@ -408,16 +526,17 @@ export function dismissContest(db: DatabaseSync, queueId: string, opts: { by: st
   settle(db, n, "dismissed", opts.by, opts.reason, null);
 }
 
+/** Publish a pending context note — or a pending reading (the same gate). */
 export function approveContext(db: DatabaseSync, queueId: string, opts: { by: string }): void {
   const n = noteByQueueId(db, queueId);
-  if (!n || n.kind !== "context") throw new ClaimError(404, "context_not_found", queueId);
+  if (!n || (n.kind !== "context" && n.kind !== "reading")) throw new ClaimError(404, "context_not_found", queueId);
   if (n.state !== "pending") throw new ClaimError(409, "context_settled", `note is ${n.state}`);
   settle(db, n, "live", opts.by, null, null);
 }
 
 export function rejectContext(db: DatabaseSync, queueId: string, opts: { by: string; reason: string }): void {
   const n = noteByQueueId(db, queueId);
-  if (!n || n.kind !== "context") throw new ClaimError(404, "context_not_found", queueId);
+  if (!n || (n.kind !== "context" && n.kind !== "reading")) throw new ClaimError(404, "context_not_found", queueId);
   if (n.state !== "pending") throw new ClaimError(409, "context_settled", `note is ${n.state}`);
   settle(db, n, "rejected", opts.by, opts.reason, null);
 }

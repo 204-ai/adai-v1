@@ -409,7 +409,7 @@ function profileHandler(req: any, res: any) {
   if (curator) {
     const audit = auditNotesFor(db, node.id);
     if (audit.length) {
-      body += `<h3>notes — curator audit (${audit.length})</h3><p class='meta'>Every note on this page's relations and values, as stored. The public sees only live context and open contests, with the consent below applied.</p>`;
+      body += `<h3>notes — curator audit (${audit.length})</h3><p class='meta'>Every note on this page's relations and values, as stored. The public sees only live context, open contests and live readings (while their relation stands), with the consent below applied.</p>`;
       body += audit.map(relationNoteAuditHtml).join("");
     }
   }
@@ -633,7 +633,7 @@ function renderHistoryEvent(e: HistoryEvent): string {
     const target = e.relation
       ? `<code>${htmlEscape(e.relation.source_id)}</code> <span class='edge-type'>${htmlEscape(e.relation.edge_type)}</span> <code>${htmlEscape(e.relation.target_id)}</code>`
       : `<code>${htmlEscape(e.meta_key ?? "")}</code>`;
-    const label = e.note_kind === "contest" ? `contested by the subject` : `context from the subject`;
+    const label = e.note_kind === "contest" ? `contested by the subject` : e.note_kind === "reading" ? `a reading` : `context from the subject`;
     const outcome = e.note_kind === "contest" && e.state !== "open"
       ? ` <span class='tag'>${htmlEscape(e.state)}${e.resolved_at ? ` ${htmlEscape(e.resolved_at.slice(0, 10))}` : ""}</span>${e.resolution ? ` <span class='meta'>${htmlEscape(e.resolution)}</span>` : ""}`
       : e.state === "withdrawn" ? " <span class='tag'>withdrawn</span>" : "";
@@ -950,6 +950,7 @@ router.get("/review", (req, res) => {
     ["claim", "Claims"],
     ["contest", "Contests"],
     ["context", "Subject notes"],
+    ["reading", "Readings"],
   ];
   const tabKind = TABS.some(([k]) => k === tab) ? tab : "human_signal";
   const pendingCount = (k: string): number =>
@@ -968,7 +969,7 @@ router.get("/review", (req, res) => {
 
   if (qCount === 0) {
     body += `<p>Nothing to review here.</p>`;
-  } else if (tabKind === "claim" || tabKind === "contest" || tabKind === "context") {
+  } else if (tabKind === "claim" || tabKind === "contest" || tabKind === "context" || tabKind === "reading") {
     body += claimReviewCards(db, tabKind);
     if (tabKind === "claim") body += accessClaimCards(db);
   } else if (tabKind === "ai_suggestion") {

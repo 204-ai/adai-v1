@@ -151,14 +151,16 @@ queue), `intake_open_items` (cards left open at Confirm), `intake_usage`. Email 
 `project`, `event`, `related`). Cross-source identity merges by node id. Live
 counts: `GET /api/stats`.
 
-**Edge types** — 14 curated + 2 auto-derived. Curated: **CLASSIFIED_BY**,
+**Edge types** — 15 curated + 2 auto-derived. Curated: **CLASSIFIED_BY**,
 **CREATED_BY**, **EXHIBITED_AT**, **EMBODIES** (artwork → concept/tag-concept),
 **PRACTICES**, **BELONGS_TO**, **COLLABORATES_WITH**, **USES_TECHNIQUE**,
 **INFLUENCES**, plus the show/gallery cluster (a show is a `project` node):
 **PARTICIPATED_IN** (practitioner → project), **PRESENTED_BY** (project →
 institution), **CURATED_BY** (project → practitioner), **REPRESENTS**
 (institution → practitioner), and **HELD_BY** (artwork → institution: in its
-collection — EXHIBITED_AT is where it was shown). Auto-derived by `npm run embed:derive`: **STYLE_KIN**
+collection — EXHIBITED_AT is where it was shown), and **DOCUMENTS**
+(publication → project / artwork: a catalogue, book or journal issue
+documenting a show or a work; "documented in" from the other end). Auto-derived by `npm run embed:derive`: **STYLE_KIN**
 (creator ↔ creator), **VISUALLY_AFFINE** (artwork ↔ artwork), plus Tier-2
 inferred concept-EMBODIES (`created_by='embedding-multimodal-v1'`, dashed in
 `/field`). **RESPONDS_TO** (artwork → artwork) is reserved and intentionally
@@ -322,6 +324,23 @@ each attempt; past Resend's 24 h key window an unresolved batch becomes
 `state='reconcile'` for a person, never resent). Deliveries are per channel
 (`claimant_deliveries`), so web push can join email later.
 
+**Readings** (issue #80 part 3): ANY contributor — no claim needed — attaches a
+labelled reading to one live relation (`relation_notes.kind='reading'`, written
+by `fileReading` in `src/claim/notes.ts`; `node_id` = the relation's source, no
+claim implied). `POST /api/v1/readings` (bearer) or `POST /api/readings`
+(session: the "+ reading" button on an entity-view relation row) with
+`{relation, note, source_url?, consent_scope?, consent_attribution?, batch_id?}`;
+`…/:signal_id/withdraw` by its author (JSON only; never undoes an admin revoke).
+5 a minute / 30 a day per contributor across both routes (429); both stay
+under the tight 64 KB body cap (`src/utils/json-body.ts` skips them in the
+app-wide 16 MB parser). A row shows its latest 3; `/history` lists a note
+only once it was published. Tier-gated like context (probationary →
+`/review?kind=reading`). Shown on the relation row and in the accounts section
+of both ends as "a reading by X" — `publicNotesFor` never lets a reading be the
+subject (no handle, `subject_now` false, even for a claimant), and only while
+the relation is live. Taken down by the admin correction model (revoke the
+signal; retiring a node or batch ends the relation).
+
 ### Contributor API (`/api/v1/*`) — bearer-token, AI-driven
 
 The write surface for AI assistants. Every endpoint requires
@@ -340,6 +359,8 @@ caller contract is `SKILL.md` (served at `GET /skill.md`).
   uploads to R2 (content-addressed `images/<sha[:2]>/<sha>.<ext>`), attaches
   `cdn_image_url`
 - `GET /api/v1/contributions` — the contributor's own history
+- `POST /api/v1/readings` (+ `/:signal_id/withdraw`) — a labelled reading of
+  one live relation (see *Readings* above; SKILL.md §1.10)
 
 Every write accepts an optional **`batch_id`** (stamped onto the anchoring
 signal) making a whole upload session inspectable (`GET /api/v1/batches`) and

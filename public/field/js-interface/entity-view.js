@@ -327,6 +327,64 @@
     return true;
   }
 
+  // Readings (issue #80 part 3): a signed-in contributor's reading of one
+  // relation. The server renders "+ reading" only for a signed-in viewer;
+  // POST /api/readings (session cookie) publishes it at once for auto /
+  // reviewed contributors, else sends it to a curator. It is labelled
+  // "a reading by <name>" on the page — never the subject's voice.
+  function handleReading(e) {
+    const btn = e.target?.closest?.('.ev-rel-read');
+    if (!btn) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    const li = btn.closest('li');
+    if (!li) return true;
+    const open = li.querySelector('.ev-reading-form');
+    if (open) { open.remove(); btn.setAttribute('aria-expanded', 'false'); return true; }
+    li.querySelector('.ev-reading-msg')?.remove();
+    btn.setAttribute('aria-expanded', 'true');
+    const form = document.createElement('form');
+    form.className = 'ev-reading-form';
+    form.innerHTML =
+      '<textarea name="note" required maxlength="2000" placeholder="Your reading of this relation: what you see in it, in your own words."></textarea>' +
+      '<input type="url" name="source_url" placeholder="where it is published (optional link)">' +
+      '<label><input type="checkbox" name="anonymous"> do not show my name (it reads “a reading by someone”)</label>' +
+      '<button type="submit">Add reading</button>';
+    btn.insertAdjacentElement('afterend', form);
+    form.querySelector('textarea')?.focus();
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const submit = form.querySelector('button[type="submit"]');
+      if (submit) submit.disabled = true;
+      const body = {
+        relation: { source_id: btn.dataset.sourceId, edge_type: btn.dataset.edgeType, target_id: btn.dataset.targetId },
+        note: form.note.value,
+        source_url: form.source_url.value.trim() || null,
+        consent_attribution: form.anonymous.checked ? 'anonymous' : 'attributed',
+      };
+      fetch('/api/readings', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body) })
+        .then((r) => r.json().catch(() => ({})).then((j) => ({ ok: r.ok, status: r.status, j })))
+        .then(({ ok, status, j }) => {
+          const msg = document.createElement('div');
+          msg.className = 'ev-reading-msg';
+          if (ok) {
+            msg.textContent = j.status === 'live'
+              ? 'Your reading is on the page now (it shows here when the page next loads).'
+              : 'Your reading went to a curator; it shows here once published.';
+            form.remove();
+            btn.setAttribute('aria-expanded', 'false');
+          } else {
+            msg.textContent = status === 401 ? 'Sign in at /contribute to add a reading.' : (j.message || j.error || `could not save (${status})`);
+            if (submit) submit.disabled = false;
+          }
+          (form.isConnected ? form : btn).insertAdjacentElement('afterend', msg);
+        })
+        .catch(() => { if (submit) submit.disabled = false; });
+    });
+    return true;
+  }
+
   function handleAudience(e) {
     // "Who is this for" toggle: tab buttons set the audience; tapping the
     // value line cycles to the next (the mobile affordance).
@@ -356,7 +414,7 @@
 
   if (PAGE) {
     // Standalone page: the article is already here. Links navigate as links.
-    document.addEventListener('click', (e) => { if (!handleAccountsMore(e)) handleAudience(e); });
+    document.addEventListener('click', (e) => { if (!handleAccountsMore(e) && !handleReading(e)) handleAudience(e); });
     const node = articleNode(document);
     if (node) fillEmbeddings(node);
     window.ADAI_ENTITY_VIEW = { open: (id) => { window.location.href = `/field?node=${encodeURIComponent(id)}`; }, close() {}, get isOpen() { return true; } };
@@ -398,6 +456,7 @@
       return;
     }
     if (handleAccountsMore(e)) return;
+    if (handleReading(e)) return;
     if (handleAudience(e)) return;
     // "view in field →": we are in the field — close onto the node.
     if (e.target?.closest?.('.ev-field-link') && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) {

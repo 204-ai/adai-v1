@@ -9,6 +9,7 @@ export const EDGE_TYPE_LABEL: Record<string, string> = {
   CREATED_BY: "created by",
   EXHIBITED_AT: "exhibited at",
   HELD_BY: "held by",
+  DOCUMENTS: "documents",
   CLASSIFIED_BY: "classified by",
   LEGIBLE_TO: "legible to",
   PARTICIPATED_IN: "participated in",

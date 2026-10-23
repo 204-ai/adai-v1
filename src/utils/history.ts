@@ -67,7 +67,7 @@ export type HistoryEvent =
       // an edit, or a published context note. `state` is where it stands now.
       kind: "note";
       at: string | null;
-      note_kind: "contest" | "context";
+      note_kind: "contest" | "context" | "reading";
       state: string;
       note: string;
       relation: { source_id: string; edge_type: string; target_id: string } | null;
@@ -265,10 +265,16 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
 
   // ---- the subject's notes ------------------------------------------------------
   const noteRows = db.prepare(
-    `SELECT signal_id, kind, state, note, source_id, edge_type, target_id, meta_key, resolution, resolved_at, created_at
-       FROM relation_notes
-      WHERE kind IN ('contest','context') AND state NOT IN ('pending','rejected')
-        AND (source_id = ? OR target_id = ? OR (meta_key IS NOT NULL AND node_id = ?))`
+    // Only notes that were actually published: a contest is public the moment
+    // it is filed; context and readings only once their review item was
+    // approved (auto-published or by a curator) — a pending one withdrawn by
+    // its author was never public, and its words must not surface here.
+    `SELECT rn.signal_id, rn.kind, rn.state, rn.note, rn.source_id, rn.edge_type, rn.target_id, rn.meta_key, rn.resolution, rn.resolved_at, rn.created_at
+       FROM relation_notes rn
+       LEFT JOIN intake_queue q ON q.id = rn.queue_id
+      WHERE (rn.kind = 'contest'
+             OR (rn.kind IN ('context','reading') AND (q.status = 'approved' OR (rn.queue_id IS NULL AND rn.state = 'live'))))
+        AND (rn.source_id = ? OR rn.target_id = ? OR (rn.meta_key IS NOT NULL AND rn.node_id = ?))`
   ).all(nodeId, nodeId, nodeId) as any[];
   const noteEvents: HistoryEvent[] = noteRows.map((r) => {
     const sig = signal(r.signal_id);
@@ -278,7 +284,8 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
       at: r.created_at ?? null,
       note_kind: r.kind,
       state: r.state,
-      note: sig?.consent_scope === "structural_only" ? "" : r.note,
+      // a revoked note keeps its place in the history, not its words
+      note: sig?.consent_scope === "structural_only" || sig?.status === "revoked" ? "" : r.note,
       relation: r.source_id ? { source_id: r.source_id, edge_type: r.edge_type, target_id: r.target_id } : null,
       meta_key: r.meta_key ?? null,
       resolution: r.resolution ?? null,

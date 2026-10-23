@@ -70,6 +70,9 @@ const CURATED_EDGE_TYPES = new Set([
   // A work in a collection (museum, private or corporate). EXHIBITED_AT says
   // where it was shown; HELD_BY says who holds it.
   "HELD_BY",
+  // A catalogue, book or journal issue (a `publication` node) documenting a
+  // show (`project`) or a work (#80 part 4).
+  "DOCUMENTS",
 ]);
 
 const upload = multer({
@@ -544,7 +547,7 @@ router.post("/api/v1/edges", requireToken, (req, res) => {
 
   const warnings: string[] = [];
   if (!CURATED_EDGE_TYPES.has(edge_type)) {
-    warnings.push(`uncurated edge type "${edge_type}" — accepted, but prefer one of: EMBODIES, CREATED_BY, PRACTICES, EXHIBITED_AT, CLASSIFIED_BY, BELONGS_TO, COLLABORATES_WITH, USES_TECHNIQUE, INFLUENCES, RESPONDS_TO, PARTICIPATED_IN, PRESENTED_BY, CURATED_BY, REPRESENTS, HELD_BY`);
+    warnings.push(`uncurated edge type "${edge_type}" — accepted, but prefer one of: EMBODIES, CREATED_BY, PRACTICES, EXHIBITED_AT, CLASSIFIED_BY, BELONGS_TO, COLLABORATES_WITH, USES_TECHNIQUE, INFLUENCES, RESPONDS_TO, PARTICIPATED_IN, PRESENTED_BY, CURATED_BY, REPRESENTS, HELD_BY, DOCUMENTS`);
   }
   // Direction: a warning here, not a refusal — external callers predate the
   // table. The URL intake refuses (src/intake/candidate.ts).

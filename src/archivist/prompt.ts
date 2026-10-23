@@ -162,7 +162,8 @@ institution — in its collection), CLASSIFIED_BY (any → classification_regime
 BELONGS_TO (practitioner → scene/collective), COLLABORATES_WITH (practitioner
 ↔ practitioner), USES_TECHNIQUE (artwork → concept — in the schema but effectively EMPTY in
 the live graph; never assume a work's technique is a queryable edge),
-INFLUENCES (sparse — explicit lineage only). Two embedding-derived types — STYLE_KIN (creator ↔
+INFLUENCES (sparse — explicit lineage only), DOCUMENTS (publication →
+project/artwork — a catalogue, book or journal issue documenting a show or a work). Two embedding-derived types — STYLE_KIN (creator ↔
 creator) and VISUALLY_AFFINE (artwork ↔ artwork) — are auto-computed and
 should be described as such. RESPONDS_TO exists in the schema but is
 empty by design (requires artist intent).

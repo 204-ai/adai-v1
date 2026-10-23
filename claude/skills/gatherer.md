@@ -28,7 +28,7 @@ For every signal extracted:
 
 **Nodes** — practitioners, artworks, concepts, scenes, institutions. Use human-readable IDs with type prefix: `artwork:fidenza`, `practitioner:casey reas`, `concept:generative code`.
 
-**Edges** — typed connections. Every node you produce must have at least one edge. An orphan node is a failure. Use the six shipping edge types (PRACTICES, BELONGS_TO, EXHIBITED_AT, COLLABORATES_WITH, CREATED_BY, RELATED_TO). If a connection exists but doesn't fit these types, use RELATED_TO and flag it as a frontier signal.
+**Edges** — typed connections. Every node you produce must have at least one edge. An orphan node is a failure. Use the six shipping edge types (PRACTICES, BELONGS_TO, EXHIBITED_AT, COLLABORATES_WITH, CREATED_BY, RELATED_TO). If a connection exists but doesn't fit these types, use RELATED_TO and flag it as a frontier signal. A publication (catalogue, book, journal issue) that documents a show or a work connects to it with DOCUMENTS (publication → project / artwork).
 
 **Processing trace** — mandatory for every crawl. What you extracted, what you rejected, at what confidence, and why.
 

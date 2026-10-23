@@ -38,6 +38,7 @@ window.ADAI_EDGE_COLORS = (() => {
     PRESENTED_BY:       { hex: '#3F6B35', name: 'Forest' },      // project → institution
     REPRESENTS:         { hex: '#4A8FA8', name: 'Glacier' },     // institution → practitioner
     HELD_BY:            { hex: '#8C6A4F', name: 'Umber' },       // artwork → institution (collection)
+    DOCUMENTS:          { hex: '#9A8C5A', name: 'Parchment' },   // publication → project / artwork (#80)
   };
   const NEUTRAL = { hex: '#E8E6E1', name: 'Text' };  // dots with no edges
 
