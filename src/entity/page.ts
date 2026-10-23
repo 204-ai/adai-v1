@@ -6,7 +6,7 @@ import { htmlEscape as esc } from "../templates.js";
 import { fieldPath, siteBase } from "../utils/site.js";
 import { nodePath, type EntityNode, type EntityRender } from "./view.js";
 
-export const ENTITY_ASSET_VERSION = "20261022b";
+export const ENTITY_ASSET_VERSION = "20261023m";
 
 export function entityPage(node: EntityNode, r: EntityRender): string {
   const canonical = siteBase() + nodePath(node);

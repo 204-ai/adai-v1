@@ -7,7 +7,7 @@ import { htmlEscape } from "../templates.js";
 import { fieldPath } from "../utils/site.js";
 import { collapseClaims, CLAIM_COLS } from "../utils/claims.js";
 import { approvedClaimsFor, CLAIMABLE_TYPES, claimByQueueId } from "./store.js";
-import { noteByQueueId, objectionsFor, type RelationNote } from "./notes.js";
+import { noteAuthor, noteByQueueId, objectionsFor, type AuditNote, type RelationNote } from "./notes.js";
 
 const esc = (v: unknown): string => htmlEscape(String(v ?? ""));
 
@@ -190,11 +190,35 @@ export function relationNotesHtml(notes: RelationNote[] | undefined): string {
   if (!notes?.length) return "";
   return notes
     .map((n) => {
-      const who = n.handle ? `@${esc(n.handle)}` : esc(n.by ?? "the subject");
+      // publicNotesFor has applied consent; an ended claim is no longer the subject.
+      const a = noteAuthor(n);
+      const who = esc(a.who);
+      const words = n.withheld ? "<em>words kept off the public page</em>" : esc(n.note);
       return n.kind === "contest"
-        ? `<div class='meta' style='color:#d4a574'>⚑ contested by the subject (${who}): ${esc(n.note)}</div>`
-        : `<div class='meta'>“${esc(n.note)}” — ${who}</div>`;
+        ? `<div class='meta' style='color:#d4a574'>⚑ contested ${a.subject ? `by the subject (${who})` : `by ${who}`}: ${words}</div>`
+        : `<div class='meta'>${n.withheld ? words : `“${words}”`} — ${who}</div>`;
     })
     .join("");
 }
 
+
+/**
+ * The curator's audit line for a note (the record page, curators only):
+ * the words and the writer as stored, with what the public filter does to
+ * them spelled out — never shown to anyone else.
+ */
+export function relationNoteAuditHtml(n: AuditNote): string {
+  const labels = [
+    `${n.kind} · ${n.state}`,
+    n.signal_status !== "active" ? `signal ${n.signal_status} — hidden from the public` : "",
+    n.consent_attribution === "anonymous" ? "anonymous — the public sees “someone”" : "",
+    n.consent_scope === "structural_only" ? "structural only — the public does not see these words" : "",
+    n.subject_now ? "" : "claim ended — not shown as the subject",
+  ].filter(Boolean);
+  const who = `${esc(n.by ?? n.contributor_id)}${n.handle ? ` (page handle @${esc(n.handle)})` : ""}`;
+  const about = n.relation
+    ? `${esc(n.relation.source_id)} ${esc(n.relation.edge_type)} ${esc(n.relation.target_id)}`
+    : n.meta_key ? `value of ${esc(n.meta_key)} on ${esc(n.node_id)}`
+    : n.queue_ref ? `review item ${esc(n.queue_ref)} (from ${esc(n.node_id)})` : esc(n.node_id);
+  return `<div class='meta' data-audit-note='${esc(n.signal_id)}'><span class='tag'>${labels.map(esc).join("</span> <span class='tag'>")}</span> ${who} on ${about}: “${esc(n.note)}”</div>`;
+}

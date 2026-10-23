@@ -348,3 +348,26 @@ body.ev-page .adai-embed-retry::before { content: '↻'; font-size: 12px; }
 @media (max-width: 768px) { .ev-rel-note { padding-left: 0; } }
 /* A collection's holdings (works held): the maker under the title. */
 .ev-held-by { color: #8a8a8c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 6px; }
+/* Accounts (issue #80): written contributions, side by side, oldest first.
+   Modest on purpose — no card, no colour that ranks one above another; the
+   subject's own words carry a thin rule and a label, nothing louder. */
+.ev-accounts-lede { font-size: 12px; color: #6a6a6c; margin: -12px 0 20px; }
+.ev-accounts { list-style: none; margin: 0; padding: 0; }
+.ev-account { padding: 0 0 20px 14px; margin: 0 0 20px; border-left: 1px solid #2a2a2c; }
+.ev-account--subject { border-left-color: #6a6a6c; }
+.ev-account-label { font-size: 11px; color: #8a8a8c; letter-spacing: 0.03em; margin: 0 0 6px; }
+.ev-account-voice { color: var(--text, #E8E6E1); }
+.ev-account--contest .ev-account-label { color: #d4a574; }
+.ev-account-label a, .ev-account-by a { color: inherit; text-decoration: underline dotted; text-underline-offset: 3px; }
+.ev-account-title { font-size: 13px; color: var(--text, #E8E6E1); margin: 0 0 4px; }
+.ev-account-text { font-size: 13px; line-height: 1.6; color: #c8c6c1; }
+.ev-account-text p { margin: 0 0 8px; }
+.ev-account-more summary { cursor: pointer; color: #8a8a8c; font-size: 12px; }
+.ev-accounts-next {
+  font: inherit; font-size: 12px; color: #8a8a8c; cursor: pointer;
+  background: none; border: none; padding: 0; text-decoration: underline dotted; text-underline-offset: 3px;
+}
+.ev-accounts-next:hover { color: var(--text, #E8E6E1); }
+.ev-account-withheld { font-size: 12px; color: #6a6a6c; font-style: italic; margin: 0 0 4px; }
+.ev-account-by { font-size: 11px; color: #6a6a6c; margin: 4px 0 0; }
+.ev-accounts-type { font-size: 12px; font-weight: 400; color: #8a8a8c; letter-spacing: 0.06em; text-transform: lowercase; margin: 0 0 12px; }

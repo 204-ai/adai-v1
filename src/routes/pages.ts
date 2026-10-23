@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { getDb } from "../db.js";
-import { htmlPage, htmlEscape, CSS, HTML_HEADERS } from "../templates.js";
+import { htmlPage, htmlEscape, CSS, HTML_HEADERS, PRIVATE_HTML_HEADERS } from "../templates.js";
 import { fieldPath } from "../utils/site.js";
 import { topKByNodeId, withMetadata, type Neighbour } from "../embed/neighbours.js";
 import { buildEmbeddingSections } from "../embed/sections.js";
@@ -17,12 +17,13 @@ import { heldWorks } from "../utils/held-works.js";
 import { collapseClaims, CLAIM_COLS, tripleKey } from "../utils/claims.js";
 import { nodeHistory, type HistoryEvent } from "../utils/history.js";
 import { readSession } from "../intake/auth.js";
-import { accessClaimCards, accessClaimCount, claimReviewCards, curatorSignIn, objectionsBlock, profileClaimBlock, relationNotesHtml } from "../claim/pages.js";
-import { notesByTriple, publicNotesFor } from "../claim/notes.js";
+import { accessClaimCards, accessClaimCount, claimReviewCards, curatorSignIn, objectionsBlock, profileClaimBlock, relationNoteAuditHtml, relationNotesHtml } from "../claim/pages.js";
+import { auditNotesFor, notesByTriple, publicNotesFor } from "../claim/notes.js";
 import { renderEntityView, nodePath, type EntityNode, type EntityViewer } from "../entity/view.js";
 import { entityPage } from "../entity/page.js";
 import { movedTo } from "../utils/moved.js";
 import { contributorsAs } from "../utils/contributor-node.js";
+import { ACCOUNTS_SHOWN, accountItems, accountsPage, decodeCursor, encodeCursor } from "../entity/accounts.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.join(__dirname, "..", "..");
@@ -135,6 +136,26 @@ router.get("/api/entity", (req, res) => {
   res.set("Cache-Control", "no-store").json({ id: node.id, type: node.type, slug: node.slug, name: node.name, html: r.article });
 });
 
+// GET /api/entity/accounts?id=&after=&limit= — the next page of the accounts
+// section (src/entity/accounts.ts): list items to append, and the cursor after
+// them. Public, like the article it extends.
+router.get("/api/entity/accounts", (req, res) => {
+  const db = getDb();
+  const id = typeof req.query.id === "string" ? req.query.id : "";
+  const node = id ? db.prepare("SELECT id, name FROM nodes WHERE id = ?").get(id) as { id: string; name: string } | undefined : undefined;
+  if (!node) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  const limit = Number.parseInt(String(req.query.limit ?? ""), 10);
+  const page = accountsPage(db, node.id, { after: decodeCursor(req.query.after), limit: Number.isFinite(limit) ? limit : ACCOUNTS_SHOWN });
+  res.set("Cache-Control", "no-store").json({
+    html: accountItems(page.accounts, node),
+    count: page.accounts.length,
+    next: encodeCursor(page.next),
+  });
+});
+
 // GET /record/:type/:slug — the record view: the back office of one node —
 // every field, contribution, relation and its provenance. Linked from the
 // entity view for curators and from the review queue.
@@ -142,7 +163,7 @@ function profileHandler(req: any, res: any) {
   const db = getDb();
   const node = nodeAt(db, req.params.type, req.params.slug) as any;
   if (!node) {
-    res.status(404).set(HTML_HEADERS).send(notFoundPage());
+    res.status(404).set(PRIVATE_HTML_HEADERS).send(notFoundPage());
     return;
   }
   const slug = node.slug;
@@ -355,7 +376,10 @@ function profileHandler(req: any, res: any) {
     )
     .all(node.id, node.id) as any[]);
 
-  // The subject's word on its relations: open contests, context notes.
+  // The subject's word on its relations: open contests, context notes. The
+  // record is public: everyone gets the public filter, except a curator, who
+  // gets the full audit view of every note below the relations.
+  const curator = viewerOf(db, req).curator;
   const notes = notesByTriple(publicNotesFor(db, node.id));
   if (edges.length > 0) {
     const grouped = new Map<string, any[]>();
@@ -379,6 +403,14 @@ function profileHandler(req: any, res: any) {
         body += `<li><a href='/record/${encodeURIComponent(otherType)}/${encodeURIComponent(otherSlug)}'>${htmlEscape(String(otherName ?? otherSlug))}</a>${claimed}${relationNotesHtml(notes.get(tripleKey(e)))}</li>`;
       }
       body += `</ul></div>`;
+    }
+  }
+
+  if (curator) {
+    const audit = auditNotesFor(db, node.id);
+    if (audit.length) {
+      body += `<h3>notes — curator audit (${audit.length})</h3><p class='meta'>Every note on this page's relations and values, as stored. The public sees only live context and open contests, with the consent below applied.</p>`;
+      body += audit.map(relationNoteAuditHtml).join("");
     }
   }
 
@@ -429,7 +461,8 @@ function profileHandler(req: any, res: any) {
   body += ` <a href='${htmlEscape(fieldPath(node))}' class='btn'>View in field</a>`;
   body += ` <a href='/${encodeURIComponent(node.type)}/${encodeURIComponent(slug)}/history' class='btn'>History</a>`;
 
-  res.set(HTML_HEADERS).send(htmlPage(node.name, body, "", { fieldNode: node }));
+  // a curator sees the audit view on this same URL: never cached for anyone
+  res.set(PRIVATE_HTML_HEADERS).send(htmlPage(node.name, body, "", { fieldNode: node }));
 }
 
 // Render the "Style kin", "Visually affine", and "AI-suggested attributions"
@@ -907,7 +940,7 @@ router.get("/review", (req, res) => {
   const db = getDb();
   const session = readSession(db, req);
   if (!session || session.contributor.scope !== "admin") {
-    res.status(session ? 403 : 401).set(HTML_HEADERS).send(htmlPage("Review Queue", curatorSignIn(!!session)));
+    res.status(session ? 403 : 401).set(PRIVATE_HTML_HEADERS).send(htmlPage("Review Queue", curatorSignIn(!!session)));
     return;
   }
   const tab = String(req.query.kind ?? "human_signal");
@@ -1077,7 +1110,7 @@ fetch('/api/review/'+id+'/'+action,{method:'POST',headers:{'Content-Type':'appli
 }
 </script>`;
 
-  res.set(HTML_HEADERS).send(htmlPage("Review Queue", body));
+  res.set(PRIVATE_HTML_HEADERS).send(htmlPage("Review Queue", body));
 });
 
 // GET /field — data-driven p5-derived dot-field view (assets in public/field).

@@ -18,7 +18,7 @@
 import { Router, type Request, type Response } from "express";
 import express from "express";
 import { getDb } from "../db.js";
-import { HTML_HEADERS, JSON_HEADERS, htmlPage } from "../templates.js";
+import { HTML_HEADERS, JSON_HEADERS, PRIVATE_HTML_HEADERS, htmlPage } from "../templates.js";
 import {
   clientIp, ensureContributorForEmail, isInvited, loginRateOk, normaliseEmail, recordAccessRequest,
   requireContributor, requireCurator, contributorByEmail,
@@ -205,12 +205,12 @@ router.post("/api/review/access/reject", json, requireCurator, (req, res) => {
 // ---- the personal log ------------------------------------------------------------------
 
 router.get("/me", (req, res) => {
-  res.set(HTML_HEADERS).send(mePage());
+  res.set(PRIVATE_HTML_HEADERS).send(mePage());
 });
 
 router.get("/api/me/log", requireContributor, (req, res) => {
   const node = typeof req.query.node === "string" ? req.query.node : null;
-  res.set(JSON_HEADERS).json(buildLog(getDb(), req.contributor!.id, node));
+  res.set({ ...JSON_HEADERS, "Cache-Control": "private, no-store" }).json(buildLog(getDb(), req.contributor!.id, node));
 });
 
 // How often a claimant hears what was added about their pages (issue #81).

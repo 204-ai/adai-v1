@@ -22,8 +22,9 @@ import { heldWorks } from "../utils/held-works.js";
 import { CLAIMABLE_TYPES } from "../claim/store.js";
 import { approvedClaimsFor } from "../claim/store.js";
 import { externalLinks } from "./external-links.js";
+import { accountsSection } from "./accounts.js";
 import { SHOWCASE, type Showcase, type ShowcaseWork } from "./showcase.js";
-import { notesByTriple, publicNotesFor, type RelationNote } from "../claim/notes.js";
+import { noteAuthor, notesByTriple, publicNotesFor, type RelationNote } from "../claim/notes.js";
 import { tripleKey } from "../utils/claims.js";
 import { edgeLabel } from "../utils/edge-labels.js";
 import { fieldPath } from "../utils/site.js";
@@ -384,10 +385,13 @@ function worksSection(node: EntityNode, gathered: ReturnType<typeof gatherWorks>
 /** The subject's word on a relation: an open contest, or context (docs/CLAIM-SPEC.md). */
 function notesHtml(notes: RelationNote[]): string {
   return notes.map((n) => {
-    const who = n.handle ? `@${esc(n.handle)}` : esc(n.by ?? "the subject");
+    // publicNotesFor has applied consent; an ended claim is no longer the subject.
+    const a = noteAuthor(n);
+    const who = esc(a.who);
+    const words = n.withheld ? `<em>words kept off the public page</em>` : esc(n.note);
     return n.kind === "contest"
-      ? `<div class="ev-rel-note ev-rel-note--contest">⚑ contested by the subject (${who}): ${esc(n.note)}</div>`
-      : `<div class="ev-rel-note">“${esc(n.note)}” — ${who}</div>`;
+      ? `<div class="ev-rel-note ev-rel-note--contest">⚑ contested ${a.subject ? `by the subject (${who})` : `by ${who}`}: ${words}</div>`
+      : `<div class="ev-rel-note">${n.withheld ? words : `“${words}”`} — ${who}</div>`;
   }).join("");
 }
 
@@ -694,6 +698,7 @@ export function renderEntityView(db: DatabaseSync, node: EntityNode, viewer: Ent
         ${rosterSection(db, node)}
         ${heldWorksSection(db, node)}
         ${relationGroups(db, node, edges, showcase, notesByTriple(publicNotesFor(db, node.id)), gathered.source === "graph").map(groupSection).join("")}
+        ${accountsSection(db, node)}
         ${embeddingsPlaceholder()}
         ${listSection("collections (editorial)", showcase?.collections ?? [])}
         ${listSection("exhibitions.selected (editorial)", showcase?.exhibitions_selected ?? [])}

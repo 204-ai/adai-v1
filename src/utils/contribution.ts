@@ -127,6 +127,8 @@ export function insertSignal(db: DatabaseSync, args: CreateSignalArgs): string {
     args.batch_id ?? null,
     args.provenance_chain ?? null
   );
+  // The authenticated author, by id (issue #80): submitted_by is only a name.
+  db.prepare("INSERT OR IGNORE INTO signal_authors (signal_id, contributor_id, via) VALUES (?, ?, 'write')").run(signalId, args.contributor.id);
   // Claimants hear about it (issue #81): the listener only schedules a pass,
   // after this write's transaction has had time to commit.
   contributionWritten();

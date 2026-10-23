@@ -302,6 +302,31 @@
     return b?.focusedId || null;
   }
 
+  // Accounts (issue #80): the next page, appended in order, from
+  // GET /api/entity/accounts — the first page comes with the article.
+  function handleAccountsMore(e) {
+    const btn = e.target?.closest?.('.ev-accounts-next');
+    if (!btn) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    if (btn.disabled) return true;
+    btn.disabled = true;
+    const list = btn.parentElement?.querySelector('.ev-accounts');
+    const q = `id=${encodeURIComponent(btn.dataset.nodeId)}&after=${encodeURIComponent(btn.dataset.after)}`;
+    fetch(`/api/entity/accounts?${q}`, { headers: { accept: 'application/json' } })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((j) => {
+        if (list) list.insertAdjacentHTML('beforeend', j.html || '');
+        const left = Math.max(0, (parseInt(btn.textContent, 10) || 0) - (j.count || 0));
+        if (!j.next || !left) { btn.remove(); return; }
+        btn.dataset.after = j.next;
+        btn.textContent = `${left} more, in the same order`;
+        btn.disabled = false;
+      })
+      .catch(() => { btn.disabled = false; });
+    return true;
+  }
+
   function handleAudience(e) {
     // "Who is this for" toggle: tab buttons set the audience; tapping the
     // value line cycles to the next (the mobile affordance).
@@ -331,7 +356,7 @@
 
   if (PAGE) {
     // Standalone page: the article is already here. Links navigate as links.
-    document.addEventListener('click', handleAudience);
+    document.addEventListener('click', (e) => { if (!handleAccountsMore(e)) handleAudience(e); });
     const node = articleNode(document);
     if (node) fillEmbeddings(node);
     window.ADAI_ENTITY_VIEW = { open: (id) => { window.location.href = `/field?node=${encodeURIComponent(id)}`; }, close() {}, get isOpen() { return true; } };
@@ -372,6 +397,7 @@
       openContributePanel();
       return;
     }
+    if (handleAccountsMore(e)) return;
     if (handleAudience(e)) return;
     // "view in field →": we are in the field — close onto the node.
     if (e.target?.closest?.('.ev-field-link') && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) {
