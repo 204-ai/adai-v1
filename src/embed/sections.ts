@@ -76,9 +76,9 @@ export function buildEmbeddingSections(
     if (styleKin.length) {
       sections.push({
         key: "style_kin",
-        title: "Style kin",
+        title: "Resemblances to explore",
         blurb:
-          "Each artist gets a single style signature — the centre of gravity of their work — and those signatures are matched. The model reads what the work looks like and what's said about it, but never who made it or when. That's why a resemblance can leap across decades or link scenes that never met. An aesthetic kinship to explore — not a school, lineage, or influence.",
+          "Each artist gets a single style signature — the centre of gravity of their works — and those signatures are matched. The model reads each artwork's image and its description as we hold them, including title, year and medium. It doesn't read interviews, biographies or the relationships people have added. Artists are compared through the works represented in A(DAI), which may cover only part of a practice. A resemblance can leap across decades or link scenes that never met: a lead to explore, not a school, lineage or influence.",
         neighbours: styleKin,
       });
     }
@@ -142,7 +142,7 @@ export function buildEmbeddingSections(
         key: "visually_affine",
         title: "Visually affine",
         blurb:
-          "Artworks closest in the embedding space (image + text fused via Gemini Embedding 2).",
+          "Artworks closest in the embedding space: each work's image and its description as we hold them (title, year, medium), read together into one vector. Leads to explore, not claims.",
         neighbours: affine,
       });
     }

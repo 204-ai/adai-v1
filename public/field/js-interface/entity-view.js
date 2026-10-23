@@ -55,7 +55,7 @@
     collectors: 'Collectors',
   };
   const AUDIENCE_LINE = {
-    everyone: 'Resemblances to explore: leads to follow, not claims to trust.',
+    everyone: 'Leads to follow, not claims to trust.',
     curators: 'Threads for a show, and a compass to the gaps worth researching.',
     artists: 'See who you rhyme with, then claim, correct, or follow it.',
     collectors: 'Kindred work across platforms, and the tradition a piece sits near.',
@@ -116,8 +116,10 @@
   }
 
   function renderEmbeddingNeighbour(n) {
+    // No similarity score in the public view (cosines bunch within a few
+    // hundredths and read as more conclusive than they are); the order
+    // carries the ranking. Scores stay on /record and /neighbours.
     const url = n.cdn_image_url || n.image_url || '';
-    const sim = (typeof n.similarity === 'number') ? n.similarity.toFixed(3) : '—';
     const name = escapeHtml(n.name || n.node_id);
     const type = escapeHtml(n.type || '?');
     const img = url
@@ -130,13 +132,16 @@
           <span class="ev-emb-name">${name}</span>
           <span class="ev-emb-row">
             <span class="ev-emb-type">[${type}]</span>
-            <span class="ev-emb-sim">${sim}</span>
           </span>
         </div>`;
     return href
       ? `<a class="ev-emb-card" href="${escapeHtml(href)}" data-node-id="${escapeHtml(n.node_id)}" title="${name}">${inner}</a>`
       : `<div class="ev-emb-card" title="${name}">${inner}</div>`;
   }
+
+  // The section keys are internal (the STYLE_KIN edge type keeps its name);
+  // the tag shown beside a heading reads as the heading does.
+  const EMB_KEY_LABEL = { style_kin: 'resemblances' };
 
   function renderEmbeddingsBody(payload) {
     const sections = payload?.sections || [];
@@ -145,7 +150,8 @@
     const blocks = sections.map((s) => {
       const cards = (s.neighbours || []).map(renderEmbeddingNeighbour).join('');
       const blurb = s.blurb ? `<p class="ev-emb-blurb">${escapeHtml(s.blurb)}</p>` : '';
-      const keyTag = s.key ? `<span class="ev-emb-key">[${escapeHtml(s.key)}]</span>` : '';
+      const keyLabel = EMB_KEY_LABEL[s.key] || s.key;
+      const keyTag = keyLabel ? `<span class="ev-emb-key">[${escapeHtml(keyLabel)}]</span>` : '';
       // Only the style-kin panel carries the audience toggle for now.
       const toggle = s.key === 'style_kin' ? renderAudienceToggle() : '';
       return `
