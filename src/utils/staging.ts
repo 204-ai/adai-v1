@@ -12,6 +12,7 @@
 //   r2         off (default) | on   upload to the public image bucket
 //   gemini     off (default) | on   embed-on-write + embedding lookups
 //   archivist  on (default) | off   the /field archivist (read-only, budget-capped)
+//   activity   off (default) | on   the live activity feed (issue #83; on prod: ACTIVITY_FEED=on)
 //   data       nightly (default) | keep   keep is read by entrypoint.sh
 //
 // Set with `just staging-set …` (a Fly secret; the machine restarts). The
@@ -29,6 +30,7 @@ const DEFAULTS: Record<string, string> = {
   r2: "off",
   gemini: "off",
   archivist: "on",
+  activity: "off",
   data: "nightly",
 };
 

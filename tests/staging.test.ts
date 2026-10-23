@@ -34,7 +34,7 @@ it("staging: on prod every integration is on and mail goes to everyone", () => {
 it("staging: defaults hold every outward integration but the archivist", () => {
   env("staging");
   process.env.GEMINI_API_KEY = "k";
-  assert.deepEqual(switches(), { mail: "stdout", worker: "off", r2: "off", gemini: "off", archivist: "on", data: "nightly" });
+  assert.deepEqual(switches(), { mail: "stdout", worker: "off", r2: "off", gemini: "off", archivist: "on", activity: "off", data: "nightly" });
   assert.equal(switchOn("worker"), false);
   assert.equal(switchOn("r2"), false);
   assert.equal(switchOn("archivist"), true);

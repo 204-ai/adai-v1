@@ -173,7 +173,7 @@ shrink-oversized-prod-apply: _pull-live-db
 # The `staging` branch runs on a nightly copy of the prod DB; staging never replicates and
 # every outward integration sits behind a switch (src/utils/staging.ts):
 #   mail=stdout|allowlist:<addr|@domain>,…|live  worker=on  r2=on  gemini=on
-#   archivist=off  data=keep
+#   archivist=off  activity=on  data=keep
 # CI deploys the `staging` branch after it passes (merges to main never touch
 # it); `just staging-promote` moves it to main, `just staging-deploy` puts
 # any working tree up.
