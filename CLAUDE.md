@@ -213,6 +213,8 @@ empty — it requires evidence of artist intent, not thematic similarity.
 - `GET /skill.md` — the contributor contract (verbatim `SKILL.md`)
 - `GET /whitepaper` — the current whitepaper; `/whitepaper/v1.7` pins a release
   (see *Whitepaper* below)
+- `GET /offline` — the commons on your own machine (issue #82): download the
+  public snapshot (`SNAPSHOT_URL`; unset → "not published yet"), open it, query it
 
 ### JSON API
 - `GET /api/stats` — node/edge/signal counts (retired-filtered)
@@ -427,6 +429,31 @@ CLIs resolve the DB path via `src/utils/db-path.ts` (`DB_PATH` → `/data/adai.d
 → `./adai.db`). `.tokens.json` (gitignored, repo root) holds the raw operator
 tokens for `just restore-tokens`. `contributor_tokens` is local-only — never a
 CRR (token material must never sync).
+
+## Public snapshot (issue #82)
+
+`npm run snapshot:export -- --out file.sqlite [--jsonl dir]` (`src/cli/export-snapshot.ts`,
+`src/snapshot/build.ts`) reads the source **read-only** (no `initDb`, one read
+transaction) and writes, atomically and never over the source, a **plain SQLite
+file** (no cr-sqlite needed) with only the five CRR tables plus a `meta` table.
+The privacy boundary is the projection: public signals only, decided per batch and
+operation (a probationary URL-intake batch stays out while its review is pending
+or rejected); structural_only / revoked keep the row without words; anonymous
+ones lose every correlation handle (batch id, provenance; edges' `created_by`
+and ids re-minted, references followed); signal content is prose only — structured
+(JSON) bodies (API payloads, admin records with before-images) become at most
+`{op, node_id?, edge_id?}`; node metadata is a typed, recursive allowlist of what
+the entity view shows (key works as `{title, year, description}`, no
+`image_provenance`, the upstream `image_url` only without a mirror copy), minus
+any value a restricted or non-public contribution wrote; URLs (aliases included)
+lose signed-looking query parameters, and one with userinfo is left out; `updated_by` only when the latest writer is
+public and attributed; contributors only when named publicly, counters recomputed,
+no trust tiers; references to records not in the file are NULL. A central
+sanitiser (emails, common key shapes) runs over every value, every serialised JSON
+string and every `meta` value as defence in depth only. No local tables, no embeddings; images stay on the public R2 URLs. Publishing:
+`.github/workflows/snapshot-publish.yml` (dispatch-only until the licence statement
+is decided) uploads to the public bucket under `snapshots/` — outside the
+`images/` prefix `cull_orphans.py` works on.
 
 ## Whitepaper
 

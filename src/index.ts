@@ -12,6 +12,7 @@ import archivistRoutes from "./routes/archivist.js";
 import intakeRoutes from "./routes/intake.js";
 import claimRoutes from "./routes/claim.js";
 import activityRoutes from "./routes/activity.js";
+import offlineRoutes from "./routes/offline.js";
 import internalRoutes, { workerKey } from "./routes/internal.js";
 import { startSpawnerInterval, isSpawnerConfigured } from "./intake/spawn.js";
 import { isSessionConfigured } from "./intake/auth.js";
@@ -170,6 +171,7 @@ app.use(intakeRoutes);
 // Claims, /@handle, /me (docs/CLAIM-SPEC.md).
 app.use(claimRoutes);
 app.use(activityRoutes);
+app.use(offlineRoutes);
 if (workerKey()) {
   app.use(internalRoutes);
   console.log("[intake] /internal/intake/* mounted");
