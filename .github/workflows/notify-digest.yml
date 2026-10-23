@@ -1,6 +1,7 @@
 name: notify-digest
 
-# Emails a digest of the review queue to the admin notify list, on a schedule.
+# Emails a digest of the review queue to the admin notify list, on a schedule,
+# then the daily claimant notifications (issue #81, src/cli/notify-claimants.ts).
 #
 # Runs `node /app/dist/cli/notify-digest.js` inside the live Fly machine
 # (against /data/adai.db). The CLI reads pending intake_queue rows, and emails
@@ -73,3 +74,14 @@ jobs:
         run: |
           curl -fsSL -o /dev/null https://adai-basel.fly.dev/api/stats
           flyctl ssh console --app adai-basel -C "node /app/dist/cli/notify-digest.js"
+
+      - name: tell claimants what was added about them
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        # Issue #81: the daily pass of the claimant notifications (setting
+        # `daily`, the default, plus anything an immediate pass missed).
+        # Same RESEND_* secrets as above; sends from INTAKE_FROM.
+        if: ${{ !cancelled() }}
+        run: |
+          curl -fsSL -o /dev/null https://adai-basel.fly.dev/api/stats
+          flyctl ssh console --app adai-basel -C "node /app/dist/cli/notify-claimants.js"

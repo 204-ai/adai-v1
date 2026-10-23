@@ -9,6 +9,8 @@
 //   GET  /api/claims/handle?h=&node=  availability
 //   POST /api/claims/handle           {node_id, handle}
 //   GET  /api/me/log?node=
+//   GET  /api/me/notifications        {email: immediate|daily|off} (issue #81)
+//   POST /api/me/notifications        {email}
 //   POST /api/me/contest | /context | /objection | /invite
 //   POST /api/me/notes/:signal_id/withdraw
 //   POST /api/review/access/approve | /reject   curator: a signed-out claim request
@@ -30,6 +32,7 @@ import { checkInvite, fileNote, recordPeerInviteClaim, withdrawNote } from "../c
 import { buildLog, myNodes } from "../claim/log.js";
 import { sendAdminClaimRequestEmail, sendClaimConflictEmail, sendClaimDecisionEmail, sendPeerInviteEmail } from "../claim/mail.js";
 import { claimPage, mePage } from "../claim/screens.js";
+import { EMAIL_MODES, getNotifyPrefs, setEmailMode } from "../notify/claimants.js";
 
 const router = Router();
 // Same tight body cap as /api/intake/*; these bodies are a sentence or two.
@@ -208,6 +211,20 @@ router.get("/me", (req, res) => {
 router.get("/api/me/log", requireContributor, (req, res) => {
   const node = typeof req.query.node === "string" ? req.query.node : null;
   res.set(JSON_HEADERS).json(buildLog(getDb(), req.contributor!.id, node));
+});
+
+// How often a claimant hears what was added about their pages (issue #81).
+router.get("/api/me/notifications", requireContributor, (req, res) => {
+  res.set(JSON_HEADERS).json({ ...getNotifyPrefs(getDb(), req.contributor!.id), modes: EMAIL_MODES });
+});
+
+router.post("/api/me/notifications", json, requireContributor, (req, res) => {
+  const mode = typeof req.body?.email === "string" ? req.body.email : "";
+  if (!(EMAIL_MODES as readonly string[]).includes(mode)) {
+    res.status(400).set(JSON_HEADERS).json({ error: "bad_mode", message: `email is one of ${EMAIL_MODES.join(", ")}` });
+    return;
+  }
+  res.set(JSON_HEADERS).json({ ...setEmailMode(getDb(), req.contributor!.id, mode), modes: EMAIL_MODES });
 });
 
 function noteRoute(kind: "contest" | "context" | "objection") {

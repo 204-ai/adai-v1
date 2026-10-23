@@ -298,6 +298,24 @@ opens on a signed-in claimant's node; `m` / the chip veils everything beyond
 2 hops (1 past 500 nodes). Receipts (`/batch/:id`) ask "is one of these you?".
 Code: `src/claim/*`, `src/routes/claim.ts`; SKILL.md §1.9 + §4.6c.
 
+Claimants are **told** when someone else adds a relation (live or in review), an
+edit or a note about their page (issue #81, `src/notify/claimants.ts`): a scan
+over `nodeHistory` + the review queue records `claimant_events`, mail goes out
+per the `/me` setting (`notify_prefs.email` = immediate | daily (default) | off;
+`GET/POST /api/me/notifications`), consent-filtered ("Someone …"), never about
+their own contributions. Immediate: the server, ~90 s after a contribution
+(`src/notify/kick.ts`; `NOTIFY_CLAIMANTS=off` disables it). Daily:
+`node dist/cli/notify-claimants.js` in `notify-digest.yml` (exits 1 if any
+email failed). Events store references and are re-checked when the mail is
+written (claim still approved, node not retired, nothing rejected / withdrawn
+/ revoked; consent read then). Emails are reserved as leased batches before any
+network I/O and sent with the batch id as Resend's `Idempotency-Key`, so
+overlapping passes or a crash never send twice (lease-fenced writes; the whole
+provider request frozen; preference, claims and every line re-checked before
+each attempt; past Resend's 24 h key window an unresolved batch becomes
+`state='reconcile'` for a person, never resent). Deliveries are per channel
+(`claimant_deliveries`), so web push can join email later.
+
 ### Contributor API (`/api/v1/*`) — bearer-token, AI-driven
 
 The write surface for AI assistants. Every endpoint requires

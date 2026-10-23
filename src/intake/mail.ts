@@ -8,7 +8,7 @@ import { issueMagicLink, baseUrl } from "./auth.js";
 import type { Draft } from "./draft.js";
 import type { ConfirmResult } from "./draft.js";
 
-function from(): string {
+export function fromAddress(): string {
   return process.env.INTAKE_FROM || "A(DAI) <contribute@fragcolor.com>";
 }
 
@@ -18,7 +18,7 @@ export function replyTo(): string[] {
 
 export async function send(to: string, subject: string, text: string, html?: string): Promise<void> {
   try {
-    await sendMail({ from: from(), to: [to], replyTo: replyTo(), subject, text, html: html ?? textToHtml(text) });
+    await sendMail({ from: fromAddress(), to: [to], replyTo: replyTo(), subject, text, html: html ?? textToHtml(text) });
   } catch (e: any) {
     console.error(`[intake-mail] failed to send "${subject}" to ${to}: ${e?.message ?? e}`);
   }

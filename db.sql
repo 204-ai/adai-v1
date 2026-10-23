@@ -410,3 +410,73 @@ CREATE TABLE IF NOT EXISTS relation_notes (
 CREATE INDEX IF NOT EXISTS idx_relation_notes_triple ON relation_notes(source_id, edge_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_relation_notes_node ON relation_notes(node_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_relation_notes_queue_ref ON relation_notes(queue_ref);
+
+-- Telling claimants when something is added about them (issue #81). All
+-- local (never CRRs): they hold who gets mail and when, keyed by
+-- contributor id; the addresses stay in contributor_emails.
+--
+-- How often a contributor hears about their claimed pages. One row per
+-- contributor once they change it; no row = the defaults below.
+CREATE TABLE IF NOT EXISTS notify_prefs (
+    contributor_id  TEXT PRIMARY KEY NOT NULL,
+    email           TEXT NOT NULL DEFAULT 'daily',   -- immediate | daily | off
+    push            TEXT NOT NULL DEFAULT 'off',     -- reserved for web push (not wired yet)
+    updated_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- One thing that happened to a claimed page, for one claimant: found by the
+-- scan in src/notify/claimants.ts. `event_key` names the underlying change
+-- (the same relation seen pending and then live is one event), so a rescan
+-- never repeats itself. `ref` holds structured references only (signal,
+-- edge, queue row, note) — the sentence is built when the mail is, from the
+-- record as it then stands (approved, rejected, withdrawn, revoked, consent).
+CREATE TABLE IF NOT EXISTS claimant_events (
+    id              TEXT PRIMARY KEY NOT NULL,       -- 'cev_' + 16 hex
+    contributor_id  TEXT NOT NULL,
+    node_id         TEXT NOT NULL,
+    event_key       TEXT NOT NULL,
+    kind            TEXT NOT NULL,                   -- relation | ended | edit | note | pending
+    ref             TEXT NOT NULL,                   -- JSON: what to re-read at send time
+    at              TEXT,                            -- when it happened in the commons
+    created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE (contributor_id, node_id, event_key)
+);
+CREATE INDEX IF NOT EXISTS idx_claimant_events_contributor ON claimant_events(contributor_id, created_at);
+
+-- One email (or, later, one push) to one claimant: reserved with a lease
+-- before any network I/O, its events bound to it in claimant_deliveries, the
+-- whole provider request frozen on the first attempt so a retry sends the
+-- same request under the same Resend Idempotency-Key (the batch id). Every
+-- write to a reserved batch is fenced by its lease owner; terminal states
+-- never change again.
+CREATE TABLE IF NOT EXISTS claimant_batches (
+    id              TEXT PRIMARY KEY NOT NULL,       -- 'cnb_' + 16 hex; also the idempotency key
+    contributor_id  TEXT NOT NULL,
+    channel         TEXT NOT NULL,                   -- email (push later)
+    state           TEXT NOT NULL,                   -- reserved | sent | failed | suppressed | skipped | reconcile
+    lease_owner     TEXT,                            -- the pass holding the lease (a fencing token)
+    lease_until     TEXT,                            -- a reserved batch past its lease may be taken over
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    first_attempt_at TEXT,                           -- Resend keeps idempotency keys 24 h: past ~23 h, no automatic resend
+    payload         TEXT,                            -- JSON {request: {from,to,reply_to,subject,text,html}, lines: [{event_id,line}]}
+    ref             TEXT,                            -- the transport's message id
+    error           TEXT,
+    created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_claimant_batches_state ON claimant_batches(channel, state, lease_until);
+
+-- An event on one channel. No row = not yet taken. state: reserved (in
+-- batch_id) | sent | failed | skipped (setting off / no address) |
+-- suppressed (no longer true or no longer theirs: claim ended, node retired,
+-- rejected, withdrawn, revoked).
+CREATE TABLE IF NOT EXISTS claimant_deliveries (
+    event_id        TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    state           TEXT NOT NULL,
+    batch_id        TEXT,
+    reason          TEXT,
+    at              TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (event_id, channel)
+);
+CREATE INDEX IF NOT EXISTS idx_claimant_deliveries_batch ON claimant_deliveries(batch_id);

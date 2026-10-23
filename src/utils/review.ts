@@ -16,6 +16,7 @@
 
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { contributionWritten } from "../notify/kick.js";
 import {
   materialiseCreateNode,
   materialisePatchNode,
@@ -156,6 +157,7 @@ export function approveIntakeItem(
 
   db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE name = ?").run(item.submitted_by);
   settleObjections(db, id, "approved", reviewedBy);
+  contributionWritten(); // what was in review is live now (issue #81)
 
   return { ok: true, intake_id: id };
 }
