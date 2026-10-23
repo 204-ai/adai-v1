@@ -301,7 +301,7 @@ It is **platform-crossing**: the tag *vocabulary* is seeded from fxhash tags, bu
 
 | Surface | What it shows | Code |
 |---|---|---|
-| **Profile pages** (`/practitioner/:slug`, `/artwork/:slug`, `/concept/:slug`, `/scene/:slug`) | Style kin / Visually affine / Style proximity / pending AI proposals — computed on-demand from in-memory vectors (~1 ms per request) | `src/routes/pages.ts::renderEmbeddingSections` |
+| **Profile pages** (`/practitioner/:slug`, `/artwork/:slug`, `/concept/:slug`, `/scene/:slug`) | Resemblances to explore (the style-kin section) / Visually affine / Style proximity / pending AI proposals — computed on-demand from in-memory vectors (~1 ms per request). The public entity view and the `/field` strip show neighbours ranked, without cosine scores (they bunch within a few hundredths and read as more conclusive than they are); `/record` and `/neighbours` keep the scores for evaluation | `src/embed/sections.ts`; `src/routes/pages.ts::renderEmbeddingSections` (record view) |
 | **`/neighbours/:type/:slug`** | Top-K cosine neighbours of any node; shareable URL with knobs for query/candidate kind, type prefix, k | `src/routes/pages.ts` (handler) + `src/embed/neighbours.ts` |
 | **`/field`** | Derived edges render dashed by default. Press **`e`** (or click the chrome chip) to flip into "embeddings mode": curatorial edges fade to ~3 % alpha, STYLE_KIN + VISUALLY_AFFINE rise to ~60 % | `public/field/sketch-graph.js::edgeDimming` |
 | **`/review?kind=ai_suggestion`** | Curatorial queue for AI attribution proposals with cosine scores visible | `src/routes/pages.ts::/review` + `src/routes/api.ts` approve/reject handlers |

@@ -472,6 +472,21 @@ The `/field` philosophy panel's "Read the whitepaper" button points at `/whitepa
 Gemini Embedding (multimodal, 768-d, L2-normalised). Vectors live in the
 local-only `node_embeddings` table (NOT a CRR).
 
+- **Provider** (`src/embed/provider.ts`): `EMBED_PROVIDER=gemini` (default,
+  `GEMINI_API_KEY`) or `openai` — any OpenAI-compatible `/embeddings` endpoint
+  serving an open model (`EMBED_BASE_URL`, default DeepInfra; `EMBED_API_KEY`;
+  `EMBED_MODEL`, default `google/embeddinggemma-2`). `node_embeddings.model` is
+  the model's tag and every reader takes only the current tag, so a **model
+  switch** = set the env, `embed:import --from=<db>` (reuse vectors already
+  computed elsewhere: a row moves only when its model, text hash and image hash
+  — read off the content-addressed R2 key, no download — match what the node
+  would be embedded from now; seconds, no API calls), `embed:backfill` (embeds
+  only what is left), `embed:derive` with re-carried τ. Compare two models first
+  with `scripts/embed-compare.ts`. Images the provider can't take (AVIF, >14 MB)
+  embed as text only. The staging `gemini` switch governs either provider.
+  `initDb` sets a 15 s busy timeout, so the server and an operator CLI writing
+  the same file wait for each other instead of failing "database is locked".
+
 - **`npm run embed:derive`** chains `centroids → derive`: recomputes style
   centroids for practitioners + collectives from live `CREATED_BY` edges and
   emits **STYLE_KIN** + **VISUALLY_AFFINE** rows plus **SUGGESTS_CREATED_BY**

@@ -2141,10 +2141,10 @@
       html += `<div class="adai-embed-section" data-key="${escapeForBreadcrumb(s.key || '')}" style="display:flex;flex-direction:column;gap:3px;align-items:flex-end;width:100%">`;
       html += `<div style="color:#888;font-size:9px;letter-spacing:0.04em">${escapeForBreadcrumb(title)} <span style="opacity:0.55">${items.length}</span></div>`;
       for (const n of top) {
-        const sim = (typeof n.similarity === 'number') ? n.similarity.toFixed(3) : '—';
+        // No similarity score here (see entity-view.js): the order ranks.
         const name = n.name || n.node_id;
         const typeTag = n.type ? `<span style="color:#555;font-size:9px;margin-right:4px">${escapeForBreadcrumb(n.type)}</span>` : '';
-        html += `<span class="adai-embed-chip" data-node-id="${escapeForBreadcrumb(n.node_id)}" title="${escapeForBreadcrumb(name)} · cosine ${sim}" style="background:transparent;border:1px solid #2a2a30;color:#c8c8c8;padding:2px 8px;border-radius:2px;cursor:pointer;font-size:9px;line-height:1.4;max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:inline-block">${typeTag}${escapeForBreadcrumb(name)}<span style="opacity:0.5;margin-left:6px;font-variant-numeric:tabular-nums">${sim}</span></span>`;
+        html += `<span class="adai-embed-chip" data-node-id="${escapeForBreadcrumb(n.node_id)}" title="${escapeForBreadcrumb(name)}" style="background:transparent;border:1px solid #2a2a30;color:#c8c8c8;padding:2px 8px;border-radius:2px;cursor:pointer;font-size:9px;line-height:1.4;max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:inline-block">${typeTag}${escapeForBreadcrumb(name)}</span>`;
       }
       html += '</div>';
     }
