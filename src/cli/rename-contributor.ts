@@ -38,6 +38,7 @@
 
 import { initDb, getDb } from "../db.js";
 import { resolveCliDbPath } from "../utils/db-path.js";
+import { ownedBySql } from "../utils/authorship.js";
 import { insertAdminSignal } from "../utils/admin-actions.js";
 
 function parseArgs(argv: string[]): Record<string, string | boolean> {
@@ -94,9 +95,18 @@ function main(): void {
   const curatorOld = `curator-from-${from}`;
   const curatorNew = `curator-from-${to}`;
 
+  // Only what is provably this contributor's (src/utils/authorship.ts): a
+  // public-form submission that typed the same name, and its form row, keep
+  // the name they were given.
+  const owned = new Set((db.prepare(`SELECT s.id FROM signals s WHERE ${ownedBySql("s")}`).all({ owner_id: fromRow.id, owner_name: from }) as any[]).map((r) => String(r.id)));
+  const ownedSignals = (db.prepare("SELECT id FROM signals WHERE submitted_by = ?").all(from) as any[]).filter((r) => owned.has(r.id)).map((r) => r.id as string);
+  const ownedPrivate = (db.prepare("SELECT signal_id FROM signal_private WHERE submitted_by = ?").all(from) as any[]).filter((r) => owned.has(r.signal_id)).map((r) => r.signal_id as string);
+  const ownedQueue = (db.prepare("SELECT id, signal_id FROM intake_queue WHERE submitted_by = ?").all(from) as any[])
+    .filter((r) => (r.signal_id ? owned.has(r.signal_id) : !!db.prepare("SELECT 1 FROM node_claims WHERE queue_id = ? AND contributor_id = ?").get(r.id, fromRow.id)))
+    .map((r) => r.id as string);
   const counts = {
-    signals: (db.prepare("SELECT COUNT(*) AS n FROM signals WHERE submitted_by = ?").get(from) as any).n,
-    intake: (db.prepare("SELECT COUNT(*) AS n FROM intake_queue WHERE submitted_by = ?").get(from) as any).n,
+    signals: ownedSignals.length,
+    intake: ownedQueue.length,
     edges_api: (db.prepare("SELECT COUNT(*) AS n FROM edges WHERE created_by = ?").get(apiOld) as any).n,
     edges_curator: (db.prepare("SELECT COUNT(*) AS n FROM edges WHERE created_by = ?").get(curatorOld) as any).n,
     nodes_api: (db.prepare("SELECT COUNT(*) AS n FROM nodes WHERE updated_by = ?").get(apiOld) as any).n,
@@ -117,10 +127,13 @@ function main(): void {
   db.exec("BEGIN");
   try {
     db.prepare("UPDATE contributors SET name = ? WHERE id = ?").run(to, fromRow.id);
-    db.prepare("UPDATE signals SET submitted_by = ? WHERE submitted_by = ?").run(to, from);
+    const setSig = db.prepare("UPDATE signals SET submitted_by = ? WHERE id = ? AND submitted_by = ?");
+    for (const id of ownedSignals) setSig.run(to, id, from);
     // an anonymous signal's real author (local, never in the CRR)
-    db.prepare("UPDATE signal_private SET submitted_by = ? WHERE submitted_by = ?").run(to, from);
-    db.prepare("UPDATE intake_queue SET submitted_by = ? WHERE submitted_by = ?").run(to, from);
+    const setPriv = db.prepare("UPDATE signal_private SET submitted_by = ? WHERE signal_id = ? AND submitted_by = ?");
+    for (const id of ownedPrivate) setPriv.run(to, id, from);
+    const setQ = db.prepare("UPDATE intake_queue SET submitted_by = ? WHERE id = ? AND submitted_by = ?");
+    for (const id of ownedQueue) setQ.run(to, id, from);
     db.prepare("UPDATE edges SET created_by = ? WHERE created_by = ?").run(apiNew, apiOld);
     db.prepare("UPDATE edges SET created_by = ? WHERE created_by = ?").run(curatorNew, curatorOld);
     db.prepare("UPDATE nodes SET updated_by = ? WHERE updated_by = ?").run(apiNew, apiOld);

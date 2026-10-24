@@ -26,7 +26,8 @@ import {
 } from "./contribution.js";
 import { embedNodeAsync } from "../embed/server.js";
 import { ClaimError, approveClaim, claimByQueueId, rejectClaim } from "../claim/store.js";
-import { ensureAnonymousContributor, isAnonymousSignal, isFormSubmission, nameHeldBack, publishQueued, rejectedSignals, withholdSignal } from "./signal-private.js";
+import { isFormShaped, recordFormSignal } from "./authorship.js";
+import { ensureAnonymousContributor, isAnonymousSignal, nameHeldBack, publishQueued, rejectedSignals, withholdSignal } from "./signal-private.js";
 import { approveContext, dismissContest, rejectContext, settleObjections, upholdContest } from "../claim/notes.js";
 
 // Claims and a subject's notes (docs/CLAIM-SPEC.md) settle through their
@@ -159,7 +160,7 @@ export function approveIntakeItem(
   // What was in review is published: its words go into the CRR now — and,
   // for the public form, the contributor row under the typed name.
   const heldName = nameHeldBack(db, item.signal_id);
-  const form = isFormSubmission(db, item.signal_id);
+  const form = isFormShaped(db, item.signal_id);
   if (item.kind === "human_signal") publishQueued(db, id);
 
   // Counters. An anonymous contribution counts on the anonymous sentinel. A
@@ -172,8 +173,10 @@ export function approveIntakeItem(
     db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE id = ?").run(ensureAnonymousContributor(db));
   } else if (form || heldName) {
     if (item.submitted_by) {
+      const formId = `contributor:form-${crypto.randomBytes(8).toString("hex")}`;
       db.prepare("INSERT INTO contributors (id, name, type, trust_tier, contributions, approved_count) VALUES (?, ?, 'form', 'probationary', 1, 1)")
-        .run(`contributor:form-${crypto.randomBytes(8).toString("hex")}`, item.submitted_by);
+        .run(formId, item.submitted_by);
+      if (item.signal_id) recordFormSignal(db, item.signal_id, formId); // this signal is that row's, and only it
     }
   } else {
     const author = (db.prepare("SELECT contributor_id FROM signal_authors WHERE signal_id = ?").get(item.signal_id) as any)?.contributor_id;

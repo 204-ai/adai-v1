@@ -145,3 +145,117 @@ it("a form submission named after a contributor whose token stands for a node: a
     server.close();
   }
 });
+
+// ---- ownership is never a typed name (src/utils/authorship.ts) --------------------------------
+
+async function serveAll(db: DatabaseSync) {
+  const { default: contributorApi } = await import("../src/routes/contributor-api.js");
+  const app = express();
+  app.use(express.json());
+  app.use(api);
+  app.use(contributorApi);
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((r) => server.once("listening", r));
+  return { server, base: `http://127.0.0.1:${(server.address() as any).port}` };
+}
+
+it("GET /api/v1/contributions: a form submission under a token holder's name is neither listed nor counted, pending or approved", async () => {
+  const db = initDb(":memory:");
+  insertNode(db, "artwork:w", "artwork", "W");
+  const tok = mintToken(db, { contributorName: "Token Holder", createIfMissing: true, tier: "probationary" } as any);
+  const { server, base } = await serveAll(db);
+  const mine = async () => (await fetch(`${base}/api/v1/contributions`, { headers: { authorization: `Bearer ${tok.raw_token}` } })).json() as Promise<any>;
+  try {
+    await fetch(`${base}/api/v1/signals`, { method: "POST", headers: { authorization: `Bearer ${tok.raw_token}`, "content-type": "application/json" },
+      body: JSON.stringify({ target_node: "artwork:w", title: "MY-OWN", content: "mine" }) });
+    await fetch(`${base}/api/contribute`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ target_node: "artwork:w", title: "FORM-PRIVATE-TITLE", content: "x", contributor_name: "Token Holder" }) });
+    let j = await mine();
+    assert.deepEqual(j.items.map((i: any) => i.title), ["MY-OWN"], "pending form not listed");
+    assert.deepEqual(j.totals, { pending: 1 }, "nor counted");
+    assert.ok(!JSON.stringify(j).includes("FORM-PRIVATE-TITLE"));
+    for (const q of db.prepare("SELECT id FROM intake_queue WHERE status = 'pending'").all() as any[]) approveIntakeItem(db, q.id, "curator");
+    j = await mine();
+    assert.deepEqual(j.items.map((i: any) => i.title), ["MY-OWN"], "approved form still not theirs");
+    assert.deepEqual(j.totals, { approved: 1 });
+  } finally {
+    server.close();
+  }
+});
+
+it("snapshot export credits each signal to its provable owner: the real contributor gets none of a form submission, each form row only its own", async () => {
+  const db = initDb(":memory:");
+  insertNode(db, "artwork:w", "artwork", "W");
+  const tok = mintToken(db, { contributorName: "Real Name", createIfMissing: true, tier: "auto" } as any);
+  const { server, base } = await serveAll(db);
+  try {
+    await fetch(`${base}/api/v1/signals`, { method: "POST", headers: { authorization: `Bearer ${tok.raw_token}`, "content-type": "application/json" },
+      body: JSON.stringify({ target_node: "artwork:w", title: "real", content: "real words" }) });
+    for (const t of ["form one", "form two"]) {
+      await fetch(`${base}/api/contribute`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target_node: "artwork:w", title: t, content: t, contributor_name: "Real Name" }) });
+    }
+    for (const q of db.prepare("SELECT id FROM intake_queue WHERE status = 'pending'").all() as any[]) approveIntakeItem(db, q.id, "curator");
+  } finally {
+    server.close();
+  }
+  const { buildSnapshot } = await import("../src/snapshot/build.js");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { DatabaseSync: Plain } = await import("node:sqlite");
+  const dir = mkdtempSync(join(tmpdir(), "snap-"));
+  try {
+    buildSnapshot(db, join(dir, "s.sqlite"));
+    const out = new Plain(join(dir, "s.sqlite"), { readOnly: true });
+    const rows = out.prepare("SELECT id, name, type, contributions FROM contributors WHERE name = 'Real Name' ORDER BY type, id").all() as any[];
+    const real = db.prepare("SELECT id FROM contributors WHERE name = 'Real Name' AND type != 'form'").get() as any;
+    assert.deepEqual(rows.find((r) => r.id === real.id)?.contributions, 1, "the real contributor: their own signal only");
+    const forms = rows.filter((r) => r.type === "form");
+    assert.equal(forms.length, 2);
+    assert.ok(forms.every((r) => r.contributions === 1), JSON.stringify(rows));
+    out.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("contributor:rename rewrites only what is provably theirs; the shared predicate agrees everywhere", async () => {
+  const db = initDb(":memory:");
+  insertNode(db, "artwork:w", "artwork", "W");
+  db.prepare("INSERT INTO contributors (id, name, type, trust_tier) VALUES ('c-real', 'Old Name', 'contributor', 'auto'), ('contributor:form-1', 'Old Name', 'form', 'probationary')").run();
+  db.prepare("INSERT INTO signals (id, title, content, source_type, submitted_by, batch_id) VALUES ('s-auth', 't', 'c', 'contribution', 'Old Name', NULL), ('s-form', 't', 'c', 'contribution', 'Old Name', NULL), ('s-legacy', 't', 'c', 'contribution', 'Old Name', 'b1')").run();
+  db.prepare("INSERT INTO signal_authors (signal_id, contributor_id) VALUES ('s-auth', 'c-real')").run();
+  db.prepare("INSERT INTO form_signals (signal_id, contributor_id) VALUES ('s-form', 'contributor:form-1')").run();
+  const { signalOwner, isFormShaped } = await import("../src/utils/authorship.js");
+  const { signalAuthorNode } = await import("../src/utils/contributor-node.js");
+  const { isFormSubmission } = await import("../src/utils/signal-private.js");
+  assert.deepEqual(signalOwner(db, "s-auth"), { id: "c-real", how: "author" });
+  assert.deepEqual(signalOwner(db, "s-form"), { id: "contributor:form-1", how: "form" });
+  // a plain contribution WITH a batch id and no recorded author: a legacy /api/v1 write for every caller
+  assert.equal(isFormShaped(db, "s-legacy"), false);
+  assert.equal(isFormSubmission(db, "s-legacy"), false);
+  assert.deepEqual(signalOwner(db, "s-legacy"), { id: "c-real", how: "legacy" });
+  assert.equal(signalAuthorNode(db, { id: "s-form" }), null);
+
+  // rename: the real one's signals change, the form submission keeps its typed name
+  const { spawnSync } = await import("node:child_process");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "rename-"));
+  try {
+    const path = join(dir, "db.sqlite");
+    db.exec(`VACUUM INTO '${path}'`);
+    const r = spawnSync("npx", ["tsx", "src/cli/rename-contributor.ts", "--from", "Old Name", "--to", "New Name", "--by", "op"], { env: { ...process.env, DB_PATH: path }, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    const { DatabaseSync: Plain } = await import("node:sqlite");
+    const after = new Plain(path, { readOnly: true });
+    const by = Object.fromEntries((after.prepare("SELECT id, submitted_by FROM signals WHERE id LIKE 's-%'").all() as any[]).map((x) => [x.id, x.submitted_by]));
+    assert.deepEqual(by, { "s-auth": "New Name", "s-form": "Old Name", "s-legacy": "New Name" });
+    assert.equal((after.prepare("SELECT name FROM contributors WHERE id = 'contributor:form-1'").get() as any).name, "Old Name");
+    after.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

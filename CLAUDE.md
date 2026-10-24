@@ -309,7 +309,13 @@ empty — it requires evidence of artist intent, not thematic similarity.
   view, `/<type>/<slug>/contributions`) comes from the signal's actual author
   (`signalAuthorNode` in `src/utils/contributor-node.ts`: `signal_authors` →
   that contributor's token node), never from the typed name; a `form` row links
-  nowhere.
+  nowhere. **Ownership is decided in one place, `src/utils/authorship.ts`**
+  (`signalOwner` / `ownedBySql` / `isFormShaped`): the authenticated author
+  (`signal_authors`), else the approved form signal's own row (local
+  `form_signals`), else nothing for a form-shaped signal (plain contribution, no
+  batch id), else a legacy write by an unambiguous non-form name. Bylines,
+  `GET /api/v1/contributions`, the contributions page and counts, snapshot
+  credit and `contributor:rename` all use it.
 - `POST /api/review/:id/approve` · `/reject` — curator actions
 - `GET /api/sync/info` · `GET /api/sync/changes?since=&limit=` — the public
   CRDT change stream (*Public sync* below)
@@ -631,7 +637,11 @@ local-only `node_embeddings` table (NOT a CRR).
   (a derived edge is a recomputed view, not a claim — `/history` leaves them out;
   ending them bi-temporally would pile up dead rows in the public tables), UPDATE
   only a cell that differs; unchanged rows keep their `created_at`/`valid_from`.
-  Twice on unchanged vectors = zero `crsql_changes` (`tests/derive-incremental.test.ts`);
+  Twice on unchanged vectors = zero `crsql_changes` (`tests/derive-incremental.test.ts`).
+  Computed on ONE read snapshot (ended before any write), applied in one short
+  `BEGIN IMMEDIATE` (centroids, pending suggestions, edge diff together) after an
+  input fingerprint check; inputs changed meanwhile → recompute (≤ 3 attempts),
+  never a stale-snapshot upgrade; a dry run writes nothing (centroids in memory);
   the stats carry `edges: {desired, inserted, deleted, updated_rows, updated_cells}`.
   Pending `ai_suggestion` rows (local) are still replaced each run. The pipeline
   **refuses to auto-emit INFLUENCES or RESPONDS_TO** by design.

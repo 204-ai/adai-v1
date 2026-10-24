@@ -26,6 +26,14 @@
 // view, not anyone's claim (/history leaves them out), so ending it
 // bi-temporally would keep ever more dead rows in the public tables; a delete
 // is one tombstone change, and a re-derived edge comes back under the same id.
+// Concurrency: the passes (quadratic) run on ONE read snapshot that is ended
+// before any write; the result — centroids (local), the pending AI
+// suggestions (local), the edge diff (CRR) — is applied in one short BEGIN
+// IMMEDIATE transaction, after checking under the write lock that the inputs
+// did not change since the read (inputFingerprint); if they did, nothing is
+// written and the plan is recomputed (DERIVE_MAX_ATTEMPTS). No read snapshot
+// is ever upgraded to a write (SQLITE_BUSY_SNAPSHOT), and a failed run leaves
+// everything as it was. A dry run writes nothing at all (centroids in memory).
 // The pending ai_suggestion rows (local intake_queue, not synced) are still
 // replaced every run:
 //   DELETE FROM intake_queue WHERE submitted_by='contributor:embedding-pipeline'
@@ -37,8 +45,9 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { cosine, loadAll } from "./vectors.js";
-import { computeCentroids } from "./centroids.js";
+import { cosine, invalidateVectorCache, loadAll } from "./vectors.js";
+import { embedModel } from "./provider.js";
+import { centroidsInMemory, writeCentroids } from "./centroids.js";
 import {
   propagateConcepts,
   CONCEPT_DEFAULTS,
@@ -92,6 +101,8 @@ export interface DeriveOptions {
   // Tier-2 concept propagation knobs (EMBODIES from tag-concepts). Partial
   // override; unset fields fall back to CONCEPT_DEFAULTS.
   concept?: Partial<ConceptPropagateOptions>;
+  /** Test hook: called between the read snapshot and the apply transaction. */
+  afterRead?: (attempt: number) => void;
 }
 
 export interface DeriveStats {
@@ -104,6 +115,8 @@ export interface DeriveStats {
   concept_embodies: ConceptStats;
   /** What the run wrote to the derived edges (the diff), and how many derived rows there are now. */
   edges: { desired: number; inserted: number; deleted: number; updated_rows: number; updated_cells: number };
+  /** How many read → apply attempts the run took (inputs changed in between → recompute). */
+  attempts?: number;
 }
 
 /** The values a live derived edge holds (besides its id, timestamps and created_by). */
@@ -204,7 +217,16 @@ function pairHash(source: string, edgeType: string, target: string): string {
   return createHash("sha256").update(`${source}|${edgeType}|${target}`).digest("hex");
 }
 
-export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats {
+interface Plan {
+  stats: DeriveStats;
+  desired: Map<string, DesiredEdge>;
+  suggestions: Array<[string, string, string, string, string, string]>; // insertIntake args
+  centroids: Map<string, Float32Array> | null; // to persist (null: skipCentroids)
+  now: string;
+}
+
+/** Compute everything a run would write — reads only, on the snapshot the caller holds. */
+function plan(db: DatabaseSync, opts: DeriveOptions): Plan {
   const tauA = opts.tauAttribute ?? DEFAULTS.tauAttribute;
   const tauK = opts.tauKin ?? DEFAULTS.tauKin;
   const tauV = opts.tauVisual ?? DEFAULTS.tauVisual;
@@ -212,29 +234,27 @@ export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats 
   const visualK = opts.visualTopK ?? DEFAULTS.visualTopK;
   const dry = !!opts.dryRun;
 
-  // 1. Refresh centroids unless explicitly skipped.
-  if (!opts.skipCentroids) {
-    const cs = computeCentroids(db);
-    console.log(
-      `centroids: ${cs.creators_with_centroid} written, ` +
-        `${cs.creators_skipped_no_artworks} skipped (zero artworks), ` +
-        `${cs.artworks_missing_vectors} CREATED_BY targets lacked an artwork vector`
-    );
-  }
-
-  // 2. The pending AI suggestions (local, not synced) are replaced every run;
-  //    the derived edges are diffed at the end (applyDerivedEdges).
-  if (!dry) {
-    db.exec(`DELETE FROM intake_queue WHERE submitted_by = '${CONTRIBUTOR_ID}' AND status = 'pending';`);
-  }
-
-  // 3. Load vectors + auxiliary lookups.
-  const all = loadAll(db);
-  const centroidByCreator = new Map<string, Float32Array>();
+  void dry;
+  // 1. Vectors as of this snapshot (never the cache), and the centroids
+  //    computed from them in memory unless explicitly skipped — persisted
+  //    with the rest in the apply transaction (never in a dry run).
+  const all = loadAll(db, { fresh: true });
+  let centroidByCreator = new Map<string, Float32Array>();
   const identityByNode = new Map<string, Float32Array>();
   for (const [, v] of all) {
     if (v.kind === "style_centroid") centroidByCreator.set(v.node_id, v.vec);
     else if (v.kind === "identity") identityByNode.set(v.node_id, v.vec);
+  }
+  let centroidsToWrite: Map<string, Float32Array> | null = null;
+  if (!opts.skipCentroids) {
+    const cs = centroidsInMemory(db, all);
+    centroidByCreator = cs.centroids;
+    centroidsToWrite = cs.centroids;
+    console.log(
+      `centroids: ${cs.stats.creators_with_centroid} computed, ` +
+        `${cs.stats.creators_skipped_no_artworks} skipped (zero artworks), ` +
+        `${cs.stats.artworks_missing_vectors} CREATED_BY targets lacked an artwork vector`
+    );
   }
 
   // Map artwork → set of known creators (for VISUALLY_AFFINE filter and
@@ -296,12 +316,8 @@ export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats 
     },
   };
 
-  const insertIntake = db.prepare(
-    `INSERT INTO intake_queue (
-       id, signal_id, target_node, submitted_by, trust_tier,
-       status, kind, proposed_edges, created_at
-     ) VALUES (?, ?, ?, ?, 'probationary', 'pending', 'ai_suggestion', ?, ?)`
-  );
+  // The AI suggestions to queue, collected (written in the apply transaction).
+  const suggestions: Plan["suggestions"] = [];
 
   // ----- STYLE_KIN ---------------------------------------------------------
   // Creator ↔ creator over style centroids (practitioner or collective —
@@ -309,8 +325,7 @@ export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats 
   // Bidirectional rows so BFS / profile-page edge lists don't need to know
   // which types are symmetric.
   const creators = [...centroidByCreator.keys()].sort();
-  if (!dry) db.exec("BEGIN");
-  try {
+  {
     const kinCandidates: Array<{ a: string; b: string; sim: number }> = [];
     for (let i = 0; i < creators.length; i++) {
       const a = creators[i]!;
@@ -418,7 +433,6 @@ export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats 
         continue;
       }
       stats.suggests_created_by.proposals++;
-      if (dry) continue;
       // URL-safe id: a deterministic short hash over (artwork, creator).
       // The intake_queue id ends up in /api/review/:id/{approve,reject} paths
       // and reviewAction()'s JS string-concatenation; spaces/colons in the
@@ -435,15 +449,93 @@ export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats 
           similarity: Number(best.sim.toFixed(4)),
         },
       ]);
-      insertIntake.run(id, SIGNAL_ID, a, CONTRIBUTOR_ID, proposed, now);
+      suggestions.push([id, SIGNAL_ID, a, CONTRIBUTOR_ID, proposed, now]);
     }
-
-    stats.edges = { ...applyDerivedEdges(db, desired, now, dry), desired: desired.size };
-    if (!dry) db.exec("COMMIT");
-  } catch (e) {
-    if (!dry) db.exec("ROLLBACK");
-    throw e;
+    void suggestionCounter;
   }
 
-  return stats;
+  return { stats, desired, suggestions, centroids: centroidsToWrite, now };
+}
+
+/**
+ * A fingerprint of everything derive reads: live CREATED_BY and attested
+ * EMBODIES edges, retired nodes, the current model's vectors (and the stored
+ * centroids when they are not recomputed), rejected suggestions. Equal
+ * fingerprints = the plan computed on the read snapshot is still right.
+ */
+function inputFingerprint(db: DatabaseSync, opts: DeriveOptions): string {
+  const h = createHash("sha256");
+  const feed = (sql: string, ...params: Array<string | number>) => {
+    for (const r of db.prepare(sql).iterate(...params) as Iterable<any>) h.update(JSON.stringify(Object.values(r)) + "\n");
+    h.update("|");
+  };
+  feed(`SELECT source_id, target_id FROM edges WHERE edge_type = 'CREATED_BY' AND valid_until IS NULL ORDER BY source_id, target_id`);
+  feed(`SELECT source_id, target_id FROM edges WHERE edge_type = 'EMBODIES' AND valid_until IS NULL AND created_by IS NOT ? ORDER BY source_id, target_id`, CREATED_BY_TAG);
+  feed(`SELECT id, type FROM nodes WHERE json_extract(metadata, '$.retired') = 1 ORDER BY id`);
+  feed(
+    `SELECT node_id, kind, dims, text_hash, image_hash, created_at, length(vector) FROM node_embeddings
+      WHERE model = ? ${opts.skipCentroids ? "" : "AND kind = 'identity'"} ORDER BY node_id, kind`,
+    embedModel()
+  );
+  feed(`SELECT pair_hash FROM rejected_ai_suggestions ORDER BY pair_hash`);
+  return h.digest("hex");
+}
+
+/** How many times derive recomputes when its inputs changed between its read and its apply. */
+export const DERIVE_MAX_ATTEMPTS = 3;
+
+/**
+ * Compute on a coherent read snapshot (one read transaction, ended before
+ * any write — the long quadratic passes never hold a write lock and never
+ * have to upgrade a stale snapshot), then apply the whole result in ONE
+ * short BEGIN IMMEDIATE transaction: the centroids (local), the pending AI
+ * suggestions replaced (local), the derived-edge diff (CRR). If the inputs
+ * changed since the read (inputFingerprint, checked under the write lock),
+ * nothing is written and the plan is recomputed — at most
+ * DERIVE_MAX_ATTEMPTS times. A dry run computes and reports the diff only.
+ */
+export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats {
+  const dry = !!opts.dryRun;
+  for (let attempt = 1; attempt <= DERIVE_MAX_ATTEMPTS; attempt++) {
+    // ---- read: one snapshot ----
+    db.exec("BEGIN");
+    let p: Plan;
+    let fp: string;
+    try {
+      fp = inputFingerprint(db, opts);
+      p = plan(db, opts);
+      if (dry) p.stats.edges = { ...applyDerivedEdges(db, p.desired, p.now, true), desired: p.desired.size };
+    } finally {
+      db.exec("COMMIT");
+    }
+    if (dry) return { ...p.stats, attempts: attempt };
+    opts.afterRead?.(attempt);
+
+    // ---- apply: one short write transaction ----
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      if (inputFingerprint(db, opts) !== fp) {
+        db.exec("ROLLBACK");
+        console.log(`derive: inputs changed since the read (attempt ${attempt}); recomputing`);
+        continue;
+      }
+      if (p.centroids) writeCentroids(db, p.centroids, { inTransaction: true });
+      db.prepare("DELETE FROM intake_queue WHERE submitted_by = ? AND status = 'pending'").run(CONTRIBUTOR_ID);
+      const ins = db.prepare(
+        `INSERT INTO intake_queue (
+           id, signal_id, target_node, submitted_by, trust_tier,
+           status, kind, proposed_edges, created_at
+         ) VALUES (?, ?, ?, ?, 'probationary', 'pending', 'ai_suggestion', ?, ?)`
+      );
+      for (const args of p.suggestions) ins.run(...args);
+      p.stats.edges = { ...applyDerivedEdges(db, p.desired, p.now, false), desired: p.desired.size };
+      db.exec("COMMIT");
+    } catch (e) {
+      try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+      throw e;
+    }
+    invalidateVectorCache();
+    return { ...p.stats, attempts: attempt };
+  }
+  throw new Error(`derive: the inputs changed during each of ${DERIVE_MAX_ATTEMPTS} attempts; nothing was written — run again`);
 }

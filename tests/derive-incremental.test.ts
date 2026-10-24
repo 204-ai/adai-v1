@@ -111,11 +111,90 @@ it("the transition from rows written by the old delete-then-insert: same ids, un
   assert.equal(Number((db.prepare("SELECT COUNT(*) AS n FROM edges WHERE created_by = 'embedding-multimodal-v1' AND valid_from != '2026-01-01T00:00:00Z'").get() as any).n), 0);
 });
 
-it("a dry run reports the diff and writes nothing", () => {
+it("a dry run reports the diff and writes nothing — not even the local centroids or suggestions", () => {
   const db = setup();
   const v0 = version(db);
+  const local = () => JSON.stringify([
+    db.prepare("SELECT node_id, kind, hex(vector) v FROM node_embeddings ORDER BY node_id, kind").all(),
+    db.prepare("SELECT * FROM intake_queue ORDER BY id").all(),
+  ]);
+  const before = local();
   const r = derive(db, { ...OPTS, dryRun: true });
   assert.ok(r.edges.inserted > 0);
   assert.equal(version(db), v0);
   assert.equal(derivedRows(db).length, 0);
+  assert.equal(local(), before, "no centroid / suggestion row touched");
+  assert.equal(Number((db.prepare("SELECT COUNT(*) AS n FROM node_embeddings WHERE kind = 'style_centroid'").get() as any).n), 0);
+});
+
+// ---- concurrency: read snapshot, then one short write transaction ----------------------------
+
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync as Sqlite } from "node:sqlite";
+import { extensionPath } from "@shards-lang/crsqlite";
+
+function openFile(path: string, schema = false): Sqlite {
+  const db = new Sqlite(path, { allowExtension: true, timeout: 5000 });
+  db.loadExtension(extensionPath);
+  if (schema) {
+    db.exec(readFileSync(join(import.meta.dirname, "..", "db.sql"), "utf8"));
+    try { db.exec("ALTER TABLE intake_queue ADD COLUMN kind TEXT NOT NULL DEFAULT 'human_signal'"); } catch { /* present */ }
+  }
+  return db;
+}
+
+function fileSetup(): { dir: string; a: Sqlite; b: Sqlite } {
+  const dir = mkdtempSync(join(tmpdir(), "derive-wal-"));
+  const path = join(dir, "db.sqlite");
+  const a = openFile(path, true);
+  a.exec("PRAGMA journal_mode = WAL");
+  const mem = setup(); // same fixture, copied over
+  for (const t of ["nodes", "edges", "node_embeddings"]) {
+    const rows = mem.prepare(`SELECT * FROM ${t}`).all() as any[];
+    for (const r of rows) {
+      const cols = Object.keys(r);
+      a.prepare(`INSERT INTO ${t} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`).run(...cols.map((c) => r[c]));
+    }
+  }
+  const b = openFile(path);
+  invalidateVectorCache();
+  return { dir, a, b };
+}
+
+it("a server write committed between derive's read and its apply: derive still succeeds, recomputing only when an input changed", () => {
+  const { dir, a, b } = fileSetup();
+  try {
+    // an unrelated write (not an input): no recompute needed, no SQLITE_BUSY_SNAPSHOT
+    const r1 = derive(a, { ...OPTS, afterRead: (n) => { if (n === 1) insertNode(b, "concept:unrelated", "concept", "Unrelated"); } });
+    assert.equal(r1.attempts, 1);
+    assert.ok(r1.edges.inserted > 0);
+    // an input write: a new attribution changes p1's centroid → recomputed on attempt 2
+    const r2 = derive(a, { ...OPTS, afterRead: (n) => { if (n === 1) insertCreatedBy(b, "artwork:b1", "practitioner:p1"); } });
+    assert.equal(r2.attempts, 2);
+    // correct: a third run on the same inputs has nothing to change
+    const v = Number((a.prepare("SELECT crsql_db_version() AS v").get() as any).v);
+    invalidateVectorCache();
+    const r3 = derive(a, OPTS);
+    assert.deepEqual([r3.attempts, r3.edges.inserted, r3.edges.deleted, r3.edges.updated_rows], [1, 0, 0, 0]);
+    assert.equal(Number((a.prepare("SELECT crsql_db_version() AS v").get() as any).v), v);
+  } finally {
+    a.close(); b.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("inputs changing on every attempt: derive fails cleanly and writes nothing — pending suggestions stay", () => {
+  const { dir, a, b } = fileSetup();
+  try {
+    a.prepare("INSERT INTO intake_queue (id, signal_id, target_node, submitted_by, trust_tier, status, kind) VALUES ('intake-ai-old', 's', 'artwork:a1', 'contributor:embedding-pipeline', 'probationary', 'pending', 'ai_suggestion')").run();
+    let k = 0;
+    assert.throws(() => derive(a, { ...OPTS, afterRead: () => { insertCreatedBy(b, `artwork:a${(k++ % 3) + 1}`, "practitioner:p6"); } }), /changed during each/);
+    assert.ok(a.prepare("SELECT 1 FROM intake_queue WHERE id = 'intake-ai-old'").get(), "the old suggestion is still there");
+    assert.equal(Number((a.prepare("SELECT COUNT(*) AS n FROM edges WHERE created_by = 'embedding-multimodal-v1'").get() as any).n), 0, "no derived edge written");
+  } finally {
+    a.close(); b.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

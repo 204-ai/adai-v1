@@ -29,6 +29,7 @@
 // operator's side, read back through the signals_full view.
 
 import { createHash } from "node:crypto";
+import { isFormShaped } from "./authorship.js";
 import { anonymousGraphAttribution, legacyAnonymousBacklog, recordPrivacyBlocks } from "./privacy-blocks.js";
 export { anonymousGraphAttribution, auditPrivacyStream, recordPrivacyBlocks } from "./privacy-blocks.js";
 import type { DatabaseSync } from "node:sqlite";
@@ -333,12 +334,9 @@ export function publishQueued(db: DatabaseSync, queueId: string): void {
   }
 }
 
-/** A public-form submission: a plain contribution with no authenticated author (signal_authors). */
+/** A public-form submission (src/utils/authorship.ts: the one shared predicate). */
 export function isFormSubmission(db: DatabaseSync, signalId: string | null | undefined): boolean {
-  if (!signalId || !hasTable(db, "signal_authors")) return false;
-  return !!db.prepare(
-    "SELECT 1 FROM signals s WHERE s.id = ? AND s.source_type = 'contribution' AND NOT EXISTS (SELECT 1 FROM signal_authors a WHERE a.signal_id = s.id)"
-  ).get(signalId);
+  return isFormShaped(db, signalId);
 }
 
 /** Whether a signal's author name is held back while it is in review (the public form). */
@@ -576,10 +574,8 @@ function pendingBacklog(db: DatabaseSync): string[] {
 /** A public-form contribution (no authenticated author) in review whose typed name is in the CRR. */
 function formNameShown(db: DatabaseSync, signalId: string): boolean {
   if (!hasTable(db, "signal_authors")) return false;
-  return !!db.prepare(
-    `SELECT 1 FROM signals s WHERE s.id = ? AND s.source_type = 'contribution' AND s.submitted_by IS NOT NULL
-        AND COALESCE(s.consent_attribution, '') != 'anonymous'
-        AND NOT EXISTS (SELECT 1 FROM signal_authors a WHERE a.signal_id = s.id)`
+  return isFormShaped(db, signalId) && !!db.prepare(
+    `SELECT 1 FROM signals s WHERE s.id = ? AND s.submitted_by IS NOT NULL AND COALESCE(s.consent_attribution, '') != 'anonymous'`
   ).get(signalId);
 }
 

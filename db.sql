@@ -537,6 +537,15 @@ CREATE TABLE IF NOT EXISTS signal_private (
 CREATE INDEX IF NOT EXISTS idx_signal_private_batch ON signal_private(batch_id);
 CREATE INDEX IF NOT EXISTS idx_signal_private_by ON signal_private(submitted_by);
 
+-- An approved public-form submission and the contributor row of its own it
+-- was counted on (type 'form', written at approval). Local: which signal is
+-- whose. See src/utils/authorship.ts.
+CREATE TABLE IF NOT EXISTS form_signals (
+    signal_id       TEXT PRIMARY KEY NOT NULL,
+    contributor_id  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_form_signals_contributor ON form_signals(contributor_id);
+
 -- Unresolved blocks on publication (public sync). A legacy anonymous
 -- contribution — one whose author's name was in the CRR before anonymous
 -- signals were inserted blank (signal_private.born_safe = 0) — may have left

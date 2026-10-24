@@ -8,6 +8,7 @@
 // credential does not change whose contributions they were.
 
 import type { DatabaseSync } from "node:sqlite";
+import { ownedBySql, signalOwner } from "./authorship.js";
 
 export interface StandsFor {
   id: string;
@@ -51,27 +52,13 @@ export function contributorNodeById(db: DatabaseSync, contributorId: string | nu
 }
 
 /**
- * The node a SIGNAL's byline may link to — resolved from who actually wrote
- * it, never from the name it carries (anyone can type any name into the
- * public form):
- *   - its authenticated author (signal_authors) → the node that contributor
- *     stands for;
- *   - no recorded author and it could be a public-form submission (a plain
- *     contribution without a batch id — the form never sets one) → no link;
- *   - no recorded author otherwise (an /api/v1 write from before
- *     signal_authors existed) → by its name, among non-form contributors.
- * A 'form' contributor row never links to anyone's node.
+ * The node a SIGNAL's byline may link to — that of the contributor the
+ * signal provably belongs to (signalOwner, src/utils/authorship.ts), never of
+ * whatever a typed name matches. A 'form' row links nowhere.
  */
-export function signalAuthorNode(
-  db: DatabaseSync,
-  s: { id?: string | null; submitted_by?: string | null; source_type?: string | null; batch_id?: string | null }
-): StandsFor | null {
-  if (s.id) {
-    const a = (db.prepare("SELECT contributor_id FROM signal_authors WHERE signal_id = ?").get(s.id) as any)?.contributor_id;
-    if (a) return contributorNodeById(db, a);
-  }
-  if ((s.source_type ?? "contribution") === "contribution" && !s.batch_id) return null;
-  return contributorNode(db, s.submitted_by);
+export function signalAuthorNode(db: DatabaseSync, s: { id?: string | null }): StandsFor | null {
+  const owner = signalOwner(db, s.id ?? null);
+  return owner ? contributorNodeById(db, owner.id) : null;
 }
 
 /** The contributors that stand for a node, with how many active signals each has. */
@@ -83,17 +70,17 @@ export function contributorsAs(db: DatabaseSync, nodeId: string): Array<{ id: st
       ORDER BY c.name`
   ).all(nodeId) as Array<{ id: string; name: string }>;
   // Keep only those for whom this node is the one they stand for now.
-  // Counted as /<type>/<slug>/contributions lists them: live, attributed,
-  // not structural-only, and not waiting in (or turned down by) review.
+  // Counted as /<type>/<slug>/contributions lists them: their own signals
+  // (authenticated author first; ownedBySql), live, attributed, not
+  // structural-only, and not waiting in (or turned down by) review.
   const count = db.prepare(
-    `SELECT s.id, s.submitted_by, s.source_type, s.batch_id FROM signals s LEFT JOIN intake_queue iq ON iq.signal_id = s.id
-      WHERE (s.submitted_by = ? OR s.submitted_by = ?) AND s.status = 'active'
+    `SELECT COUNT(*) AS n FROM signals s LEFT JOIN intake_queue iq ON iq.signal_id = s.id
+      WHERE ${ownedBySql("s")} AND s.status = 'active'
         AND (iq.id IS NULL OR iq.status = 'approved')
         AND (s.consent_attribution IS NULL OR s.consent_attribution != 'anonymous')
         AND (s.consent_scope IS NULL OR s.consent_scope != 'structural_only')`
   );
   return rows
-    .filter((c) => contributorNode(db, c.id)?.id === nodeId)
-    // counted only where this node is the writer's (a typed namesake is not)
-    .map((c) => ({ id: c.id, name: c.name, signals: (count.all(c.name, c.id) as any[]).filter((s) => signalAuthorNode(db, s)?.id === nodeId).length }));
+    .filter((c) => contributorNodeById(db, c.id)?.id === nodeId)
+    .map((c) => ({ id: c.id, name: c.name, signals: Number((count.get({ owner_id: c.id, owner_name: c.name }) as any)?.n ?? 0) }));
 }

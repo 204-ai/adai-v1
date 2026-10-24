@@ -69,6 +69,7 @@ import { existsSync, readFileSync, rmSync, mkdirSync, writeFileSync, renameSync,
 import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { priorsOf } from "../utils/signal-private.js";
+import { signalOwner } from "../utils/authorship.js";
 
 export const SNAPSHOT_SCHEMA_VERSION = "2";
 const ANON = "anonymous";
@@ -465,12 +466,20 @@ function fill(src: DatabaseSync, out: DatabaseSync, opts: SnapshotOptions): Snap
   }
 
   // ---- contributors: named on a public attributed signal; counters recomputed --------------
+  // Credited to the contributor each signal provably belongs to
+  // (src/utils/authorship.ts: its authenticated author, the form row of its
+  // own, or a legacy write whose name is unambiguous) — never by name to
+  // everyone who has that name; an unprovable one credits no one.
   const counts = new Map<string, number>();
-  for (const s of exported.values()) if (!anonymous(s) && s.submitted_by) counts.set(String(s.submitted_by), (counts.get(String(s.submitted_by)) ?? 0) + 1);
+  for (const s of exported.values()) {
+    if (anonymous(s) || !s.submitted_by) continue;
+    const owner = signalOwner(src, s.id);
+    if (owner) counts.set(owner.id, (counts.get(owner.id) ?? 0) + 1);
+  }
   const insCon = out.prepare("INSERT INTO contributors (id, name, type, contributions, approved_count, created_at) VALUES (?, ?, ?, ?, ?, ?)");
   let droppedContributors = 0;
   for (const c of contributorRows) {
-    const n = (counts.get(String(c.name)) ?? 0) + (c.id !== c.name ? counts.get(String(c.id)) ?? 0 : 0);
+    const n = counts.get(String(c.id)) ?? 0;
     if (!n) { droppedContributors++; continue; }
     insCon.run(S(c.id), S(c.name), S(c.type), n, n, S(c.created_at));
   }
