@@ -28,11 +28,50 @@ export function contributorNode(db: DatabaseSync, submittedBy: string | null | u
        FROM contributors c
        JOIN contributor_tokens t ON t.contributor_id = c.id AND t.node_id IS NOT NULL
        JOIN nodes n ON n.id = t.node_id AND json_extract(n.metadata, '$.retired') IS NOT 1
-      WHERE c.id = ? OR c.name = ?
+      WHERE (c.id = ? OR c.name = ?) AND c.type IS NOT 'form'
       ORDER BY t.created_at DESC
       LIMIT 1`
   ).get(submittedBy, submittedBy) as StandsFor | undefined;
   return row ?? null;
+}
+
+/** The node the contributor with exactly this id stands for. */
+export function contributorNodeById(db: DatabaseSync, contributorId: string | null | undefined): StandsFor | null {
+  if (!contributorId) return null;
+  const row = db.prepare(
+    `SELECT n.id, n.type, n.slug, n.name
+       FROM contributors c
+       JOIN contributor_tokens t ON t.contributor_id = c.id AND t.node_id IS NOT NULL
+       JOIN nodes n ON n.id = t.node_id AND json_extract(n.metadata, '$.retired') IS NOT 1
+      WHERE c.id = ? AND c.type IS NOT 'form'
+      ORDER BY t.created_at DESC
+      LIMIT 1`
+  ).get(contributorId) as StandsFor | undefined;
+  return row ?? null;
+}
+
+/**
+ * The node a SIGNAL's byline may link to — resolved from who actually wrote
+ * it, never from the name it carries (anyone can type any name into the
+ * public form):
+ *   - its authenticated author (signal_authors) → the node that contributor
+ *     stands for;
+ *   - no recorded author and it could be a public-form submission (a plain
+ *     contribution without a batch id — the form never sets one) → no link;
+ *   - no recorded author otherwise (an /api/v1 write from before
+ *     signal_authors existed) → by its name, among non-form contributors.
+ * A 'form' contributor row never links to anyone's node.
+ */
+export function signalAuthorNode(
+  db: DatabaseSync,
+  s: { id?: string | null; submitted_by?: string | null; source_type?: string | null; batch_id?: string | null }
+): StandsFor | null {
+  if (s.id) {
+    const a = (db.prepare("SELECT contributor_id FROM signal_authors WHERE signal_id = ?").get(s.id) as any)?.contributor_id;
+    if (a) return contributorNodeById(db, a);
+  }
+  if ((s.source_type ?? "contribution") === "contribution" && !s.batch_id) return null;
+  return contributorNode(db, s.submitted_by);
 }
 
 /** The contributors that stand for a node, with how many active signals each has. */
@@ -47,7 +86,7 @@ export function contributorsAs(db: DatabaseSync, nodeId: string): Array<{ id: st
   // Counted as /<type>/<slug>/contributions lists them: live, attributed,
   // not structural-only, and not waiting in (or turned down by) review.
   const count = db.prepare(
-    `SELECT COUNT(*) AS n FROM signals s LEFT JOIN intake_queue iq ON iq.signal_id = s.id
+    `SELECT s.id, s.submitted_by, s.source_type, s.batch_id FROM signals s LEFT JOIN intake_queue iq ON iq.signal_id = s.id
       WHERE (s.submitted_by = ? OR s.submitted_by = ?) AND s.status = 'active'
         AND (iq.id IS NULL OR iq.status = 'approved')
         AND (s.consent_attribution IS NULL OR s.consent_attribution != 'anonymous')
@@ -55,5 +94,6 @@ export function contributorsAs(db: DatabaseSync, nodeId: string): Array<{ id: st
   );
   return rows
     .filter((c) => contributorNode(db, c.id)?.id === nodeId)
-    .map((c) => ({ id: c.id, name: c.name, signals: Number((count.get(c.name, c.id) as any)?.n ?? 0) }));
+    // counted only where this node is the writer's (a typed namesake is not)
+    .map((c) => ({ id: c.id, name: c.name, signals: (count.all(c.name, c.id) as any[]).filter((s) => signalAuthorNode(db, s)?.id === nodeId).length }));
 }

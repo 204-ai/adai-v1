@@ -304,7 +304,12 @@ empty — it requires evidence of artist intent, not thematic similarity.
   probationary (`/review`), never a trust tier by typed name; approval writes a
   separate contributors row (`contributor:form-<hex>`, type `form`, the typed name
   as display name), never counts on an existing one. Operator lookups by name
-  (`token:issue`, `token:revoke`, `contributor:rename`) skip `form` rows.
+  (`token:issue`, `token:revoke`, `contributor:rename`) skip `form` rows. A
+  byline's node link ("contributed by X" on `/history`, `/record`, the entity
+  view, `/<type>/<slug>/contributions`) comes from the signal's actual author
+  (`signalAuthorNode` in `src/utils/contributor-node.ts`: `signal_authors` →
+  that contributor's token node), never from the typed name; a `form` row links
+  nowhere.
 - `POST /api/review/:id/approve` · `/reject` — curator actions
 - `GET /api/sync/info` · `GET /api/sync/changes?since=&limit=` — the public
   CRDT change stream (*Public sync* below)

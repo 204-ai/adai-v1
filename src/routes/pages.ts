@@ -22,7 +22,7 @@ import { auditNotesFor, notesByTriple, publicNotesFor } from "../claim/notes.js"
 import { renderEntityView, nodePath, type EntityNode, type EntityViewer } from "../entity/view.js";
 import { entityPage } from "../entity/page.js";
 import { movedTo } from "../utils/moved.js";
-import { contributorsAs } from "../utils/contributor-node.js";
+import { contributorsAs, signalAuthorNode } from "../utils/contributor-node.js";
 import { ACCOUNTS_SHOWN, accountItems, accountsPage, decodeCursor, encodeCursor } from "../entity/accounts.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -359,7 +359,7 @@ function profileHandler(req: any, res: any) {
   // NULL/other consent_scope values pass through (allow-by-default).
   const contribs = db
     .prepare(
-      "SELECT s.title, s.content, s.source_url, s.source_type, s.submitted_by, s.created_at, s.consent_attribution, iq.proposed_nodes, iq.proposed_edges FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id WHERE iq.target_node = ? AND iq.status = 'approved' AND (s.consent_scope IS NULL OR s.consent_scope != 'structural_only') AND COALESCE(s.status, 'active') != 'revoked' ORDER BY s.created_at DESC"
+      "SELECT s.id, s.batch_id, s.title, s.content, s.source_url, s.source_type, s.submitted_by, s.created_at, s.consent_attribution, iq.proposed_nodes, iq.proposed_edges FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id WHERE iq.target_node = ? AND iq.status = 'approved' AND (s.consent_scope IS NULL OR s.consent_scope != 'structural_only') AND COALESCE(s.status, 'active') != 'revoked' ORDER BY s.created_at DESC"
     )
     .all(node.id) as unknown as ContributionRow[];
 
@@ -712,8 +712,8 @@ function contributionsHandler(type: string) {
       return;
     }
     const keys = as.flatMap((c) => [c.id, c.name]);
-    const rows = db.prepare(
-      `SELECT s.title, s.content, s.source_url, s.source_type, s.submitted_by, s.created_at, s.consent_attribution, iq.proposed_nodes, iq.proposed_edges
+    let rows = db.prepare(
+      `SELECT s.id, s.batch_id, s.title, s.content, s.source_url, s.source_type, s.submitted_by, s.created_at, s.consent_attribution, iq.proposed_nodes, iq.proposed_edges
          FROM signals s LEFT JOIN intake_queue iq ON iq.signal_id = s.id
         WHERE s.submitted_by IN (${keys.map(() => "?").join(", ")}) AND s.status = 'active'
           AND (iq.id IS NULL OR iq.status = 'approved')
@@ -723,6 +723,9 @@ function contributionsHandler(type: string) {
         LIMIT 500`
     ).all(...keys) as unknown as ContributionRow[];
     body += `<p class='meta'>${htmlEscape(node.name)} contributes to the commons as ${as.map((c) => htmlEscape(c.name)).join(", ")}. Newest first; what is still waiting for review is not listed.</p>`;
+    // only what this node's contributors actually wrote: a name typed into the
+    // public form matches the query above but is not theirs
+    rows = rows.filter((r: any) => signalAuthorNode(db, r)?.id === node.id);
     body += rows.length ? contributionCards(db, rows) : `<p class='meta'>Nothing yet.</p>`;
     res.set(HTML_HEADERS).send(htmlPage(`${node.name} — contributions`, body, "", { fieldNode: node }));
   };
