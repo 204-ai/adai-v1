@@ -54,7 +54,7 @@ export function mintToken(db: DatabaseSync, opts: MintOptions): MintResult {
     throw new MintError("invalid_scope", `scope must be one of: ${[...VALID_SCOPES].join(", ")}`);
   }
 
-  let row = db.prepare("SELECT id, name, trust_tier FROM contributors WHERE name = ?").get(name) as any;
+  let row = db.prepare("SELECT id, name, trust_tier FROM contributors WHERE name = ? AND type IS NOT 'form'").get(name) as any;
   let contributorCreated = false;
 
   if (!row) {
@@ -178,7 +178,7 @@ export function restoreToken(db: DatabaseSync, opts: RestoreOptions): RestoreRes
     throw new MintError("invalid_scope", `scope must be one of: ${[...VALID_SCOPES].join(", ")}`);
   }
 
-  let row = db.prepare("SELECT id, name, trust_tier FROM contributors WHERE name = ?").get(name) as any;
+  let row = db.prepare("SELECT id, name, trust_tier FROM contributors WHERE name = ? AND type IS NOT 'form'").get(name) as any;
   let contributorCreated = false;
 
   if (!row) {

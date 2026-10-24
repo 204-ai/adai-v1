@@ -13,6 +13,7 @@ import { Router } from "express";
 import multer from "multer";
 import { getDb } from "../db.js";
 import { JSON_HEADERS } from "../templates.js";
+import { ownedBySql } from "../utils/authorship.js";
 import { requireToken, requireAdmin, isAutoMerge } from "../auth.js";
 import { mintToken, revokeTokenByPrefix, listTokens, setTokenNode, MintError } from "../utils/token-mint.js";
 import { slugify, slugForCreate } from "../utils/slug.js";
@@ -145,16 +146,22 @@ router.get("/api/v1/contributions", requireToken, (req, res) => {
   const limitRaw = Number(req.query.limit);
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 50;
 
-  const where: string[] = ["q.submitted_by = ?"];
-  const params: string[] = [name];
+  // Ownership is never the queue row's submitter name (anyone can type a
+  // name into the public form): the signal must provably be this
+  // contributor's (ownedBySql — its authenticated author first), or the row
+  // is their own claim request. Only then is signals_full read.
+  const OWNED = `((q.signal_id IS NOT NULL AND ${ownedBySql("s")})
+    OR (q.signal_id IS NULL AND EXISTS (SELECT 1 FROM node_claims k WHERE k.queue_id = q.id AND k.contributor_id = :owner_id)))`;
+  const where: string[] = [OWNED];
+  const params: Record<string, string | number> = { owner_id: req.contributor!.id, owner_name: name };
   if (statusFilter) {
-    where.push("q.status = ?");
-    params.push(statusFilter);
+    where.push("q.status = :status");
+    params.status = statusFilter;
   }
   const batchFilter = typeof req.query.batch === "string" && req.query.batch ? req.query.batch : null;
   if (batchFilter) {
-    where.push("s.batch_id = ?");
-    params.push(batchFilter);
+    where.push("s.batch_id = :batch");
+    params.batch = batchFilter;
   }
 
   const rows = db
@@ -167,9 +174,9 @@ router.get("/api/v1/contributions", requireToken, (req, res) => {
          LEFT JOIN signals_full s ON s.id = q.signal_id
         WHERE ${where.join(" AND ")}
         ORDER BY q.created_at DESC
-        LIMIT ?`
+        LIMIT :limit`
     )
-    .all(...params, limit) as Array<{
+    .all({ ...params, limit }) as Array<{
       intake_id: string;
       signal_id: string | null;
       target_node: string | null;
@@ -206,9 +213,10 @@ router.get("/api/v1/contributions", requireToken, (req, res) => {
 
   const totals = db
     .prepare(
-      `SELECT status, COUNT(*) AS n FROM intake_queue WHERE submitted_by = ? GROUP BY status`
+      `SELECT q.status AS status, COUNT(*) AS n FROM intake_queue q LEFT JOIN signals_full s ON s.id = q.signal_id
+        WHERE ${OWNED} GROUP BY q.status`
     )
-    .all(name) as Array<{ status: string; n: number }>;
+    .all({ owner_id: req.contributor!.id, owner_name: name }) as Array<{ status: string; n: number }>;
   const byStatus: Record<string, number> = {};
   for (const t of totals) byStatus[t.status] = t.n;
 

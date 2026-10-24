@@ -7,6 +7,7 @@
 //
 // Vectors are stored L2-normalised, so dot product == cosine similarity.
 
+import { VECTORS_SQL } from "./inputs.js";
 import type { DatabaseSync } from "node:sqlite";
 import { embedModel } from "./provider.js";
 
@@ -105,13 +106,7 @@ export function loadAll(db: DatabaseSync, opts: { fresh?: boolean } = {}): Map<s
   // Only the current model's rows (src/embed/provider.ts): during a model
   // switch the table holds vectors of two spaces, which must never meet.
   const rows = db
-    .prepare(
-      `SELECT ne.node_id, ne.kind, ne.model, ne.dims, ne.vector, ne.has_image, ne.image_hash, ne.text_hash
-       FROM node_embeddings ne
-       JOIN nodes n ON n.id = ne.node_id
-       WHERE json_extract(n.metadata,'$.retired') IS NOT 1
-         AND ne.model = ?`
-    )
+    .prepare(VECTORS_SQL)
     .all(embedModel()) as Array<{
       node_id: string;
       kind: string;

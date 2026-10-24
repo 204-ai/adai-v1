@@ -20,7 +20,7 @@
 // and an anonymous one hides who.
 
 import type { DatabaseSync } from "node:sqlite";
-import { contributorNode, type StandsFor } from "./contributor-node.js";
+import { signalAuthorNode, type StandsFor } from "./contributor-node.js";
 import { priorsOf, signalsWithPriorsFor } from "./signal-private.js";
 
 export interface HistorySource {
@@ -106,10 +106,12 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
     }
     return sigCache.get(id);
   };
+  // The byline links to the node of whoever actually wrote the signal
+  // (signalAuthorNode), never to whatever node a typed name matches.
   const standsCache = new Map<string, StandsFor | null>();
-  const standsFor = (by: string): StandsFor | null => {
-    if (!standsCache.has(by)) standsCache.set(by, contributorNode(db, by));
-    return standsCache.get(by)!;
+  const standsFor = (s: any): StandsFor | null => {
+    if (!standsCache.has(s.id)) standsCache.set(s.id, signalAuthorNode(db, s));
+    return standsCache.get(s.id)!;
   };
   const sourceOf = (s: any): HistorySource | null => {
     if (!s) return null;
@@ -126,7 +128,7 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
     const prov = structural ? null : parse(s.provenance_chain);
     if (prov && typeof prov.proposed_as === "object" && prov.proposed_as) out.proposed_as = prov.proposed_as;
     if (prov?.picked_from && typeof prov.picked_from.draft_id === "string") out.first_proposed = { by: prov.picked_from.by ?? null, batch_id: prov.picked_from.draft_id };
-    const as = out.by ? standsFor(out.by) : null;
+    const as = out.by ? standsFor(s) : null;
     if (as) out.by_node = { type: as.type, slug: as.slug };
     return out;
   };

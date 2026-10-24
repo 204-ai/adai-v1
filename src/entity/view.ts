@@ -29,7 +29,7 @@ import { tripleKey } from "../utils/claims.js";
 import { edgeLabel } from "../utils/edge-labels.js";
 import { fieldPath } from "../utils/site.js";
 import { listOpenReads } from "../intake/open-items.js";
-import { contributorNode, contributorsAs, type StandsFor } from "../utils/contributor-node.js";
+import { contributorsAs, signalAuthorNode, type StandsFor } from "../utils/contributor-node.js";
 
 export interface EntityNode {
   id: string;
@@ -642,13 +642,13 @@ function openItemsLink(db: DatabaseSync, node: EntityNode, viewer: EntityViewer)
 /** The nodes that contributors of this page stand for (issue #70), the page itself left out. */
 function contributedByNodes(db: DatabaseSync, node: EntityNode): StandsFor[] {
   const by = db.prepare(
-    `SELECT DISTINCT s.submitted_by FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id
+    `SELECT DISTINCT s.id, s.submitted_by, s.source_type, s.batch_id FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id
       WHERE iq.target_node = ? AND iq.status = 'approved' AND s.status = 'active'
         AND (s.consent_attribution IS NULL OR s.consent_attribution != 'anonymous')`
-  ).all(node.id) as Array<{ submitted_by: string | null }>;
+  ).all(node.id) as Array<{ id: string; submitted_by: string | null; source_type: string | null; batch_id: string | null }>;
   const out = new Map<string, StandsFor>();
   for (const r of by) {
-    const as = contributorNode(db, r.submitted_by);
+    const as = signalAuthorNode(db, r); // the writer's node, never a typed name's
     if (as && as.id !== node.id) out.set(as.id, as);
   }
   return [...out.values()];

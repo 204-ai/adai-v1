@@ -20,12 +20,14 @@
 //                  shared concept (e.g. one artist's handle used as a tag).
 //
 // Output edges are EMBODIES tagged created_by='embedding-multimodal-v1',
-// confidence 'low' — wiped + recomputed every derive run (same lifecycle as
-// STYLE_KIN / VISUALLY_AFFINE), rendered dashed in /field, never written into
-// the committed seed/*.json canon. Propagation only targets NON-members, so it
+// confidence 'low' — recomputed every derive run and applied as a diff with
+// STYLE_KIN / VISUALLY_AFFINE (derive.ts applyDerivedEdges: only new rows
+// inserted, only unwanted ones deleted), rendered dashed in /field, never
+// written into the committed seed/*.json canon. Propagation only targets NON-members, so it
 // never collides with an attested (confidence 1.0) EMBODIES.
 
 import type { DatabaseSync } from "node:sqlite";
+import { EMBODIES_MEMBERS_SQL } from "./inputs.js";
 
 export interface ConceptPropagateOptions {
   tauCoherence: number; // min centred member→centroid cosine
@@ -71,8 +73,9 @@ function norm(a: Float32Array): number {
 
 /**
  * Propagate tag-concepts across the centred artwork embedding space.
- * Called from derive() inside its transaction; emits EMBODIES rows via the
- * shared insertEdge statement (same column order as derive.ts).
+ * Called from derive() inside its transaction; hands each EMBODIES edge to
+ * derive's collector (`insertEdge.run(id, source, target, type, …)`), which
+ * applies the whole derived set as a diff.
  */
 export function propagateConcepts(
   db: DatabaseSync,
@@ -97,15 +100,10 @@ export function propagateConcepts(
 
   // 1. Attested EMBODIES members per concept (exclude our own derived rows so
   //    a re-run never bootstraps off last run's guesses).
+  //    A NULL writer is attested too (EMBODIES_MEMBERS_SQL: `IS NOT`, shared
+  //    with derive's input fingerprint).
   const memberRows = db
-    .prepare(
-      `SELECT source_id, target_id FROM edges
-       WHERE edge_type = 'EMBODIES'
-         AND valid_until IS NULL
-         AND created_by != ?
-         AND source_id LIKE 'artwork:%'
-         AND target_id LIKE 'concept:%'`
-    )
+    .prepare(EMBODIES_MEMBERS_SQL)
     .all(createdByTag) as Array<{ source_id: string; target_id: string }>;
 
   const membersByConcept = new Map<string, Set<string>>();

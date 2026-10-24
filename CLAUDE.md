@@ -300,7 +300,22 @@ empty — it requires evidence of artist intent, not thematic similarity.
   edges; `?max_nodes=800`, up to 5000; `truncated: true` when hit)
 - `GET /:type/:slug/data` — full JSON export (metadata + edges + approved
   signals); slug-only resolution, the type segment is decorative
-- `POST /api/contribute` — submit a signal
+- `POST /api/contribute` — submit a signal. Anonymous by identity: always
+  probationary (`/review`), never a trust tier by typed name; approval writes a
+  separate contributors row (`contributor:form-<hex>`, type `form`, the typed name
+  as display name), never counts on an existing one. Operator lookups by name
+  (`token:issue`, `token:revoke`, `contributor:rename`) skip `form` rows. A
+  byline's node link ("contributed by X" on `/history`, `/record`, the entity
+  view, `/<type>/<slug>/contributions`) comes from the signal's actual author
+  (`signalAuthorNode` in `src/utils/contributor-node.ts`: `signal_authors` →
+  that contributor's token node), never from the typed name; a `form` row links
+  nowhere. **Ownership is decided in one place, `src/utils/authorship.ts`**
+  (`signalOwner` / `ownedBySql` / `isFormShaped`): the authenticated author
+  (`signal_authors`), else the approved form signal's own row (local
+  `form_signals`), else nothing for a form-shaped signal (plain contribution, no
+  batch id), else a legacy write by an unambiguous non-form name. Bylines,
+  `GET /api/v1/contributions`, the contributions page and counts, snapshot
+  credit and `contributor:rename` all use it.
 - `POST /api/review/:id/approve` · `/reject` — curator actions
 - `GET /api/sync/info` · `GET /api/sync/changes?since=&limit=` — the public
   CRDT change stream (*Public sync* below)
@@ -569,10 +584,11 @@ no per-cell filtering.
   key. A fork's `/api/stats` matches except `pending_reviews` (local); profile
   sections fed by `intake_queue` (community contributions, accounts) and
   before-images on `/history` are empty there.
-- Volume: today's commons is ~480k changes (~25 pages at the max limit); the
-  nightly `embed:derive` deletes and re-inserts every derived edge in one
-  transaction (~125k changes), so a fork pulling daily re-receives the derived
-  layer each day.
+- Volume: today's commons is ~480k changes (~25 pages at the max limit). The
+  nightly `embed:derive` is a diff (below): a run on unchanged vectors emits zero
+  changes, a changed vector only the edges it is part of — a fork pulling daily
+  receives what actually changed, not the whole derived layer (the old
+  delete-then-insert emitted ~125k changes a night).
 
 ## Whitepaper
 
@@ -612,8 +628,22 @@ local-only `node_embeddings` table (NOT a CRR).
   proposals into `intake_queue` (`kind='ai_suggestion'`), then runs **Tier-2
   concept propagation** (`src/embed/concept-edges.ts`). Calibrated thresholds:
   τ_attribute=0.88, τ_kin=0.91, τ_visual=0.84 (env-overridable
-  `TAU_ATTRIBUTE`/`TAU_KIN`/`TAU_VISUAL`). Each run starts with
-  `DELETE FROM edges WHERE created_by='embedding-multimodal-v1'`. The pipeline
+  `TAU_ATTRIBUTE`/`TAU_KIN`/`TAU_VISUAL`). **Incremental**: the run computes the
+  desired derived set — ids deterministic,
+  `<source>--<TYPE>--<target>--embedding-multimodal-v1`, confidence the constant
+  `'low'` (no score stored, so float noise can't rewrite a cell) — and diffs it
+  against the current derived rows in one transaction (`applyDerivedEdges` in
+  `src/embed/derive.ts`): INSERT only new edges, hard-DELETE only unwanted ones
+  (a derived edge is a recomputed view, not a claim — `/history` leaves them out;
+  ending them bi-temporally would pile up dead rows in the public tables), UPDATE
+  only a cell that differs; unchanged rows keep their `created_at`/`valid_from`.
+  Twice on unchanged vectors = zero `crsql_changes` (`tests/derive-incremental.test.ts`).
+  Computed on ONE read snapshot (ended before any write), applied in one short
+  `BEGIN IMMEDIATE` (centroids, pending suggestions, edge diff together) after an
+  input fingerprint check; inputs changed meanwhile → recompute (≤ 3 attempts),
+  never a stale-snapshot upgrade; a dry run writes nothing (centroids in memory);
+  the stats carry `edges: {desired, inserted, deleted, updated_rows, updated_cells}`.
+  Pending `ai_suggestion` rows (local) are still replaced each run. The pipeline
   **refuses to auto-emit INFLUENCES or RESPONDS_TO** by design.
 - **Embed-on-write**: `/api/v1/nodes` (POST/PATCH) and `/api/v1/images` call
   `embedNodeAsync` after materialise; failures are logged, never block the

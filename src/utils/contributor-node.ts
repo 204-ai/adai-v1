@@ -8,6 +8,7 @@
 // credential does not change whose contributions they were.
 
 import type { DatabaseSync } from "node:sqlite";
+import { ownedBySql, signalOwner } from "./authorship.js";
 
 export interface StandsFor {
   id: string;
@@ -28,11 +29,36 @@ export function contributorNode(db: DatabaseSync, submittedBy: string | null | u
        FROM contributors c
        JOIN contributor_tokens t ON t.contributor_id = c.id AND t.node_id IS NOT NULL
        JOIN nodes n ON n.id = t.node_id AND json_extract(n.metadata, '$.retired') IS NOT 1
-      WHERE c.id = ? OR c.name = ?
+      WHERE (c.id = ? OR c.name = ?) AND c.type IS NOT 'form'
       ORDER BY t.created_at DESC
       LIMIT 1`
   ).get(submittedBy, submittedBy) as StandsFor | undefined;
   return row ?? null;
+}
+
+/** The node the contributor with exactly this id stands for. */
+export function contributorNodeById(db: DatabaseSync, contributorId: string | null | undefined): StandsFor | null {
+  if (!contributorId) return null;
+  const row = db.prepare(
+    `SELECT n.id, n.type, n.slug, n.name
+       FROM contributors c
+       JOIN contributor_tokens t ON t.contributor_id = c.id AND t.node_id IS NOT NULL
+       JOIN nodes n ON n.id = t.node_id AND json_extract(n.metadata, '$.retired') IS NOT 1
+      WHERE c.id = ? AND c.type IS NOT 'form'
+      ORDER BY t.created_at DESC
+      LIMIT 1`
+  ).get(contributorId) as StandsFor | undefined;
+  return row ?? null;
+}
+
+/**
+ * The node a SIGNAL's byline may link to — that of the contributor the
+ * signal provably belongs to (signalOwner, src/utils/authorship.ts), never of
+ * whatever a typed name matches. A 'form' row links nowhere.
+ */
+export function signalAuthorNode(db: DatabaseSync, s: { id?: string | null }): StandsFor | null {
+  const owner = signalOwner(db, s.id ?? null);
+  return owner ? contributorNodeById(db, owner.id) : null;
 }
 
 /** The contributors that stand for a node, with how many active signals each has. */
@@ -44,16 +70,17 @@ export function contributorsAs(db: DatabaseSync, nodeId: string): Array<{ id: st
       ORDER BY c.name`
   ).all(nodeId) as Array<{ id: string; name: string }>;
   // Keep only those for whom this node is the one they stand for now.
-  // Counted as /<type>/<slug>/contributions lists them: live, attributed,
-  // not structural-only, and not waiting in (or turned down by) review.
+  // Counted as /<type>/<slug>/contributions lists them: their own signals
+  // (authenticated author first; ownedBySql), live, attributed, not
+  // structural-only, and not waiting in (or turned down by) review.
   const count = db.prepare(
     `SELECT COUNT(*) AS n FROM signals s LEFT JOIN intake_queue iq ON iq.signal_id = s.id
-      WHERE (s.submitted_by = ? OR s.submitted_by = ?) AND s.status = 'active'
+      WHERE ${ownedBySql("s")} AND s.status = 'active'
         AND (iq.id IS NULL OR iq.status = 'approved')
         AND (s.consent_attribution IS NULL OR s.consent_attribution != 'anonymous')
         AND (s.consent_scope IS NULL OR s.consent_scope != 'structural_only')`
   );
   return rows
-    .filter((c) => contributorNode(db, c.id)?.id === nodeId)
-    .map((c) => ({ id: c.id, name: c.name, signals: Number((count.get(c.name, c.id) as any)?.n ?? 0) }));
+    .filter((c) => contributorNodeById(db, c.id)?.id === nodeId)
+    .map((c) => ({ id: c.id, name: c.name, signals: Number((count.get({ owner_id: c.id, owner_name: c.name }) as any)?.n ?? 0) }));
 }

@@ -8,9 +8,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import { htmlEscape } from "../templates.js";
 import { edgeLabel } from "./edge-labels.js";
-import { contributorNode } from "./contributor-node.js";
+import { signalAuthorNode } from "./contributor-node.js";
 
 export interface ContributionRow {
+  id?: string | null;
   title: string | null;
   content: string | null;
   source_url: string | null;
@@ -116,7 +117,8 @@ export function contributionByline(db: DatabaseSync, c: ContributionRow): string
   else if (c.submitted_by) {
     const named = db.prepare("SELECT name FROM contributors WHERE id = ?").get(c.submitted_by) as { name: string } | undefined;
     const who = htmlEscape(named?.name ?? c.submitted_by);
-    const as = contributorNode(db, c.submitted_by);
+    // linked by who actually wrote it, never by the typed name (signalAuthorNode)
+    const as = signalAuthorNode(db, c);
     parts.push(`contributed by ${as ? `<a href='/${encodeURIComponent(as.type)}/${encodeURIComponent(as.slug)}'>${who}</a>` : who}`);
   }
   const day = proseDate(c.created_at);
