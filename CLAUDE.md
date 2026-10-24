@@ -177,7 +177,8 @@ blank (`src/utils/signal-private.ts`):
   (the full record in `signal_private`, reason `private_batch`);
 - **the public form's name** — a `POST /api/contribute` in review holds back
   `submitted_by` too (`pending_name`, CRR NULL) and writes no contributors row;
-  approval publishes the name and writes / bumps the row (`approveIntakeItem`);
+  approval publishes the name and writes / bumps the row (`approveIntakeItem`).
+  From this release on: rows older code created for form names stay public;
 - **before-images** — `recordPrior` writes the values to **`signal_priors`**
   (`signal_id, idx, op, node_id, at, updated_by, before`); the CRR trace keeps
   `{"prior":[{op, node_id, at}]}`. An admin record carrying them (retire_batch's
@@ -198,11 +199,16 @@ then without (idempotent, one transaction; it verifies every kept original EQUAL
 the CRR value before blanking and aborts on a conflict — `PrivacyConflictError`,
 `signal_priors conflict`); `initDb` warns at boot while rows are left, and the
 sync endpoint answers 503 until none are. One kind it never moves:
-**legacy anonymous graph attribution** (`anonymousGraphAttribution()`: edges /
-edge ids / references / `nodes.updated_by` an anonymous signal wrote under its
-author's name before the labelling) — rewriting edge ids is hand work, so sync
-stays closed (`503 anonymous_graph_attribution`) until an operator cleans them
-(prod had none when this shipped).
+**legacy anonymous contributions** — any anonymous signal not inserted blank by
+this code (`signal_private.born_safe = 0`) may have left its author's name in the
+stream (an edge id, whose tombstone outlives a DELETE; a reference; a writer
+label). Each is a LOCAL `privacy_blocks` row (`src/utils/privacy-blocks.ts`)
+that deleting rows never clears: sync answers `503 legacy_anonymous_attribution`
+until `npm run privacy:audit-stream -- --clear` scans `crsql_changes`
+(tombstones included, writer components matched structurally) and finds nothing;
+a tombstone carrying the name means the DB must not be published. Prod never had
+an anonymous signal. `anonymousGraphAttribution()` is the current-rows diagnostic
+(`503 anonymous_graph_attribution`).
 
 **Node types**: `artwork`, `practitioner`, `concept`, `classification_regime`,
 `collective`, `platform`, `institution` (schema reserves `scene`, `publication`,
@@ -538,8 +544,10 @@ no per-cell filtering.
   a byte budget (~4 MB of encoded JSON, `DEFAULT_MAX_BYTES`), cut by the same
   rule; a single cell bigger than that is a page of its own. `since=0` = all.
   gzip off the request thread (async zlib); `Cache-Control` 5–30 s; no auth;
-  240 requests / 10 min per client (`clientIp`: `Fly-Client-IP`, else the last
-  `X-Forwarded-For` hop);
+  240 requests / 10 min per client (`clientIp`: on Fly — `FLY_APP_NAME` set —
+  `Fly-Client-IP`, else the last `X-Forwarded-For` hop; `TRUST_PROXY=1` trusts the
+  last hop elsewhere; otherwise the socket address); candidates are read one at a
+  time and measured with `Buffer.byteLength`;
   `PUBLIC_SYNC=off` disables it; 503 while `privacyBacklog()` is not zero.
   Code: `src/sync/changes.ts`, `src/routes/sync.ts` — its own route, never the
   stamp-pinned `/api/graph/stream`.

@@ -28,6 +28,7 @@
     "node:merge": "tsx src/cli/merge-nodes.ts",
     "slugs:migrate": "tsx src/cli/migrate-slugs.ts",
     "privacy:migrate": "tsx src/cli/privacy-migrate.ts",
+    "privacy:audit-stream": "tsx src/cli/privacy-audit-stream.ts",
     "fork:pull": "tsx src/cli/fork-pull.ts",
     "intake:worker": "npm --prefix worker run start",
     "build": "tsc",

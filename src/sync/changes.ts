@@ -152,16 +152,18 @@ export function readChanges(db: DatabaseSync, since: Cursor | number, limit = DE
     const within = db.prepare(`${CHANGES_SQL} WHERE db_version = ? AND seq > ? ORDER BY seq LIMIT ?`);
     rest.setReadBigInts(true);
     within.setReadBigInts(true);
-    // candidates: the rest of a transaction split by an earlier page, then what follows
-    let rows: any[] = cur.seq !== null ? (within.all(BigInt(cur.v), BigInt(cur.seq), BigInt(lim + 1)) as any[]) : [];
-    if (rows.length < lim + 1) rows = rows.concat(rest.all(BigInt(cur.v), BigInt(lim + 1 - rows.length)) as any[]);
+    // candidates, read one at a time (never more than the page takes plus
+    // one): the rest of a transaction split by an earlier page, then what follows
+    function* candidates(): Generator<any> {
+      if (cur.seq !== null) yield* within.iterate(BigInt(cur.v), BigInt(cur.seq), BigInt(lim + 1)) as Iterable<any>;
+      yield* rest.iterate(BigInt(cur.v), BigInt(lim + 1)) as Iterable<any>;
+    }
 
     const out: Array<{ c: WireChange; v: bigint; seq: bigint }> = [];
     let bytes = 0;
-    let stop = -1; // the first candidate not taken
-    for (let i = 0; i < rows.length; i++) {
-      if (out.length >= lim) { stop = i; break; }
-      const r = rows[i];
+    let stopRow: any = null; // the first candidate not taken
+    for (const r of candidates()) {
+      if (out.length >= lim) { stopRow = r; break; }
       const c: WireChange = [
         String(r.tbl),
         Buffer.from(r.pk as Uint8Array).toString("base64"),
@@ -173,8 +175,8 @@ export function readChanges(db: DatabaseSync, since: Cursor | number, limit = DE
         toNum(r.cl),
         toNum(r.seq),
       ];
-      const size = JSON.stringify(c).length + 1;
-      if (out.length && bytes + size > budget) { stop = i; break; }
+      const size = Buffer.byteLength(JSON.stringify(c), "utf8") + 1;
+      if (out.length && bytes + size > budget) { stopRow = r; break; }
       out.push({ c, v: r.db_version as bigint, seq: r.seq as bigint });
       bytes += size;
     }
@@ -182,11 +184,11 @@ export function readChanges(db: DatabaseSync, since: Cursor | number, limit = DE
     let page = out;
     let more = false;
     let next: Cursor;
-    if (stop < 0) {
+    if (!stopRow) {
       next = { v: out.length ? Number(out[out.length - 1]!.v) : cur.v, seq: null };
     } else {
       more = true;
-      const cut = rows[stop].db_version as bigint; // the first version not wholly in the page
+      const cut = stopRow.db_version as bigint; // the first version not wholly in the page
       const whole = out.filter((x) => x.v < cut);
       if (whole.length) {
         page = whole;

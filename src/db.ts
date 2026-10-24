@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extensionPath } from "@shards-lang/crsqlite";
-import { backlogTotal, privacyBacklog } from "./utils/signal-private.js";
+import { backlogTotal, privacyBacklog, recordPrivacyBlocks } from "./utils/signal-private.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
@@ -34,6 +34,7 @@ export function initDb(dbPath: string): DatabaseSync {
 // at boot — this only says so, loudly.
 function warnPrivacyBacklog(db: DatabaseSync) {
   try {
+    recordPrivacyBlocks(db); // a legacy anonymous signal becomes a block that only the stream audit clears
     const b = privacyBacklog(db);
     if (backlogTotal(b)) {
       console.warn(`[db] ⚠️ CRR rows hold unpublishable values ${JSON.stringify(b)} — run \`npm run privacy:migrate -- --dry-run\`, then without --dry-run`);
@@ -122,6 +123,13 @@ function runMigrations(db: DatabaseSync) {
   // stands for (issue #70).
   try {
     db.exec("ALTER TABLE contributor_tokens ADD COLUMN node_id TEXT");
+  } catch (e: any) {
+    if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
+  }
+  // signal_private.born_safe (public sync review): marks anonymous signals
+  // inserted blank; same idempotent pattern for a file made before it.
+  try {
+    db.exec("ALTER TABLE signal_private ADD COLUMN born_safe INTEGER NOT NULL DEFAULT 0");
   } catch (e: any) {
     if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
   }

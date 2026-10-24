@@ -531,10 +531,32 @@ CREATE TABLE IF NOT EXISTS signal_private (
     submitted_by     TEXT,
     batch_id         TEXT,
     moved_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at       TEXT
+    updated_at       TEXT,
+    born_safe        INTEGER NOT NULL DEFAULT 0      -- 1: an anonymous signal inserted blank by insertSignalRow (its name never was in the CRR)
 );
 CREATE INDEX IF NOT EXISTS idx_signal_private_batch ON signal_private(batch_id);
 CREATE INDEX IF NOT EXISTS idx_signal_private_by ON signal_private(submitted_by);
+
+-- Unresolved blocks on publication (public sync). A legacy anonymous
+-- contribution — one whose author's name was in the CRR before anonymous
+-- signals were inserted blank (signal_private.born_safe = 0) — may have left
+-- its name in the change stream for good: in an edge id (a primary key: its
+-- cr-sqlite tombstone outlives a DELETE), a reference to that id, a writer
+-- label. Recorded here when first detected, with the author labels and the
+-- author-bearing ids seen; a row does NOT go away when the rows it names are
+-- deleted. Only the operator's stream audit (npm run privacy:audit-stream --
+-- --clear) clears it, after scanning crsql_changes — tombstones included —
+-- and finding nothing. While any is uncleared, /api/sync/* answers 503.
+CREATE TABLE IF NOT EXISTS privacy_blocks (
+    signal_id   TEXT PRIMARY KEY NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'legacy_anonymous',
+    labels      TEXT NOT NULL,                      -- JSON: the author's name and writer labels (api-<name>, curator-from-<name>)
+    edge_ids    TEXT NOT NULL DEFAULT '[]',         -- JSON: author-bearing edge ids seen (union over detections)
+    node_ids    TEXT NOT NULL DEFAULT '[]',         -- JSON: nodes it wrote
+    detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    cleared_at  TEXT,
+    audit       TEXT                                -- JSON: the last audit's findings
+);
 
 -- Before-images (recordPrior, src/utils/contribution.ts): what a node write
 -- replaced. They can hold values removed on purpose (an upheld contest, a

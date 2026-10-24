@@ -29,6 +29,8 @@
 // operator's side, read back through the signals_full view.
 
 import { createHash } from "node:crypto";
+import { anonymousGraphAttribution, legacyAnonymousBacklog, recordPrivacyBlocks } from "./privacy-blocks.js";
+export { anonymousGraphAttribution, auditPrivacyStream, recordPrivacyBlocks } from "./privacy-blocks.js";
 import type { DatabaseSync } from "node:sqlite";
 
 export const WORD_COLS = ["title", "summary", "content", "source_url", "provenance_chain", "processing_trace"] as const;
@@ -100,44 +102,72 @@ export function consentReasons(row: { consent_scope?: unknown; consent_attributi
   return out;
 }
 
-function upsertPrivate(db: DatabaseSync, signalId: string, reason: string, originals: Partial<Record<PrivateCol, unknown>>): void {
+function upsertPrivate(db: DatabaseSync, signalId: string, reason: string, originals: Partial<Record<PrivateCol, unknown>>, opts: { bornSafe?: boolean } = {}): void {
   const cols = Object.keys(originals) as PrivateCol[];
   const existing = db.prepare("SELECT * FROM signal_private WHERE signal_id = ?").get(signalId) as any;
+  let written: PrivateCol[];
   if (!existing) {
     db.prepare(
-      `INSERT INTO signal_private (signal_id, reasons${cols.map((c) => `, ${c}`).join("")}) VALUES (?, ?${cols.map(() => ", ?").join("")})`
-    ).run(signalId, reason, ...cols.map((c) => originals[c] as any));
+      `INSERT INTO signal_private (signal_id, reasons, born_safe${cols.map((c) => `, ${c}`).join("")}) VALUES (?, ?, ?${cols.map(() => ", ?").join("")})`
+    ).run(signalId, reason, opts.bornSafe ? 1 : 0, ...cols.map((c) => originals[c] as any));
+    written = cols;
   } else {
     // An original already kept is never overwritten (a second withholding
     // sees the blank, not the original). A kept value that DIFFERS from the
     // CRR value about to be blanked is a conflict: abort, never pick one —
-    // except the public view of a before_images record (the CRR content is
-    // the stripped projection of the kept original).
+    // unless the CRR value is exactly the computed public projection of the
+    // kept original (isProjection).
     for (const c of cols) {
       const k = existing[c];
       if (k === null || k === undefined || k === originals[c]) continue;
-      if (projected(existing.reasons, c)) continue;
+      if (isProjection(existing, c, originals[c])) continue;
       throw new PrivacyConflictError(signalId, c, k, originals[c]);
     }
-    const sets = cols.filter((c) => existing[c] === null || existing[c] === undefined);
+    written = cols.filter((c) => existing[c] === null || existing[c] === undefined);
     db.prepare(
-      `UPDATE signal_private SET reasons = ?, updated_at = ?${sets.map((c) => `, ${c} = ?`).join("")} WHERE signal_id = ?`
-    ).run(mergeReasons(existing.reasons, reason), nowIso(), ...sets.map((c) => originals[c] as any), signalId);
+      `UPDATE signal_private SET reasons = ?, updated_at = ?, born_safe = CASE WHEN ? THEN 1 ELSE born_safe END${written.map((c) => `, ${c} = ?`).join("")} WHERE signal_id = ?`
+    ).run(mergeReasons(existing.reasons, reason), nowIso(), opts.bornSafe ? 1 : 0, ...written.map((c) => originals[c] as any), signalId);
   }
-  // Verify before anything is blanked: every original is kept, equal.
+  // Verify before anything is blanked: every original written now is kept, equal.
   const kept = db.prepare("SELECT * FROM signal_private WHERE signal_id = ?").get(signalId) as any;
-  for (const c of cols) {
+  for (const c of written) {
     if (originals[c] === null || originals[c] === undefined) continue;
-    if (kept?.[c] === null || kept?.[c] === undefined) throw new Error(`signal_private: ${signalId}.${c} not kept; refusing to blank it`);
-    if (kept[c] !== originals[c] && !projected(kept.reasons, c)) {
-      throw new PrivacyConflictError(signalId, c, kept[c], originals[c]);
-    }
+    if (kept?.[c] !== originals[c]) throw new PrivacyConflictError(signalId, c, kept?.[c], originals[c]);
   }
 }
 
-/** A CRR cell that holds a public projection of the kept original (not the original itself). */
-function projected(reasons: unknown, col: string): boolean {
-  return String(reasons ?? "").split(",").some((r) => (r === "before_images" || r === "private_batch") && (colsFor(r as WithholdReason) as readonly string[]).includes(col));
+/** JSON with sorted keys (undefined dropped), for comparing two projections. */
+function canon(v: unknown): string {
+  const norm = (x: any): any => (Array.isArray(x) ? x.map(norm) : x && typeof x === "object"
+    ? Object.fromEntries(Object.keys(x).filter((k) => x[k] !== undefined).sort().map((k) => [k, norm(x[k])])) : x);
+  return JSON.stringify(norm(v));
+}
+
+/**
+ * Whether a CRR value is EXACTLY the public projection of the kept original
+ * (a before_images record without its values; a private_batch record under
+ * its correction id) — computed, not assumed. Anything else is a conflict.
+ */
+function isProjection(kept: any, col: string, crr: unknown): boolean {
+  const reasons = String(kept?.reasons ?? "").split(",");
+  const k = kept?.[col];
+  if (typeof crr !== "string" || typeof k !== "string") return false;
+  if (col === "content" && (reasons.includes("before_images") || reasons.includes("private_batch"))) {
+    const full = parse(k);
+    const pub = parse(crr);
+    if (!full || !pub || typeof full !== "object" || typeof pub !== "object") return false;
+    let expected: any = full;
+    if (reasons.includes("private_batch")) {
+      const cid = pub.correction_id;
+      if (typeof cid !== "string" || !/^correction-[0-9a-f]+$/.test(cid)) return false;
+      expected = { ...full, batch_id: undefined, correction_id: cid };
+    }
+    return canon(stripBeforeImages(expected).stripped) === canon(pub);
+  }
+  if (col === "title" && reasons.includes("private_batch")) {
+    return /^Retire batch: correction-[0-9a-f]+$/.test(crr) && k.startsWith("Retire batch: ");
+  }
+  return false;
 }
 
 /** A private value already kept differs from the CRR value about to be blanked. */
@@ -222,7 +252,8 @@ export function insertSignalRow(db: DatabaseSync, row: SignalRow, extra: Withhol
         if (v !== null && v !== undefined && v !== blankOf(c, reason)) originals[c] = v;
         crr[c] = blankOf(c, reason);
       }
-      upsertPrivate(db, row.id, reason, originals);
+      // born safe: an anonymous signal written by this code never had its name in the CRR
+      upsertPrivate(db, row.id, reason, originals, { bornSafe: reason === "anonymous" });
     }
     const cols = Object.keys(crr).filter((k) => crr[k] !== undefined);
     db.prepare(`INSERT INTO signals (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`).run(...cols.map((c) => crr[c] as any));
@@ -488,6 +519,8 @@ export interface PrivacyMigrationReport {
   private_batches: { signals: number; ids: string[] };
   /** Rows the migration does NOT move (see PrivacyBacklog.anonymous_graph): clean by hand before enabling sync. */
   anonymous_graph: string[];
+  /** After a real run: uncleared privacy_blocks (legacy anonymous signals; sync stays closed until the stream audit clears them). */
+  legacy_anonymous_blocks?: number;
   /** After a real run: what is still left to move (must be all zero). */
   left?: PrivacyBacklog;
 }
@@ -510,6 +543,11 @@ export interface PrivacyBacklog {
    * references is hand work): sync stays closed until it is zero.
    */
   anonymous_graph: number;
+  /**
+   * Uncleared privacy_blocks plus legacy anonymous signals not recorded yet
+   * (src/utils/privacy-blocks.ts): only the operator's stream audit clears them.
+   */
+  legacy_anonymous: number;
 }
 
 const WORDS_PRESENT = WORD_COLS.map((c) => `${c} IS NOT NULL`).join(" OR ");
@@ -554,60 +592,15 @@ export function privacyBacklog(db: DatabaseSync): PrivacyBacklog {
     pending: pendingBacklog(db).length,
     private_batches: privateBatchRecords(db).length,
     anonymous_graph: anonymousGraphAttribution(db).length,
+    legacy_anonymous: legacyAnonymousBacklog(db),
   };
 }
 
 export const backlogTotal = (b: PrivacyBacklog) =>
-  b.priors + b.words + b.anonymous + b.admin_before_images + b.notes + b.rejected + b.pending + b.private_batches + b.anonymous_graph;
+  b.priors + b.words + b.anonymous + b.admin_before_images + b.notes + b.rejected + b.pending + b.private_batches + b.anonymous_graph + b.legacy_anonymous;
 
-/** What the migration can move (everything but legacy anonymous graph attribution). */
-const movableTotal = (b: PrivacyBacklog) => backlogTotal(b) - b.anonymous_graph;
-
-/** The real author of an anonymous signal, if it is known anywhere. */
-function anonymousAuthor(db: DatabaseSync, signalId: string, crrName: unknown): string | null {
-  const kept = hasTable(db, "signal_private") ? (db.prepare("SELECT submitted_by FROM signal_private WHERE signal_id = ?").get(signalId) as any)?.submitted_by : null;
-  const name = kept ?? (crrName !== ANONYMOUS ? crrName : null);
-  return typeof name === "string" && name ? name : null;
-}
-
-/**
- * Rows an anonymous signal wrote that still name its author (see
- * PrivacyBacklog.anonymous_graph), as "<table>:<id>" for the diagnostic.
- * Current and historical rows alike (a superseded edge is in the stream too).
- */
-export function anonymousGraphAttribution(db: DatabaseSync): string[] {
-  const out = new Set<string>();
-  const anon = db.prepare("SELECT id, submitted_by FROM signals WHERE consent_attribution = 'anonymous'").all() as any[];
-  if (!anon.length) return [];
-  const flaggedEdges: string[] = [];
-  for (const s of anon) {
-    const name = anonymousAuthor(db, s.id, s.submitted_by);
-    const labels = name ? [name, `api-${name}`, `curator-from-${name}`] : [];
-    for (const e of db.prepare("SELECT id, created_by FROM edges WHERE signal_id = ?").all(s.id) as any[]) {
-      if (e.created_by !== ANONYMOUS || (name && String(e.id).includes(name))) { out.add(`edges:${e.id}`); flaggedEdges.push(e.id); }
-    }
-    // the nodes it wrote: its before-images, and the review items naming it
-    const nodes = new Set<string>(priorsOf(db, s.id).map((p) => p.node_id));
-    if (hasTable(db, "intake_queue")) {
-      const like = `%${JSON.stringify(s.id).slice(1, -1)}%`;
-      for (const q of db.prepare("SELECT signal_id, proposed_nodes FROM intake_queue WHERE status = 'approved' AND (signal_id = ? OR proposed_nodes LIKE ?)").all(s.id, like) as any[]) {
-        for (const op of parse(q.proposed_nodes) ?? []) {
-          if ((op?.signal_id ?? q.signal_id) !== s.id) continue;
-          if (op?.op === "create_node" && op.type && op.slug) nodes.add(`${op.type}:${op.slug}`);
-          else if (op?.node_id) nodes.add(op.node_id);
-        }
-      }
-    }
-    for (const id of nodes) {
-      const n = db.prepare("SELECT updated_by FROM nodes WHERE id = ?").get(id) as any;
-      if (n && labels.includes(String(n.updated_by))) out.add(`nodes:${id}`);
-    }
-  }
-  // references to an author-bearing edge id
-  const ref = db.prepare("SELECT id FROM edges WHERE invalidated_by = ?");
-  for (const id of flaggedEdges) for (const r of ref.all(id) as any[]) out.add(`edges:${r.id}`);
-  return [...out];
-}
+/** What the migration can move (everything but legacy anonymous attribution: hand work + the stream audit). */
+const movableTotal = (b: PrivacyBacklog) => backlogTotal(b) - b.anonymous_graph - b.legacy_anonymous;
 
 /** Retirement records (api_admin retire_batch) that name a private batch handle in the CRR. */
 function privateBatchRecords(db: DatabaseSync): Array<{ id: string; batch_id: string }> {
@@ -739,6 +732,7 @@ export function migratePrivacy(db: DatabaseSync, opts: { dryRun?: boolean } = {}
     if (movableTotal(left)) throw new Error(`privacy migration left rows behind: ${JSON.stringify(left)}`);
     report.left = left;
     report.anonymous_graph = anonymousGraphAttribution(db);
+    report.legacy_anonymous_blocks = recordPrivacyBlocks(db);
     db.exec("COMMIT");
   } catch (e) {
     try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }

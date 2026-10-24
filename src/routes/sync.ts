@@ -79,6 +79,14 @@ function guard(req: Request, res: Response): boolean {
     return false;
   }
   const b = backlogNow();
+  if (b.legacy_anonymous) {
+    res.status(503).set(JSON_HEADERS).json({
+      error: "legacy_anonymous_attribution",
+      count: b.legacy_anonymous,
+      hint: "anonymous contributions from before this release may have left their author's name in the change stream (edge ids, tombstones, references); clean by hand, then npm run privacy:audit-stream -- --clear (docs/PUBLIC-SYNC.md)",
+    });
+    return false;
+  }
   if (b.anonymous_graph) {
     // legacy rows the migration cannot fix: closed until an operator cleans them by hand
     res.status(503).set(JSON_HEADERS).json({

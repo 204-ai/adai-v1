@@ -17,9 +17,10 @@ import { mintToken } from "../src/utils/token-mint.js";
 import { insertSignal, materialiseEdge } from "../src/utils/contribution.js";
 import { retireBatch } from "../src/utils/admin-actions.js";
 import { approveIntakeItem, rejectIntakeItem } from "../src/utils/review.js";
-import { anonymousGraphAttribution, backlogTotal, fullSignal, migratePrivacy, privacyBacklog, PrivacyConflictError, withholdSignal } from "../src/utils/signal-private.js";
+import { anonymousGraphAttribution, auditPrivacyStream, backlogTotal, fullSignal, migratePrivacy, privacyBacklog, PrivacyConflictError, withholdSignal } from "../src/utils/signal-private.js";
 import { applyChanges, parseCursor, readChanges } from "../src/sync/changes.js";
 import { clientIp } from "../src/intake/auth.js";
+import { idHasWriter } from "../src/utils/privacy-blocks.js";
 import type { AuthedContributor } from "../src/auth.js";
 
 function streamText(db: DatabaseSync): string {
@@ -74,40 +75,93 @@ it("anonymous /api/v1/signals (auto and probationary): the real contributor's co
   }
 });
 
-it("legacy anonymous graph attribution keeps sync closed; the migration reports it and does not pretend to fix it", async () => {
-  const db = initDb(":memory:");
-  insertNode(db, "artwork:w", "artwork", "W");
-  insertNode(db, "practitioner:p", "practitioner", "P");
-  // as the code before labelled anonymous writes: an anonymous signal, its
-  // edge named after the author, superseded by a later edge
-  db.prepare("INSERT INTO signals (id, title, content, submitted_by, consent_attribution) VALUES ('s-anon', 't', 'c', 'Hidden Name', 'anonymous')").run();
-  const old = "artwork:w--CREATED_BY--practitioner:p--api-Hidden Name";
-  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, signal_id, created_by) VALUES (?, 'artwork:w', 'practitioner:p', 'CREATED_BY', 's-anon', 'api-Hidden Name')").run(old);
-  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, signal_id, created_by, invalidated_by) VALUES ('later', 'artwork:w', 'practitioner:p', 'CREATED_BY', NULL, 'x', ?)").run(old);
-  const r = migratePrivacy(db);
-  assert.equal(r.anonymous.signals, 1, "the signal itself is moved");
-  assert.deepEqual(r.anonymous_graph.sort(), [`edges:${old}`, "edges:later"]);
-  assert.equal(privacyBacklog(db).anonymous_graph, 2);
+async function syncStatus(): Promise<Array<[number, string]>> {
   resetSyncGuards();
   const { server, base } = await serve(syncRoutes);
   try {
+    const out: Array<[number, string]> = [];
     for (const path of ["/api/sync/info", "/api/sync/changes?since=0"]) {
       const res = await fetch(base + path);
-      assert.equal(res.status, 503);
-      assert.equal(((await res.json()) as any).error, "anonymous_graph_attribution");
+      out.push([res.status, res.status === 200 ? "" : ((await res.json()) as any).error]);
     }
+    return out;
   } finally {
     server.close();
   }
-  // new anonymous writes never trip it
-  const db2 = freshDb();
-  insertNode(db2, "artwork:w", "artwork", "W");
-  insertNode(db2, "practitioner:p", "practitioner", "P");
-  db2.prepare("INSERT INTO contributors (id, name, trust_tier) VALUES ('c', 'Shy', 'auto')").run();
-  const who = { id: "c", name: "Shy", trust_tier: "auto", scope: "write" } as AuthedContributor;
-  const s = insertSignal(db2, { contributor: who, title: "t", content: "c", consent_attribution: "anonymous" });
-  materialiseEdge(db2, { source_id: "artwork:w", target_id: "practitioner:p", edge_type: "CREATED_BY" }, { signalId: s, createdBy: "api-Shy" });
-  assert.deepEqual(anonymousGraphAttribution(db2), []);
+}
+
+it("legacy anonymous: deleting the author-bearing edge is not enough — the tombstone and a dangling reference keep sync closed", async () => {
+  const db = initDb(":memory:");
+  insertNode(db, "artwork:w", "artwork", "W");
+  insertNode(db, "practitioner:p", "practitioner", "P");
+  // as the code before this release wrote it: the name in the CRR, an edge id carrying it
+  db.prepare("INSERT INTO signals (id, title, content, submitted_by, consent_attribution) VALUES ('s-anon', 't', 'c', 'Hidden Name', 'anonymous')").run();
+  const old = "artwork:w--CREATED_BY--practitioner:p--api-Hidden Name";
+  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, signal_id, created_by) VALUES (?, 'artwork:w', 'practitioner:p', 'CREATED_BY', 's-anon', 'api-Hidden Name')").run(old);
+  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, signal_id, created_by, invalidated_by) VALUES ('artwork:w--CREATED_BY--practitioner:p--x', 'artwork:w', 'practitioner:p', 'CREATED_BY', NULL, 'x', ?)").run(old);
+  const r = migratePrivacy(db);
+  assert.equal(r.anonymous.signals, 1, "the signal's own name is moved");
+  assert.equal(r.legacy_anonymous_blocks, 1);
+  // the operator "cleans" by deleting the row
+  db.prepare("DELETE FROM edges WHERE id = ?").run(old);
+  assert.deepEqual(anonymousGraphAttribution(db), [], "no current row names the author any more…");
+  assert.deepEqual(await syncStatus(), [[503, "legacy_anonymous_attribution"], [503, "legacy_anonymous_attribution"]], "…but sync stays closed");
+  let a = auditPrivacyStream(db, { clear: true });
+  assert.equal(a[0]!.cleared, false);
+  assert.ok(a[0]!.findings.some((f) => f.includes("tombstone")), a[0]!.findings.join("; "));
+  assert.ok(a[0]!.findings.some((f) => f.includes("invalidated_by references")), a[0]!.findings.join("; "));
+  // fix the reference: the tombstone still carries the name — the block stays (this DB must not be published)
+  db.prepare("UPDATE edges SET invalidated_by = NULL WHERE id = 'artwork:w--CREATED_BY--practitioner:p--x'").run();
+  a = auditPrivacyStream(db, { clear: true });
+  assert.equal(a[0]!.cleared, false);
+  assert.deepEqual(a[0]!.findings, [`edges pk ${old} (tombstone)`]);
+  assert.deepEqual(await syncStatus(), [[503, "legacy_anonymous_attribution"], [503, "legacy_anonymous_attribution"]]);
+});
+
+it("legacy anonymous with nothing of the author left in the stream: the stream audit clears it, and only then sync opens", async () => {
+  const db = initDb(":memory:");
+  insertNode(db, "artwork:w", "artwork", "W");
+  db.prepare("UPDATE nodes SET updated_by = 'api-Old Author' WHERE id = 'artwork:w'").run();
+  db.prepare("INSERT INTO signals (id, title, content, submitted_by, consent_attribution, processing_trace) VALUES ('s-old', 't', 'c', 'Old Author', 'anonymous', ?)")
+    .run(JSON.stringify({ prior: [{ op: "patch_node", node_id: "artwork:w", at: "t", updated_by: "seed", before: { a: 1 } }] }));
+  migratePrivacy(db);
+  assert.deepEqual(await syncStatus(), [[503, "legacy_anonymous_attribution"], [503, "legacy_anonymous_attribution"]]);
+  let a = auditPrivacyStream(db, { clear: true });
+  assert.deepEqual(a[0]!.findings, ["nodes.updated_by of artwork:w"]);
+  db.prepare("UPDATE nodes SET updated_by = 'anonymous' WHERE id = 'artwork:w'").run();
+  // the gate never clears on its own
+  assert.deepEqual((await syncStatus())[0], [503, "legacy_anonymous_attribution"]);
+  a = auditPrivacyStream(db, { clear: true });
+  assert.deepEqual(a, [{ signal_id: "s-old", findings: [], cleared: true }]);
+  assert.deepEqual(await syncStatus(), [[200, ""], [200, ""]]);
+});
+
+it("an anonymous signal that pre-dates this code is a block even with no graph writes; one born safe never is", () => {
+  const db = freshDb();
+  db.prepare("INSERT INTO signals (id, title, content, submitted_by, consent_attribution) VALUES ('s-legacy', 't', 'c', 'anonymous', 'anonymous')").run();
+  assert.equal(privacyBacklog(db).legacy_anonymous, 1);
+  db.prepare("INSERT INTO contributors (id, name, trust_tier) VALUES ('c', 'Shy', 'auto')").run();
+  insertSignal(db, { contributor: { id: "c", name: "Shy", trust_tier: "auto", scope: "write" } as any, title: "t", content: "c", consent_attribution: "anonymous", consent_scope: "structural_only" });
+  assert.equal(privacyBacklog(db).legacy_anonymous, 1, "the born-safe one adds nothing");
+});
+
+it("no false positive: writers named 'art', 'signal', or a name inside the source node id, with safe anonymous edges", () => {
+  for (const name of ["art", "signal", "molnar", "CREATED_BY", "anonymous-ish"]) {
+    const db = freshDb();
+    insertNode(db, "artwork:molnar-art-signal", "artwork", "W");
+    insertNode(db, "practitioner:p", "practitioner", "P");
+    db.prepare("INSERT INTO contributors (id, name, trust_tier) VALUES ('c', ?, 'auto')").run(name);
+    const who = { id: "c", name, trust_tier: "auto", scope: "write" } as AuthedContributor;
+    const s = insertSignal(db, { contributor: who, title: "t", content: "c", consent_attribution: "anonymous" });
+    materialiseEdge(db, { source_id: "artwork:molnar-art-signal", target_id: "practitioner:p", edge_type: "CREATED_BY" }, { signalId: s, createdBy: `api-${name}` });
+    assert.deepEqual(anonymousGraphAttribution(db), [], name);
+    assert.equal(backlogTotal(privacyBacklog(db)), 0, name);
+  }
+  // and the writer component is matched exactly where there is no row
+  assert.equal(idHasWriter("artwork:a--CREATED_BY--practitioner:p--api-art", "api-art"), true);
+  assert.equal(idHasWriter("artwork:a--CREATED_BY--practitioner:p--api-art--0a1b2c3d", "api-art"), true);
+  assert.equal(idHasWriter("artwork:api-art--CREATED_BY--practitioner:p--anonymous--signal-0a1b2c3d4e5f6a7b", "api-art"), false);
+  assert.equal(idHasWriter("artwork:a--CREATED_BY--practitioner:p--anonymous--signal-0a1b2c3d4e5f6a7b", "signal"), false);
 });
 
 it("anonymous edges: one row per attesting signal, idempotent, naming no one", () => {
@@ -154,7 +208,9 @@ it("retiring a batch with an anonymous contribution never republishes its handle
   const full = JSON.parse(fullSignal(legacy, "s-r").content);
   assert.equal(full.batch_id, "SECRET-BATCH-h2");
   assert.deepEqual(full.patches_to_review[0].before, { k: "OLD-h3" });
-  assert.equal(backlogTotal(privacyBacklog(legacy)), 0);
+  const left = privacyBacklog(legacy);
+  assert.equal(backlogTotal(left) - left.legacy_anonymous, 0, "everything moved");
+  assert.equal(left.legacy_anonymous, 1, "the legacy anonymous signal itself waits for the stream audit");
   assert.equal(migratePrivacy(legacy).private_batches.signals, 0, "idempotent");
 });
 
@@ -208,11 +264,35 @@ it("pages keep a byte budget (an oversized cell gets a page of its own) and the 
   assert.equal(dump(fork), dump(src));
 });
 
-it("clientIp: Fly-Client-IP, else the last X-Forwarded-For hop — never the client's own first value", () => {
+it("clientIp: proxy headers only behind Fly (Fly-Client-IP, else the last hop) or TRUST_PROXY; else the socket", () => {
   const req = (h: Record<string, string>) => ({ header: (k: string) => h[k.toLowerCase()], socket: { remoteAddress: "10.0.0.1" } }) as unknown as Request;
-  assert.equal(clientIp(req({ "fly-client-ip": "1.2.3.4", "x-forwarded-for": "6.6.6.6, 1.2.3.4" })), "1.2.3.4");
-  assert.equal(clientIp(req({ "x-forwarded-for": "6.6.6.6, 5.5.5.5" })), "5.5.5.5");
-  assert.equal(clientIp(req({})), "10.0.0.1");
+  const env = { fly: process.env.FLY_APP_NAME, trust: process.env.TRUST_PROXY };
+  try {
+    delete process.env.FLY_APP_NAME; delete process.env.TRUST_PROXY;
+    assert.equal(clientIp(req({ "fly-client-ip": "1.2.3.4", "x-forwarded-for": "6.6.6.6" })), "10.0.0.1", "direct: headers are the client's own");
+    process.env.TRUST_PROXY = "1";
+    assert.equal(clientIp(req({ "fly-client-ip": "1.2.3.4", "x-forwarded-for": "6.6.6.6, 5.5.5.5" })), "5.5.5.5", "a trusted proxy: its hop, not Fly's header");
+    delete process.env.TRUST_PROXY;
+    process.env.FLY_APP_NAME = "adai-basel";
+    assert.equal(clientIp(req({ "fly-client-ip": "1.2.3.4", "x-forwarded-for": "6.6.6.6, 1.2.3.4" })), "1.2.3.4");
+    assert.equal(clientIp(req({ "x-forwarded-for": "6.6.6.6, 5.5.5.5" })), "5.5.5.5");
+    assert.equal(clientIp(req({})), "10.0.0.1");
+  } finally {
+    if (env.fly === undefined) delete process.env.FLY_APP_NAME; else process.env.FLY_APP_NAME = env.fly;
+    if (env.trust === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = env.trust;
+  }
+});
+
+it("a kept before-image record is a projection only when the CRR value is exactly its computed public view", () => {
+  const db = freshDb();
+  const full = { action: "retire_batch", batch_id: "b", patches_to_review: [{ op: "patch_node", node_id: "n", before: { k: 1 } }] };
+  const view = { action: "retire_batch", batch_id: "b", patches_to_review: [{ op: "patch_node", node_id: "n" }] };
+  db.prepare("INSERT INTO signals (id, title, content, source_type) VALUES ('ok', 'T', ?, 'api_admin'), ('bad', 'T', ?, 'api_admin')").run(JSON.stringify(view), JSON.stringify({ ...view, batch_id: "OTHER" }));
+  db.prepare("INSERT INTO signal_private (signal_id, reasons, content) VALUES ('ok', 'before_images', ?), ('bad', 'before_images', ?)").run(JSON.stringify(full), JSON.stringify(full));
+  withholdSignal(db, "ok", "revoked"); // the CRR view matches: fine
+  assert.equal((db.prepare("SELECT content FROM signals WHERE id = 'ok'").get() as any).content, null);
+  assert.throws(() => withholdSignal(db, "bad", "revoked"), PrivacyConflictError);
+  assert.notEqual((db.prepare("SELECT content FROM signals WHERE id = 'bad'").get() as any).content, null, "nothing blanked");
 });
 
 it("the migration aborts on a conflict instead of choosing: a kept original that differs from the CRR value", () => {

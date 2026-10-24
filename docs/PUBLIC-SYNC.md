@@ -47,10 +47,12 @@ office. Pending words go public on approval (`publishQueued` /
   attributed published signals (`/history` shows `proposed_as`, `picked_from`;
   `provenance_chain.summary` is the reader's summary of the public site — not
   shown anywhere, kept), admin records' reasons (public by design).
-- **contributors** — `trust_tier` and counts stay (decided: policy). The public
-  form writes its contributors row only when the contribution is approved.
-  Rows created by the old code for form names whose contributions were never
-  approved stay (a delete would be a CRR change of its own; decide by hand).
+- **contributors** — `trust_tier` and counts stay (decided: policy). From this
+  release on, the public form writes its contributors row (and the name on the
+  signal) only when the contribution is approved: pending names stay private.
+  That applies to new contributions only — contributors rows the older code
+  created for public-form names stay public (one exists on prod: "EV3") unless
+  an operator decides otherwise (a delete would be a CRR change of its own).
 - **claims** — the dedup key of a structural_only claim is derived from its
   withheld URL; it is internal: `GET /api/edge/attribution` serialises an
   opaque `source-<n>` id per source, never the key.
@@ -64,6 +66,7 @@ just deploy                      # code only; boot logs "[db] ⚠️ CRR rows ho
 flyctl ssh console --app adai-basel -C "node /app/dist/cli/privacy-migrate.js --dry-run"
 flyctl ssh console --app adai-basel -C "node /app/dist/cli/privacy-migrate.js"
 flyctl ssh console --app adai-basel -C "node /app/dist/cli/privacy-migrate.js --dry-run"   # all zeros
+flyctl ssh console --app adai-basel -C "node /app/dist/cli/privacy-audit-stream.js"         # 0 blocks (prod never had an anonymous signal)
 curl -s https://adai-basel.fly.dev/api/sync/info                                          # 200 (503 until migrated; the check is cached 60 s)
 ```
 
@@ -73,20 +76,37 @@ left. The originals stay in `signal_private` / `signal_priors` on the volume
 the private backup bucket still hold the pre-migration values — they are the
 operator's, never public.
 
-## Legacy anonymous graph attribution (clean by hand)
+## Legacy anonymous contributions — a block only the stream audit clears
 
-Before anonymous writes were labelled, an anonymous signal's edges carried
-`created_by='api-<name>'` and an id ending in it, and nodes it wrote carried
-`updated_by='api-<name>'`. The migration does not rewrite those (an edge id is
-a primary key referenced by `invalidated_by`, and a superseded row is in the
-stream too). `privacyBacklog().anonymous_graph` / `anonymousGraphAttribution()`
-find them — current and historical rows, author-bearing ids and the edges that
-reference them — and `/api/sync/*` answers `503 anonymous_graph_attribution`
-while any exist; `privacy:migrate` lists them (`ANONYMOUS_GRAPH …`, exit 3).
-Prod had 0 anonymous signals when this shipped. If it ever reports rows: re-make
-each relation with a new id (`…--anonymous--<signal id>`, `created_by
-'anonymous'`), supersede the old one, then decide by hand what to do with the old
-rows (they stay in the stream until they no longer name the author).
+An anonymous signal written by this release is *born safe*: inserted blank
+(`signal_private.born_safe = 1`), its edges `…--anonymous--<signal id>`,
+`created_by` / `updated_by` `anonymous`. Any other anonymous signal — written by
+older code, or found by the migration — is **legacy**: its author's name may be
+in the change stream (an edge id, a reference to it, a writer label).
+
+- It becomes a row in the local `privacy_blocks` table (`recordPrivacyBlocks`,
+  at boot, in the gate and in `privacy:migrate`) with the author's labels
+  (`<name>`, `api-<name>`, `curator-from-<name>`) and the author-bearing ids
+  seen. A block **does not disappear when rows are deleted**; while any is
+  uncleared, `/api/sync/*` answers `503 legacy_anonymous_attribution`.
+- **Deleting or re-keying an edge is NOT enough.** An edge id is a primary key:
+  after a DELETE, cr-sqlite keeps a tombstone with that pk in `crsql_changes`,
+  and every fork receives it. References to the old id (`invalidated_by`, an
+  admin record) survive too.
+- The only way to clear a block is the operator's stream audit:
+  `npm run privacy:audit-stream` (report) / `-- --clear`. It scans every
+  `crsql_changes` row, tombstones included (packed pks decoded), for the
+  recorded ids anywhere (pk, text cell, JSON), tombstones and dangling
+  `invalidated_by` references whose **writer component** is one of the labels,
+  `created_by` / `updated_by` of the rows the signal wrote, and the signal's
+  own name cells. Matching is structural — the writer component of
+  `<source>--<TYPE>--<target>--<writer>[--<hex8>]` compared exactly — so a name
+  that happens to occur in a node id, an edge type, `anonymous` or a signal id
+  does not match. It clears only when nothing matches.
+- **A tombstone cannot be removed** without editing cr-sqlite's clock tables.
+  If the audit finds one, the block stays, and **that database must not be
+  published**: keep `PUBLIC_SYNC=off`.
+- Prod has never had an anonymous signal, so prod has no block.
 
 ## Limits
 

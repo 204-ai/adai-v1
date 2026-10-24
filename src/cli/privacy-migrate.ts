@@ -48,6 +48,11 @@ function main(): void {
       `${r.anonymous.signals} anonymous, ${r.admin_before_images.signals} admin records, ${r.notes.signals} notes, ${r.rejected.signals} rejected, ${r.pending.signals} pending review, ${r.private_batches.signals} private batch records` +
       (dryRun ? " (dry run, nothing written)" : ` — moved; left: ${JSON.stringify(r.left)}`)
   );
+  if (r.legacy_anonymous_blocks) {
+    console.error(`[privacy] ⚠️ ${r.legacy_anonymous_blocks} legacy anonymous contribution(s) recorded as privacy blocks: /api/sync stays closed until ` +
+      "`npm run privacy:audit-stream -- --clear` finds nothing of their authors in the change stream (docs/PUBLIC-SYNC.md).");
+    process.exitCode = 3;
+  }
   if (r.anonymous_graph.length) {
     console.error(`[privacy] ⚠️ ${r.anonymous_graph.length} rows still attribute anonymous contributions to their author (legacy edges.created_by / edge ids / nodes.updated_by). ` +
       "The migration does not rewrite them; /api/sync stays closed until they are cleaned by hand (docs/PUBLIC-SYNC.md).");

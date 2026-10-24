@@ -339,7 +339,10 @@ describe("the change stream and the fork", () => {
     const v0 = Number((db.prepare("SELECT crsql_db_version() AS v").get() as any).v);
 
     const r = migratePrivacy(db);
-    assert.equal(backlogTotal(r.left!), 0);
+    // everything moved; the legacy anonymous signal stays a block until the stream audit clears it
+    assert.equal(backlogTotal(r.left!) - r.left!.legacy_anonymous, 0);
+    assert.equal(r.left!.legacy_anonymous, 1);
+    assert.equal(r.legacy_anonymous_blocks, 1);
     assert.ok(Number((db.prepare("SELECT crsql_db_version() AS v").get() as any).v) > v0, "the blanking is a recorded change");
     for (const s of ["T-struct", "C-struct", "s.example", "/home/x", "C-rev", "T-rev", "Real Name", "b-anon", "1999", "C-rej"]) assert.ok(!streamText(db).includes(s), `${s} still in the stream`);
     // lossless: every original is readable on the operator's side
