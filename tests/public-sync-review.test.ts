@@ -20,7 +20,7 @@ import { approveIntakeItem, rejectIntakeItem } from "../src/utils/review.js";
 import { anonymousGraphAttribution, auditPrivacyStream, backlogTotal, fullSignal, migratePrivacy, privacyBacklog, PrivacyConflictError, withholdSignal } from "../src/utils/signal-private.js";
 import { applyChanges, parseCursor, readChanges } from "../src/sync/changes.js";
 import { clientIp } from "../src/intake/auth.js";
-import { idHasWriter } from "../src/utils/privacy-blocks.js";
+import { decodePk, idHasWriter, INSUFFICIENT_EVIDENCE, resolvePrivacyBlock } from "../src/utils/privacy-blocks.js";
 import type { AuthedContributor } from "../src/auth.js";
 
 function streamText(db: DatabaseSync): string {
@@ -337,4 +337,86 @@ it("POST /api/contribute in review: no contributor row and no name in the CRR un
   } finally {
     server.close();
   }
+});
+
+it("insufficient evidence: a legacy anonymous signal whose name is gone and whose edge was deleted is never cleared by the audit — only by an explicit resolve", async () => {
+  const db = initDb(":memory:");
+  insertNode(db, "artwork:w", "artwork", "W");
+  insertNode(db, "practitioner:p", "practitioner", "P");
+  // the public submitter already says "anonymous"; no private original, no local author
+  db.prepare("INSERT INTO signals (id, title, content, submitted_by, consent_attribution) VALUES ('s-gone', 't', 'c', 'anonymous', 'anonymous')").run();
+  const old = "artwork:w--CREATED_BY--practitioner:p--api-Lost Name";
+  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, signal_id, created_by) VALUES (?, 'artwork:w', 'practitioner:p', 'CREATED_BY', 's-gone', 'api-Lost Name')").run(old);
+  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, signal_id, created_by, invalidated_by) VALUES ('artwork:w--CREATED_BY--practitioner:p--x', 'artwork:w', 'practitioner:p', 'CREATED_BY', NULL, 'x', ?)").run(old);
+  // deleted BEFORE the migration ever saw it
+  db.prepare("DELETE FROM edges WHERE id = ?").run(old);
+  migratePrivacy(db);
+  const block = db.prepare("SELECT labels, edge_ids FROM privacy_blocks WHERE signal_id = 's-gone'").get() as any;
+  assert.deepEqual([JSON.parse(block.labels), JSON.parse(block.edge_ids)], [[], []], "nothing to check against");
+  const a = auditPrivacyStream(db, { clear: true });
+  assert.equal(a[0]!.cleared, false);
+  assert.deepEqual(a[0]!.findings, [INSUFFICIENT_EVIDENCE]);
+  assert.deepEqual(await syncStatus(), [[503, "legacy_anonymous_attribution"], [503, "legacy_anonymous_attribution"]]);
+  assert.throws(() => resolvePrivacyBlock(db, "s-gone", { reason: "", by: "op" }), /--reason/);
+  resolvePrivacyBlock(db, "s-gone", { reason: "checked every edge tombstone by hand: none belongs to this signal", by: "op" });
+  const r = JSON.parse((db.prepare("SELECT resolution FROM privacy_blocks WHERE signal_id = 's-gone'").get() as any).resolution);
+  assert.equal(r.by, "op");
+  assert.deepEqual(r.findings, [INSUFFICIENT_EVIDENCE]);
+  assert.deepEqual(await syncStatus(), [[200, ""], [200, ""]]);
+});
+
+it("resolve is refused while the audit finds the author in the stream; local records recover the author", () => {
+  const db = initDb(":memory:");
+  insertNode(db, "artwork:w", "artwork", "W");
+  insertNode(db, "practitioner:p", "practitioner", "P");
+  db.prepare("INSERT INTO contributors (id, name, trust_tier) VALUES ('c-real', 'Real Writer', 'auto')").run();
+  db.prepare("INSERT INTO signals (id, title, content, submitted_by, consent_attribution) VALUES ('s-x', 't', 'c', 'anonymous', 'anonymous')").run();
+  db.prepare("INSERT INTO signal_authors (signal_id, contributor_id) VALUES ('s-x', 'c-real')").run();
+  const old = "artwork:w--CREATED_BY--practitioner:p--api-Real Writer";
+  db.prepare("INSERT INTO edges (id, source_id, target_id, edge_type, signal_id, created_by) VALUES (?, 'artwork:w', 'practitioner:p', 'CREATED_BY', NULL, 'api-Real Writer')").run(old);
+  db.prepare("DELETE FROM edges WHERE id = ?").run(old);
+  migratePrivacy(db);
+  assert.ok(JSON.parse((db.prepare("SELECT labels FROM privacy_blocks WHERE signal_id = 's-x'").get() as any).labels).includes("api-Real Writer"), "recovered from signal_authors");
+  const a = auditPrivacyStream(db, { clear: true });
+  assert.deepEqual(a[0]!.findings, [`edges pk ${old} (tombstone with the author's writer label)`]);
+  assert.throws(() => resolvePrivacyBlock(db, "s-x", { reason: "I am sure it is fine really", by: "op" }), /must not be published/);
+});
+
+it("decodePk: real cr-sqlite keys — single and composite, integers (negative, large, boundaries), multibyte text, blobs, long lengths; malformed input throws", () => {
+  const db = freshDb();
+  db.exec(`CREATE TABLE pk_probe (a TEXT NOT NULL DEFAULT '', b INTEGER NOT NULL DEFAULT 0, c BLOB NOT NULL DEFAULT x'', v TEXT, PRIMARY KEY (a, b, c));
+           SELECT crsql_as_crr('pk_probe');
+           CREATE TABLE pk_one (id TEXT PRIMARY KEY NOT NULL, v TEXT); SELECT crsql_as_crr('pk_one');`);
+  const cases: Array<[string, bigint, Uint8Array]> = [
+    // (an empty text / blob key is refused by cr-sqlite itself: "SQL logic error")
+    ["0", 0n, new Uint8Array([5])],
+    ["k", -5n, new Uint8Array([0])],
+    ["héllo ☃ 日本", 127n, new Uint8Array([0, 255, 7])],
+    ["x".repeat(255), 128n, new Uint8Array(300).fill(9)],
+    ["y".repeat(256), -129n, new Uint8Array([1])],
+    ["z".repeat(70_000), 2n ** 40n, new Uint8Array([2])],
+    ["big", 2n ** 62n, new Uint8Array([3])],
+    ["neg", -(2n ** 63n), new Uint8Array([4])],
+  ];
+  const ins = db.prepare("INSERT INTO pk_probe (a, b, c, v) VALUES (?, ?, ?, 'x')");
+  for (const [a, b, c] of cases) ins.run(a, b, c);
+  db.prepare("INSERT INTO pk_one (id, v) VALUES ('practitioner:vera molnár', 'x')").run();
+  db.prepare("DELETE FROM pk_one").run(); // a tombstone's pk decodes the same
+  const pks = db.prepare(`SELECT "table" AS t, pk FROM crsql_changes WHERE "table" IN ('pk_probe', 'pk_one')`).all() as any[];
+  const seen = pks.filter((r) => r.t === "pk_probe").map((r) => decodePk(r.pk));
+  for (const [a, b, c] of cases) {
+    const hit = seen.find((d) => d[0] === a && BigInt(d[1] as any) === b);
+    assert.ok(hit, `${a.slice(0, 10)} / ${b}`);
+    assert.deepEqual(Buffer.from(hit![2] as Uint8Array), Buffer.from(c));
+  }
+  const one = pks.find((r) => r.t === "pk_one");
+  assert.deepEqual(decodePk(one.pk), ["practitioner:vera molnár"]);
+  // malformed: truncated anywhere, trailing bytes, bad type, no columns, invalid utf-8
+  const good = Buffer.from(pks.find((r) => r.t === "pk_probe").pk);
+  for (let cut = 0; cut < good.length; cut++) assert.throws(() => decodePk(good.subarray(0, cut)), undefined, `cut at ${cut}`);
+  assert.throws(() => decodePk(Buffer.concat([good, Buffer.from([0])])), /trailing/);
+  assert.throws(() => decodePk(Buffer.from([1, 0x07])), /unknown type/);
+  assert.throws(() => decodePk(Buffer.from([0])), /no columns/);
+  assert.throws(() => decodePk(Buffer.from([1, 0x0b, 2, 0xc3, 0x28])));
+  assert.throws(() => decodePk(Buffer.from([1, 0x49, 1, 2, 3, 4, 5, 6, 7, 8, 9])), /integer of 9/);
 });

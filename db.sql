@@ -555,7 +555,8 @@ CREATE TABLE IF NOT EXISTS privacy_blocks (
     node_ids    TEXT NOT NULL DEFAULT '[]',         -- JSON: nodes it wrote
     detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     cleared_at  TEXT,
-    audit       TEXT                                -- JSON: the last audit's findings
+    audit       TEXT,                               -- JSON: the last audit's findings
+    resolution  TEXT                                -- JSON {at, by, reason, findings}: an operator's explicit resolve (insufficient evidence only)
 );
 
 -- Before-images (recordPrior, src/utils/contribution.ts): what a node write

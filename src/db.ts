@@ -133,6 +133,12 @@ function runMigrations(db: DatabaseSync) {
   } catch (e: any) {
     if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
   }
+  // privacy_blocks.resolution (public sync review): same pattern.
+  try {
+    db.exec("ALTER TABLE privacy_blocks ADD COLUMN resolution TEXT");
+  } catch (e: any) {
+    if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
+  }
   // signal_authors (issue #80): the authenticated author of signals written
   // before insertSignal recorded it, where the record proves it — once (a
   // settings flag; every write since records its author itself):

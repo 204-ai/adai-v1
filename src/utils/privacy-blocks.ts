@@ -68,43 +68,89 @@ export function safeAnonymousWriter(writer: string | null, signalId: string): bo
   return writer === ANONYMOUS || writer === `${ANONYMOUS}--${signalId}`;
 }
 
-/** Decode cr-sqlite's packed primary key (crsql_changes.pk). */
+/**
+ * Decode cr-sqlite's packed primary key (crsql_changes.pk): a column count,
+ * then per column a header byte (low 3 bits the type — 0 null, 1 integer,
+ * 2 real, 3 text, 4 blob — high bits the byte length of the integer or of the
+ * length field) and the value. Strict: a truncated, over-long or malformed
+ * key throws, never a partial result.
+ */
 export function decodePk(pk: Uint8Array): Array<string | number | bigint | null | Uint8Array> {
   const b = Buffer.from(pk);
   let i = 0;
+  const need = (k: number) => { if (k < 0 || i + k > b.length) throw new Error(`packed pk truncated at byte ${i} (need ${k}, have ${b.length - i})`); };
+  need(1);
   const n = b[i++]!;
+  if (n < 1) throw new Error("packed pk has no columns");
   const out: Array<string | number | bigint | null | Uint8Array> = [];
-  const uint = (len: number) => { let v = 0; for (let k = 0; k < len; k++) v = v * 256 + b[i++]!; return v; };
+  const uint = (len: number) => { need(len); let v = 0; for (let k = 0; k < len; k++) v = v * 256 + b[i++]!; return v; };
   for (let c = 0; c < n; c++) {
+    need(1);
     const h = b[i++]!;
     const type = h & 7;
     const len = h >> 3;
-    if (type === 0) out.push(null);
-    else if (type === 1) {
+    if (type === 0) {
+      if (len) throw new Error("packed pk: null with a length");
+      out.push(null);
+    } else if (type === 1) {
+      if (len > 8) throw new Error(`packed pk: integer of ${len} bytes`);
+      need(len);
       let v = 0n;
       for (let k = 0; k < len; k++) v = (v << 8n) | BigInt(b[i++]!);
       if (len && v >= 1n << BigInt(8 * len - 1)) v -= 1n << BigInt(8 * len); // two's complement
       out.push(v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v);
-    } else if (type === 2) { out.push(b.readDoubleBE(i)); i += 8; }
-    else if (type === 3) { const l = uint(len); out.push(b.toString("utf8", i, i + l)); i += l; }
-    else if (type === 4) { const l = uint(len); out.push(new Uint8Array(b.subarray(i, i + l))); i += l; }
-    else throw new Error(`unknown packed type ${type}`);
+    } else if (type === 2) {
+      need(8);
+      out.push(b.readDoubleBE(i));
+      i += 8;
+    } else if (type === 3 || type === 4) {
+      if (len > 4) throw new Error(`packed pk: length field of ${len} bytes`);
+      const l = uint(len);
+      need(l);
+      if (type === 3) {
+        const bytes = b.subarray(i, i + l);
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        out.push(text);
+      } else out.push(new Uint8Array(b.subarray(i, i + l)));
+      i += l;
+    } else throw new Error(`packed pk: unknown type ${type}`);
   }
+  if (i !== b.length) throw new Error(`packed pk: ${b.length - i} trailing byte(s)`);
   return out;
 }
 
-/** Anonymous signals not born safe (their author's name may be in the stream), with the name when known. */
-export function legacyAnonymousSignals(db: DatabaseSync): Array<{ id: string; name: string | null }> {
-  const bornSafe = hasTable(db, "signal_private")
+/**
+ * Anonymous signals not born safe (their author's name may be in the
+ * stream), with every author name and writer label the LOCAL records and the
+ * signal's own rows establish: the private original, the CRR submitter (when
+ * it is not already "anonymous"), the authenticated author (signal_authors →
+ * contributors), the review row's submitter, and the writer labels of the
+ * edges it still anchors.
+ */
+export function legacyAnonymousSignals(db: DatabaseSync): Array<{ id: string; names: string[]; labels: string[] }> {
+  const has = (t: string) => hasTable(db, t);
+  const bornSafe = has("signal_private")
     ? "AND NOT EXISTS (SELECT 1 FROM signal_private p WHERE p.signal_id = s.id AND p.born_safe = 1)"
     : "";
   const rows = db.prepare(`SELECT s.id, s.submitted_by FROM signals s WHERE s.consent_attribution = 'anonymous' ${bornSafe}`).all() as any[];
   return rows.map((r) => {
-    const kept = hasTable(db, "signal_private") ? (db.prepare("SELECT submitted_by FROM signal_private WHERE signal_id = ?").get(r.id) as any)?.submitted_by : null;
-    const name = kept ?? (r.submitted_by !== ANONYMOUS ? r.submitted_by : null);
-    return { id: r.id, name: typeof name === "string" && name ? name : null };
+    const names = new Set<string>();
+    const add = (v: unknown) => { if (typeof v === "string" && v.trim() && v !== ANONYMOUS) names.add(v); };
+    add(r.submitted_by);
+    if (has("signal_private")) add((db.prepare("SELECT submitted_by FROM signal_private WHERE signal_id = ?").get(r.id) as any)?.submitted_by);
+    if (has("signal_authors")) {
+      for (const a of db.prepare("SELECT k.name FROM signal_authors sa JOIN contributors k ON k.id = sa.contributor_id WHERE sa.signal_id = ?").all(r.id) as any[]) add(a.name);
+    }
+    if (has("intake_queue")) for (const q of db.prepare("SELECT submitted_by FROM intake_queue WHERE signal_id = ?").all(r.id) as any[]) add(q.submitted_by);
+    const labels = new Set<string>([...names].flatMap((n) => authorLabels(n)));
+    for (const e of db.prepare("SELECT created_by FROM edges WHERE signal_id = ? AND created_by IS NOT NULL AND created_by != ?").all(r.id, ANONYMOUS) as any[]) labels.add(String(e.created_by));
+    return { id: r.id, names: [...names].sort(), labels: [...labels].sort() };
   });
 }
+
+/** The finding an audit reports for a block it has nothing to check against: never cleared by the audit. */
+export const INSUFFICIENT_EVIDENCE =
+  "insufficient evidence: no author label and no author-bearing id could be established for this signal; the audit cannot show the stream is clean — resolve it explicitly (privacy:audit-stream -- --resolve <signal id> --reason …)";
 
 /** The nodes an anonymous signal wrote: its before-images, and the approved review items naming it. */
 function nodesWrittenBy(db: DatabaseSync, signalId: string): string[] {
@@ -169,16 +215,17 @@ const union = (a: unknown, b: string[]) => [...new Set([...(Array.isArray(a) ? a
 export function recordPrivacyBlocks(db: DatabaseSync): number {
   if (!hasTable(db, "privacy_blocks")) return 0;
   for (const s of legacyAnonymousSignals(db)) {
-    const labels = authorLabels(s.name);
+    const labels = s.labels;
     const edges = unsafeEdgesOf(db, s.id, labels);
     const nodes = nodesWrittenBy(db, s.id);
     const b = db.prepare("SELECT * FROM privacy_blocks WHERE signal_id = ?").get(s.id) as any;
+    // a block resolved by an operator stays resolved unless author-bearing rows appear again
     if (!b) {
       db.prepare("INSERT INTO privacy_blocks (signal_id, labels, edge_ids, node_ids) VALUES (?, ?, ?, ?)")
         .run(s.id, JSON.stringify(labels), JSON.stringify(edges.sort()), JSON.stringify(nodes.sort()));
       continue;
     }
-    db.prepare(`UPDATE privacy_blocks SET labels = ?, edge_ids = ?, node_ids = ?${b.cleared_at && edges.length ? ", cleared_at = NULL" : ""} WHERE signal_id = ?`)
+    db.prepare(`UPDATE privacy_blocks SET labels = ?, edge_ids = ?, node_ids = ?${b.cleared_at && edges.length ? ", cleared_at = NULL, resolution = NULL" : ""} WHERE signal_id = ?`)
       .run(JSON.stringify(union(parse(b.labels), labels)), JSON.stringify(union(parse(b.edge_ids), edges)), JSON.stringify(union(parse(b.node_ids), nodes)), s.id);
   }
   return Number((db.prepare("SELECT COUNT(*) AS n FROM privacy_blocks WHERE cleared_at IS NULL").get() as any).n);
@@ -241,6 +288,8 @@ export function auditPrivacyStream(db: DatabaseSync, opts: { clear?: boolean } =
   }
   const out: StreamAuditResult[] = [];
   for (const b of prepared) {
+    // nothing to match is not "nothing found": such a block is never cleared here
+    if (!b.labels.length && !b.edges.size) b.findings.add(INSUFFICIENT_EVIDENCE);
     const findings = [...b.findings].sort();
     const cleared = !!opts.clear && findings.length === 0;
     db.prepare(`UPDATE privacy_blocks SET audit = ?${cleared ? ", cleared_at = ?" : ""} WHERE signal_id = ?`)
@@ -248,4 +297,24 @@ export function auditPrivacyStream(db: DatabaseSync, opts: { clear?: boolean } =
     out.push({ signal_id: b.id, findings, cleared });
   }
   return out;
+}
+
+/**
+ * The operator's explicit decision on a block the audit cannot clear for want
+ * of evidence (INSUFFICIENT_EVIDENCE): cleared with a reason, logged in the
+ * block (privacy_blocks.resolution). Refused while the last audit found
+ * anything concrete — a name in the stream is not resolved by a decision.
+ */
+export function resolvePrivacyBlock(db: DatabaseSync, signalId: string, opts: { reason: string; by: string }): void {
+  const reason = String(opts.reason ?? "").trim();
+  if (reason.length < 10) throw new Error("--reason is required (a sentence: why the stream is known to be clean)");
+  const results = auditPrivacyStream(db).filter((r) => r.signal_id === signalId);
+  const b = db.prepare("SELECT * FROM privacy_blocks WHERE signal_id = ?").get(signalId) as any;
+  if (!b) throw new Error(`no privacy block for ${signalId}`);
+  if (b.cleared_at) throw new Error(`the block for ${signalId} is already cleared (${b.cleared_at})`);
+  const concrete = (results[0]?.findings ?? []).filter((f) => f !== INSUFFICIENT_EVIDENCE);
+  if (concrete.length) throw new Error(`refusing: the audit found the author in the stream (${concrete.join("; ")}) — that database must not be published`);
+  const at = nowIso();
+  db.prepare("UPDATE privacy_blocks SET cleared_at = ?, resolution = ? WHERE signal_id = ?")
+    .run(at, JSON.stringify({ at, by: opts.by, reason, findings: results[0]?.findings ?? [] }), signalId);
 }

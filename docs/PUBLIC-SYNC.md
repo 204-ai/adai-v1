@@ -85,9 +85,13 @@ older code, or found by the migration — is **legacy**: its author's name may b
 in the change stream (an edge id, a reference to it, a writer label).
 
 - It becomes a row in the local `privacy_blocks` table (`recordPrivacyBlocks`,
-  at boot, in the gate and in `privacy:migrate`) with the author's labels
-  (`<name>`, `api-<name>`, `curator-from-<name>`) and the author-bearing ids
-  seen. A block **does not disappear when rows are deleted**; while any is
+  at boot, in `privacy:migrate` and in the stream audit; the sync gate only
+  reads — a legacy signal not recorded yet closes it too) with the author's
+  labels and the author-bearing ids seen. The labels come from every record
+  that ties the signal to a writer: the private original, the CRR submitter
+  (unless already `anonymous`), the authenticated author (`signal_authors` →
+  `contributors`), the review row's submitter, and the `created_by` of edges it
+  still anchors — each name as `<name>`, `api-<name>`, `curator-from-<name>`. A block **does not disappear when rows are deleted**; while any is
   uncleared, `/api/sync/*` answers `503 legacy_anonymous_attribution`.
 - **Deleting or re-keying an edge is NOT enough.** An edge id is a primary key:
   after a DELETE, cr-sqlite keeps a tombstone with that pk in `crsql_changes`,
@@ -103,6 +107,15 @@ in the change stream (an edge id, a reference to it, a writer label).
   `<source>--<TYPE>--<target>--<writer>[--<hex8>]` compared exactly — so a name
   that happens to occur in a node id, an edge type, `anonymous` or a signal id
   does not match. It clears only when nothing matches.
+- **Insufficient evidence is not "clean".** When no label and no author-bearing
+  id can be established (the CRR already said `anonymous`, nothing local names
+  the writer, and its edge was deleted before the block was recorded), the
+  audit reports `insufficient evidence` and **never** clears the block. Only an
+  explicit operator decision does, with a reason, logged in
+  `privacy_blocks.resolution` (`{at, by, reason, findings}`):
+  `npm run privacy:audit-stream -- --resolve <signal id> --reason "…" [--by <operator>]`.
+  It is refused while the audit finds anything concrete. Resolve only after
+  checking the stream by hand (e.g. every edge tombstone's writer component).
 - **A tombstone cannot be removed** without editing cr-sqlite's clock tables.
   If the audit finds one, the block stays, and **that database must not be
   published**: keep `PUBLIC_SYNC=off`.

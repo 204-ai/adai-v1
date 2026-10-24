@@ -206,7 +206,11 @@ label). Each is a LOCAL `privacy_blocks` row (`src/utils/privacy-blocks.ts`)
 that deleting rows never clears: sync answers `503 legacy_anonymous_attribution`
 until `npm run privacy:audit-stream -- --clear` scans `crsql_changes`
 (tombstones included, writer components matched structurally) and finds nothing;
-a tombstone carrying the name means the DB must not be published. Prod never had
+a tombstone carrying the name means the DB must not be published. A block with
+no author label and no author-bearing id to check (insufficient evidence) is
+never auto-cleared: only `privacy:audit-stream -- --resolve <signal id> --reason
+"…"`, logged in `privacy_blocks.resolution`. Blocks are recorded at boot, by
+`privacy:migrate` and by the audit; the gate only reads. Prod never had
 an anonymous signal. `anonymousGraphAttribution()` is the current-rows diagnostic
 (`503 anonymous_graph_attribution`).
 
