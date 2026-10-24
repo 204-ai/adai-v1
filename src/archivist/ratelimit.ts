@@ -9,8 +9,8 @@
 //      archivist still says hello via a "resting" sentinel so it doesn't
 //      look broken; tomorrow at 00:00 UTC the budget rolls.
 //
-// Cost estimates use Anthropic's public list prices for haiku-4-5 (and
-// sonnet-4-6 / opus-4-7 if you override via env). They are estimates —
+// Cost estimates use Anthropic's public list prices for the model in
+// ARCHIVIST_MODEL (prod: claude-sonnet-5-5 since 2026-10-24). They are estimates —
 // the SDK returns exact usage tokens but Anthropic could of course change
 // pricing. Treat the gate as protection against runaway loops, not as
 // accounting.
@@ -54,6 +54,9 @@ const PRICES: Record<string, ModelPrice> = {
   "claude-haiku-4-5":  { input: 1.0,  output: 5.0,  cache_read: 0.10, cache_write: 1.25 },
   "claude-sonnet-4-6": { input: 3.0,  output: 15.0, cache_read: 0.30, cache_write: 3.75 },
   "claude-opus-4-7":   { input: 15.0, output: 75.0, cache_read: 1.50, cache_write: 18.75 },
+  // Sonnet 5.5 (released 2026-09-28): $2 / $10; cache reads $0.10 since
+  // 2026-10-07; 5-minute cache writes 1.25x input.
+  "claude-sonnet-5-5": { input: 2.0,  output: 10.0, cache_read: 0.10, cache_write: 2.50 },
 };
 
 function priceFor(model: string): ModelPrice {
