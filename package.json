@@ -27,6 +27,8 @@
     "intake:backfill-open": "tsx src/cli/backfill-open-items.ts",
     "node:merge": "tsx src/cli/merge-nodes.ts",
     "slugs:migrate": "tsx src/cli/migrate-slugs.ts",
+    "privacy:migrate": "tsx src/cli/privacy-migrate.ts",
+    "fork:pull": "tsx src/cli/fork-pull.ts",
     "intake:worker": "npm --prefix worker run start",
     "build": "tsc",
     "precompress": "node scripts/precompress.mjs public/field",

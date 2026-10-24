@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extensionPath } from "@shards-lang/crsqlite";
+import { backlogTotal, privacyBacklog } from "./utils/signal-private.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
@@ -22,8 +23,24 @@ export function initDb(dbPath: string): DatabaseSync {
   db.exec(schema);
 
   runMigrations(db);
+  warnPrivacyBacklog(db);
 
   return db;
+}
+
+// The CRR tables are published as they are (GET /api/sync/changes): a row
+// that still holds what must not be published is a leak. Moving it is an
+// operator step with a dry run (`npm run privacy:migrate`), never automatic
+// at boot — this only says so, loudly.
+function warnPrivacyBacklog(db: DatabaseSync) {
+  try {
+    const b = privacyBacklog(db);
+    if (backlogTotal(b)) {
+      console.warn(`[db] ⚠️ CRR rows hold unpublishable values ${JSON.stringify(b)} — run \`npm run privacy:migrate -- --dry-run\`, then without --dry-run`);
+    }
+  } catch (e) {
+    console.warn(`[db] privacy backlog check failed: ${(e as Error).message}`);
+  }
 }
 
 // Before db.sql runs: shapes db.sql's own statements would trip over.
