@@ -41,7 +41,12 @@ src/
     api.ts                — public JSON API route handlers
     contributor-api.ts    — token-gated /api/v1/* write surface
   embed/                  — embedding derive + on-write + neighbours
-  archivist/              — the in-app research/archivist surface
+  archivist/              — the in-app research/archivist surface (model:
+                            ARCHIVIST_MODEL; limits: ARCHIVIST_DAILY_BUDGET_USD,
+                            default $5/day, and ARCHIVIST_SESSION_QUOTA per hour,
+                            default 30; budget-alert.ts emails
+                            ARCHIVIST_ALERT_EMAILS — else ADMIN_NOTIFY_EMAILS —
+                            at 80 % and at the cap, once a UTC day each)
   intake/                 — URL intake: magic-link auth, drafts (job queue +
                             candidates + confirm), read-tool allowlist, mail,
                             worker spawner, page shells

@@ -27,6 +27,7 @@ import {
   SESSION_QUOTA_VALUE,
 } from "../archivist/ratelimit.js";
 import { runArchivist, isConfigured as agentConfigured, type UsageReport } from "../archivist/agent.js";
+import { maybeAlertBudget } from "../archivist/budget-alert.js";
 import type { VisitorContext } from "../archivist/prompt.js";
 
 const router = Router();
@@ -269,6 +270,9 @@ router.post("/api/archivist/chat", async (req, res) => {
       } catch (e: any) {
         console.warn("[archivist] recordUsage failed:", e?.message ?? e);
       }
+      // Email the operator at 80 % and at the cap, once a day each
+      // (src/archivist/budget-alert.ts). Fire-and-forget: never delays "done".
+      void maybeAlertBudget(db);
       // Only debit the visitor's per-session quota when the model actually
       // issued a request (i.e. we got at least partial usage back). Failing
       // before the first token — Anthropic outage, bad API key on the Fly
