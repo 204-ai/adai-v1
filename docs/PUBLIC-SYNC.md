@@ -50,6 +50,8 @@ office. Pending words go public on approval (`publishQueued` /
 - **contributors** — `trust_tier` and counts stay (decided: policy). From this
   release on, the public form writes its contributors row (and the name on the
   signal) only when the contribution is approved: pending names stay private.
+  That row is its own (`contributor:form-<hex>`, type `form`): a typed name
+  never borrows an existing contributor's tier or counters.
   That applies to new contributions only — contributors rows the older code
   created for public-form names stay public (one exists on prod: "EV3") unless
   an operator decides otherwise (a delete would be a CRR change of its own).
@@ -120,6 +122,17 @@ in the change stream (an edge id, a reference to it, a writer label).
   If the audit finds one, the block stays, and **that database must not be
   published**: keep `PUBLIC_SYNC=off`.
 - Prod has never had an anonymous signal, so prod has no block.
+
+## Volume
+
+The commons is ~480k changes (a full pull ~25–30 pages). `embed:derive` is a
+diff: a nightly run on unchanged vectors emits **zero** changes, and a changed
+vector changes only the derived edges it is part of (inserted / tombstoned /
+one cell). On the 2026-10-24 backup copy (Gemma vectors, τ 0.877 / 0.913 /
+0.833) the first run with the new code emitted 0 changes and so did the
+second: the derived ids were already deterministic and matched — no one-time
+transition. The old delete-then-insert re-sent the whole derived layer every
+night (~125k changes).
 
 ## Limits
 

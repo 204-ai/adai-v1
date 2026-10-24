@@ -12,11 +12,24 @@
 // First action is `computeCentroids()` — derive must never score against
 // stale centroids after a curator approves new CREATED_BY edges.
 //
-// Idempotency: every run starts with
-//   DELETE FROM edges WHERE created_by='embedding-multimodal-v1'
+// Incremental and idempotent (public sync: every derived edge is a CRR row
+// every fork receives). The pass computes the DESIRED derived set — each edge
+// with its deterministic id `<source>--<TYPE>--<target>--embedding-multimodal-v1`
+// — and diffs it against the current derived rows in one transaction:
+// INSERT only what is new, DELETE only what is no longer wanted, UPDATE only a
+// cell that differs from the desired value (signal_id, confidence 'low', no
+// charge / event time, live). Unchanged rows are not touched — their
+// created_at / valid_from stay — so a run on unchanged vectors writes nothing
+// and cr-sqlite emits ZERO changes. Derived edges carry no score (confidence
+// is the constant 'low'), so float noise cannot rewrite a cell.
+// Removed edges are hard-deleted, as before: a derived edge is a recomputed
+// view, not anyone's claim (/history leaves them out), so ending it
+// bi-temporally would keep ever more dead rows in the public tables; a delete
+// is one tombstone change, and a re-derived edge comes back under the same id.
+// The pending ai_suggestion rows (local intake_queue, not synced) are still
+// replaced every run:
 //   DELETE FROM intake_queue WHERE submitted_by='contributor:embedding-pipeline'
 //                                AND status='pending'
-// so partial runs and threshold tweaks produce clean output.
 //
 // Rejected pairs (curator pressed Reject on a SUGGESTS_CREATED_BY proposal)
 // are skipped via the `rejected_ai_suggestions` table so we don't keep
@@ -89,7 +102,12 @@ export interface DeriveStats {
   suggests_created_by: { proposals: number; rejected_skipped: number };
   unattributed_artworks_scored: number;
   concept_embodies: ConceptStats;
+  /** What the run wrote to the derived edges (the diff), and how many derived rows there are now. */
+  edges: { desired: number; inserted: number; deleted: number; updated_rows: number; updated_cells: number };
 }
+
+/** The values a live derived edge holds (besides its id, timestamps and created_by). */
+interface DesiredEdge { id: string; source_id: string; target_id: string; edge_type: string }
 
 // Mutual k-NN cap. Keeps a candidate pair only when EACH endpoint ranks the
 // other within its k strongest neighbours — so a node's surviving degree is
@@ -134,6 +152,54 @@ function edgeId(source: string, edgeType: string, target: string): string {
   return `${source}--${edgeType}--${target}--${CREATED_BY_TAG}`;
 }
 
+/**
+ * Bring the derived edges to the desired set with the smallest write: insert
+ * the new, delete the unwanted, update only differing cells. Rows are matched
+ * by id (deterministic), among every row tagged as derived or carrying a
+ * derived id.
+ */
+function applyDerivedEdges(db: DatabaseSync, desired: Map<string, DesiredEdge>, now: string, dry: boolean) {
+  const out = { inserted: 0, deleted: 0, updated_rows: 0, updated_cells: 0 };
+  const current = db
+    .prepare(
+      `SELECT id, source_id, target_id, edge_type, signal_id, confidence, charge, created_by, event_time, valid_until, invalidated_by
+         FROM edges WHERE created_by = ? OR id LIKE ?`
+    )
+    .all(CREATED_BY_TAG, `%--${CREATED_BY_TAG}`) as any[];
+  const byId = new Map(current.map((r) => [String(r.id), r]));
+  const del = db.prepare("DELETE FROM edges WHERE id = ?");
+  const ins = db.prepare(
+    `INSERT INTO edges (
+       id, source_id, target_id, edge_type, signal_id,
+       confidence, charge, created_at, created_by,
+       event_time, valid_from, valid_until, invalidated_by
+     ) VALUES (?, ?, ?, ?, ?, 'low', NULL, ?, ?, NULL, ?, NULL, NULL)`
+  );
+  for (const [id, r] of byId) {
+    if (desired.has(id)) continue;
+    out.deleted++;
+    if (!dry) del.run(id);
+  }
+  for (const [id, d] of desired) {
+    const r = byId.get(id);
+    if (!r) {
+      out.inserted++;
+      if (!dry) ins.run(id, d.source_id, d.target_id, d.edge_type, SIGNAL_ID, now, CREATED_BY_TAG, now);
+      continue;
+    }
+    const want: Record<string, string | null> = {
+      source_id: d.source_id, target_id: d.target_id, edge_type: d.edge_type, signal_id: SIGNAL_ID,
+      confidence: "low", charge: null, created_by: CREATED_BY_TAG, event_time: null, valid_until: null, invalidated_by: null,
+    };
+    const cells = Object.keys(want).filter((k) => (r[k] ?? null) !== want[k]);
+    if (!cells.length) continue;
+    out.updated_rows++;
+    out.updated_cells += cells.length;
+    if (!dry) db.prepare(`UPDATE edges SET ${cells.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`).run(...cells.map((c) => want[c]), id);
+  }
+  return out;
+}
+
 function pairHash(source: string, edgeType: string, target: string): string {
   return createHash("sha256").update(`${source}|${edgeType}|${target}`).digest("hex");
 }
@@ -156,12 +222,10 @@ export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats 
     );
   }
 
-  // 2. Clean slate (unless dry).
+  // 2. The pending AI suggestions (local, not synced) are replaced every run;
+  //    the derived edges are diffed at the end (applyDerivedEdges).
   if (!dry) {
-    db.exec(
-      `DELETE FROM edges WHERE created_by = '${CREATED_BY_TAG}';
-       DELETE FROM intake_queue WHERE submitted_by = '${CONTRIBUTOR_ID}' AND status = 'pending';`
-    );
+    db.exec(`DELETE FROM intake_queue WHERE submitted_by = '${CONTRIBUTOR_ID}' AND status = 'pending';`);
   }
 
   // 3. Load vectors + auxiliary lookups.
@@ -216,18 +280,21 @@ export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats 
       concepts_propagated: 0,
       edges_emitted: 0,
     },
+    edges: { desired: 0, inserted: 0, deleted: 0, updated_rows: 0, updated_cells: 0 },
   };
   const conceptOpts: ConceptPropagateOptions = { ...CONCEPT_DEFAULTS, ...(opts.concept ?? {}) };
 
   const now = nowIso();
 
-  const insertEdge = db.prepare(
-    `INSERT INTO edges (
-       id, source_id, target_id, edge_type, signal_id,
-       confidence, charge, created_at, created_by,
-       event_time, valid_from, valid_until, invalidated_by
-     ) VALUES (?, ?, ?, ?, ?, 'low', NULL, ?, ?, NULL, ?, NULL, NULL)`
-  );
+  // The desired derived edges, collected by every pass (same argument order
+  // as the INSERT they used to run directly), applied as a diff at the end.
+  const desired = new Map<string, DesiredEdge>();
+  const insertEdge = {
+    run(...args: unknown[]) {
+      const [id, source, target, type] = args;
+      desired.set(String(id), { id: String(id), source_id: String(source), target_id: String(target), edge_type: String(type) });
+    },
+  };
 
   const insertIntake = db.prepare(
     `INSERT INTO intake_queue (
@@ -259,7 +326,8 @@ export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats 
     stats.style_kin.pairs_pre_cap = kinCandidates.length;
     const kinPairs = mutualTopK(kinCandidates, kinK);
     stats.style_kin.pairs = kinPairs.length;
-    if (!dry) {
+    {
+      // collected in a dry run too: the diff is then reported, not applied
       for (const { a, b } of kinPairs) {
         // Two rows, one per direction.
         insertEdge.run(edgeId(a, "STYLE_KIN", b), a, b, "STYLE_KIN", SIGNAL_ID, now, CREATED_BY_TAG, now);
@@ -299,7 +367,7 @@ export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats 
     stats.visually_affine.pairs_pre_cap = visCandidates.length;
     const visPairs = mutualTopK(visCandidates, visualK);
     stats.visually_affine.pairs = visPairs.length;
-    if (!dry) {
+    {
       for (const { a, b } of visPairs) {
         insertEdge.run(edgeId(a, "VISUALLY_AFFINE", b), a, b, "VISUALLY_AFFINE", SIGNAL_ID, now, CREATED_BY_TAG, now);
         insertEdge.run(edgeId(b, "VISUALLY_AFFINE", a), b, a, "VISUALLY_AFFINE", SIGNAL_ID, now, CREATED_BY_TAG, now);
@@ -321,7 +389,7 @@ export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats 
       CREATED_BY_TAG,
       now,
       conceptOpts,
-      dry
+      false // the collector writes nothing itself: applyDerivedEdges does (or, dry, reports)
     );
 
     // ----- SUGGESTS_CREATED_BY (intake_queue) ----------------------------
@@ -370,6 +438,7 @@ export function derive(db: DatabaseSync, opts: DeriveOptions = {}): DeriveStats 
       insertIntake.run(id, SIGNAL_ID, a, CONTRIBUTOR_ID, proposed, now);
     }
 
+    stats.edges = { ...applyDerivedEdges(db, desired, now, dry), desired: desired.size };
     if (!dry) db.exec("COMMIT");
   } catch (e) {
     if (!dry) db.exec("ROLLBACK");

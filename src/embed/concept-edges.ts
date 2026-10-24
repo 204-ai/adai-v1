@@ -20,9 +20,10 @@
 //                  shared concept (e.g. one artist's handle used as a tag).
 //
 // Output edges are EMBODIES tagged created_by='embedding-multimodal-v1',
-// confidence 'low' — wiped + recomputed every derive run (same lifecycle as
-// STYLE_KIN / VISUALLY_AFFINE), rendered dashed in /field, never written into
-// the committed seed/*.json canon. Propagation only targets NON-members, so it
+// confidence 'low' — recomputed every derive run and applied as a diff with
+// STYLE_KIN / VISUALLY_AFFINE (derive.ts applyDerivedEdges: only new rows
+// inserted, only unwanted ones deleted), rendered dashed in /field, never
+// written into the committed seed/*.json canon. Propagation only targets NON-members, so it
 // never collides with an attested (confidence 1.0) EMBODIES.
 
 import type { DatabaseSync } from "node:sqlite";
@@ -71,8 +72,9 @@ function norm(a: Float32Array): number {
 
 /**
  * Propagate tag-concepts across the centred artwork embedding space.
- * Called from derive() inside its transaction; emits EMBODIES rows via the
- * shared insertEdge statement (same column order as derive.ts).
+ * Called from derive() inside its transaction; hands each EMBODIES edge to
+ * derive's collector (`insertEdge.run(id, source, target, type, …)`), which
+ * applies the whole derived set as a diff.
  */
 export function propagateConcepts(
   db: DatabaseSync,
