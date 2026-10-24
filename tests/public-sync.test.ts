@@ -364,3 +364,9 @@ describe("the change stream and the fork", () => {
     await assert.rejects(pullFork(fork, { from: "http://x", fetchImpl: f }), /schema differs/);
   });
 });
+
+it("/offline explains forking: the endpoints, fork:pull, pulling again, licences, no embeddings", async () => {
+  const { offlinePage } = await import("../src/routes/offline.js");
+  const html = offlinePage(null, "https://example.org");
+  for (const s of ["/api/sync/info", "/api/sync/changes", "npm run fork:pull -- --from https://example.org", "only when it pulls again", "Apache-2.0", "CC BY-SA 4.0", "LICENSE-DATA", "embed:backfill", "Not published yet"]) assert.ok(html.includes(s), s);
+});

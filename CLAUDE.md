@@ -57,7 +57,10 @@ src/
   utils/                  — token-mint, review, admin-actions, visibility, db-path,
                             ssrf (the one fetch guard), images (image_url → R2),
                             mail (Resend / stdout transport), …
+  sync/                   — public CRDT sync: change stream encode/read/apply, fork pull
+  routes/sync.ts          — GET /api/sync/info, /api/sync/changes
   cli/                    — operator CLIs (token issue/revoke/restore, rename,
+                            privacy-migrate, fork-pull,
                             notify-digest, apply-image-patch, invite, backfill-open-items,
                             merge-nodes, migrate-slugs)
 worker/                   — the intake worker (own package + Playwright image,
@@ -150,6 +153,42 @@ R2 backup bucket continuously.
 the URL-intake set: `magic_links`, `contributor_sessions`, `contributor_emails`
 (email → contributor, `self_node_id`), `drafts` (doubles as the worker job
 queue), `intake_open_items` (cards left open at Confirm), `intake_usage`. Email never lands in a CRR.
+The private side of signals: `signal_private`, `signal_priors`, `signal_authors`
+(below), read back through the `signals_full` view.
+
+**⚠️ The CRR rule: a CRR cell only ever holds what the commons publishes.** The
+five CRRs are published as they are — `GET /api/sync/changes` streams cr-sqlite's
+own `crsql_changes`, unfiltered, to anyone who forks the commons (*Public sync*
+below). Whatever must not be published lives in a LOCAL table, and its CRR cell is
+blank (`src/utils/signal-private.ts`):
+- **words withheld** — `structural_only`, `revoked`, in review (`pending`,
+  published on approval by `publishQueued` / `publishSignal`), `rejected`, a note
+  withdrawn while in review, an `objection`: `title`, `summary`, `content`,
+  `source_url`, `provenance_chain`, `processing_trace` → NULL in the CRR, the
+  originals in **`signal_private`** (one row per signal, `reasons` a comma set);
+- **who** — `anonymous`: `submitted_by` → `'anonymous'`, `batch_id` and
+  `provenance_chain` → NULL; the real author stays in `signal_private` and
+  `signal_authors`; writes it anchors are labelled `anonymous` (`edges.created_by`,
+  hence the edge id, `nodes.updated_by`) and its counters go to the sentinel
+  contributor `contributor:anonymous`;
+- **before-images** — `recordPrior` writes the values to **`signal_priors`**
+  (`signal_id, idx, op, node_id, at, updated_by, before`); the CRR trace keeps
+  `{"prior":[{op, node_id, at}]}`. An admin record carrying them (retire_batch's
+  `patches_to_review`) keeps the record without `before` (the full one in
+  `signal_private`, reason `before_images`). Read them with `priorsOf()`.
+- A structural_only signal may not write node metadata (`StructuralWriteError`
+  in every `materialise*`): node metadata is words in a CRR.
+
+Every signal INSERT goes through `insertSignalRow` (born blank: the words never
+touch the CRR); withholding later is `withholdSignal` — copy, verify, then blank by
+UPDATE, so cr-sqlite emits the change and every fork loses the value on its next
+pull. Back office (`/review`, `/api/v1/review`, the curator audit, the admin
+digest, an owner's receipt and `/me` log, batch tools) reads **`signals_full`**
+(the CRR row with the originals laid over it); a public surface reads `signals`
+and must never output a `signals_full` value. A new private column means a local
+table, never a CRR column. Existing data: `npm run privacy:migrate -- --dry-run`,
+then without (idempotent, one transaction); `initDb` warns at boot while rows are
+left, and the sync endpoint answers 503 until none are.
 
 **Node types**: `artwork`, `practitioner`, `concept`, `classification_regime`,
 `collective`, `platform`, `institution` (schema reserves `scene`, `publication`,
@@ -239,6 +278,8 @@ empty — it requires evidence of artist intent, not thematic similarity.
   signals); slug-only resolution, the type segment is decorative
 - `POST /api/contribute` — submit a signal
 - `POST /api/review/:id/approve` · `/reject` — curator actions
+- `GET /api/sync/info` · `GET /api/sync/changes?since=&limit=` — the public
+  CRDT change stream (*Public sync* below)
 
 ### URL intake (`/contribute`, `/draft/:id`, `/batch/:id`, `/api/intake/*`)
 
@@ -406,9 +447,11 @@ takes a slug (`src/utils/moved.ts`; a rewritten slug is kept as
 `node_aliases(source='slug', external_id='<type>/<old slug>')`).
 
 **Every node write keeps its before-image.** Metadata is overwritten in place,
-so each patch / image attach / retire appends what it replaced to the causing
-signal's `processing_trace` (`{"prior":[{op,node_id,at,updated_by,before}]}`,
-`recordPrior` in `src/utils/contribution.ts`). The operator CLIs
+so each patch / image attach / retire records what it replaced for the causing
+signal (`recordPrior` in `src/utils/contribution.ts`): the values in the LOCAL
+`signal_priors` (`{op,node_id,at,updated_by,before}`), only `{op,node_id,at}` in
+its CRR `processing_trace.prior` — read them with `priorsOf()`
+(`src/utils/signal-private.ts`). The operator CLIs
 (`apply-image-patch`, `contributor:rename`, both `--by <operator>`) write an
 `api_admin` signal too. A URL-intake card the contributor changed carries the
 reader's original in its signal's `provenance_chain.proposed_as`.
@@ -459,6 +502,47 @@ string and every `meta` value as defence in depth only. No local tables, no embe
 `.github/workflows/snapshot-publish.yml` (dispatch-only until the licence statement
 is decided) uploads to the public bucket under `snapshots/` — outside the
 `images/` prefix `cull_orphans.py` works on.
+
+## Public sync — fork the commons
+
+Anyone can fork the commons by pulling cr-sqlite changes into a fresh database and
+keep it current by pulling again (`/offline` explains it to the public). Safe to
+publish unfiltered because of the CRR rule (*Database* above): no shadow database,
+no per-cell filtering.
+
+- `GET /api/sync/info` → `{format: "adai-crsql-changes/1", site_id (hex),
+  db_version, schema: {hash, tables}, tables}`; `schema.hash` is a sha256 of the
+  five CRRs' `PRAGMA table_info` (a fork must match it).
+- `GET /api/sync/changes?since=<cursor>&limit=<n>` (default 5000, max 20000) →
+  `{format, site_id, since, next, more, db_version, count, changes}`; each change
+  is `[table, pk(base64), cid, val, col_version, db_version, site_id(hex), cl,
+  seq]`, `val` typed exactly (text = string, integer = number or `{"i":"…"}`
+  beyond 2^53, real = `{"r":n}`, blob = `{"b":base64}`, null). Ordered by
+  `(db_version, seq)` in one read transaction; pages end on whole db_versions,
+  except one transaction bigger than the limit (the genesis load, a nightly
+  re-derive), split by seq with a `"<db_version>:<seq>"` cursor. `since=0` = all.
+  gzip; `Cache-Control` 5–30 s; no auth; 240 requests / 10 min per client;
+  `PUBLIC_SYNC=off` disables it; 503 while `privacyBacklog()` is not zero.
+  Code: `src/sync/changes.ts`, `src/routes/sync.ts` — its own route, never the
+  stamp-pinned `/api/graph/stream`.
+- `npm run fork:pull -- --from <base url> [--db ./fork.db] [--limit N] [--force]`
+  (`src/sync/pull.ts`): `initDb` on the target (real CRRs), applies each page
+  with `INSERT INTO crsql_changes` in one transaction with its cursor, keeps
+  `fork_source_url`, `fork_source_site_id`, `fork_cursor`, `fork_pulled_at` in
+  `settings`; re-runs pull only what is new. Refuses a different source site id,
+  a target that already holds CRR rows and is no fork (both `--force`), a
+  different CRR schema, and itself. `secure_delete` on, so an overwritten value
+  (a revocation) is zeroed on the fork's disk. Then `DB_PATH=./fork.db npm run dev`.
+- Not in the stream: every local table (tokens, emails, sessions, drafts, the
+  review queue, claims' private side, notification state, `signal_private`,
+  `signal_priors`) and **embeddings** — a fork runs `embed:backfill` with its own
+  key. A fork's `/api/stats` matches except `pending_reviews` (local); profile
+  sections fed by `intake_queue` (community contributions, accounts) and
+  before-images on `/history` are empty there.
+- Volume: today's commons is ~480k changes (~25 pages at the max limit); the
+  nightly `embed:derive` deletes and re-inserts every derived edge in one
+  transaction (~125k changes), so a fork pulling daily re-receives the derived
+  layer each day.
 
 ## Whitepaper
 
