@@ -164,6 +164,25 @@ describe("the CRRs hold only what the commons publishes", () => {
     assert.equal(fullSignal(db, sig).content, "SPAM-WORDS");
   });
 
+  it("a contribution in review is published only when approved; the curator sees it meanwhile", () => {
+    const db = freshDb();
+    const p: AuthedContributor = { ...WHO, id: "c-p2", name: "Newcomer", trust_tier: "probationary" } as any;
+    seed(db, p);
+    const sig = insertSignal(db, { contributor: p, title: "Create node: artwork:Queued", content: JSON.stringify({ name: "IN-REVIEW-WORDS" }), source_type: "api_node", pending: true });
+    const { intake_id } = insertIntake(db, { contributor: p, signal_id: sig, target_node: "artwork:queued", proposed_nodes: [{ op: "create_node", type: "artwork", name: "Queued", slug: "queued", metadata: { description: "IN-REVIEW-DESC" } }] });
+    assert.ok(!streamText(db).includes("IN-REVIEW"), "pending words in the stream");
+    assert.match(fullSignal(db, sig).content, /IN-REVIEW-WORDS/);
+    const fork = freshDb();
+    const c1 = pullAll(db, fork);
+    approveIntakeItem(db, intake_id, "curator");
+    const text = streamText(db);
+    assert.ok(text.includes("IN-REVIEW-WORDS") && text.includes("IN-REVIEW-DESC"), "approved: published");
+    assert.equal(db.prepare("SELECT 1 FROM signal_private WHERE signal_id = ?").get(sig), undefined, "nothing left private");
+    pullAll(db, fork, c1);
+    assert.deepEqual(crrDump(fork), crrDump(db));
+    assert.equal(backlogTotal(privacyBacklog(db)), 0);
+  });
+
   it("crsql_changes covers the five CRRs and nothing local", () => {
     const db = freshDb();
     seed(db);

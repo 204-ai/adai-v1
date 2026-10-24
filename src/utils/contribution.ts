@@ -102,6 +102,11 @@ export interface CreateSignalArgs {
   batch_id?: string | null;    // caller-supplied session/batch handle (signals.batch_id)
   source_origin?: string;      // default 'human_primary'; URL intake writes 'url_intake'
   provenance_chain?: string | null; // JSON: e.g. {draft_id, cid, origin, page_sha256}
+  // Queued for review (a probationary write): its words stay on the private
+  // side until the item is approved (publishQueued) — never published if rejected.
+  pending?: boolean;
+  // Never published (a claimant's objection, for the curator only).
+  unpublished?: boolean;
 }
 
 export function insertSignal(db: DatabaseSync, args: CreateSignalArgs): string {
@@ -130,7 +135,7 @@ export function insertSignal(db: DatabaseSync, args: CreateSignalArgs): string {
     source_origin: args.source_origin ?? "human_primary",
     batch_id: args.batch_id ?? null,
     provenance_chain: args.provenance_chain ?? null,
-  });
+  }, [...(args.pending ? (["pending"] as const) : []), ...(args.unpublished ? (["objection"] as const) : [])]);
   // The authenticated author, by id (issue #80): submitted_by is only a name.
   db.prepare("INSERT OR IGNORE INTO signal_authors (signal_id, contributor_id, via) VALUES (?, ?, 'write')").run(signalId, args.contributor.id);
   // Claimants hear about it (issue #81): the listener only schedules a pass,

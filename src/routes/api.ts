@@ -551,13 +551,13 @@ router.post("/api/contribute", (req, res) => {
 
   // Consent splits the row (src/utils/signal-private.ts): structural_only
   // words / an anonymous name never reach the CRR.
+  const intakeStatus = trustTier === "auto" || trustTier === "reviewed" ? "approved" : "pending";
+  // A queued contribution's words are published when a curator approves it.
   insertSignalRow(db, {
     id: signalId, title, source_url: srcUrl.value, source_type: "contribution", cla_layer: null, summary: null, content,
     submitted_by: contributor_name, confidence: trustTier, lived_experience: 0,
     consent_scope: scope, consent_attribution: attribution, source_origin: "human_primary",
-  });
-
-  const intakeStatus = trustTier === "auto" || trustTier === "reviewed" ? "approved" : "pending";
+  }, intakeStatus === "pending" ? ["pending"] : []);
 
   db.prepare(
     "INSERT INTO intake_queue (id, signal_id, target_node, submitted_by, trust_tier, status) VALUES (?, ?, ?, ?, ?, ?)"

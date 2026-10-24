@@ -12,7 +12,8 @@
 //   - structural_only and revoked signals' words → signal_private
 //   - anonymous signals' submitted_by / batch_id / provenance → signal_private
 //   - admin records carrying before-images (retire_batch) → signal_private
-//   - rejected contributions and never-published notes' words → signal_private
+//   - rejected contributions, contributions still in review (published when
+//     approved) and never-published notes / objections' words → signal_private
 //
 // On Fly: `flyctl ssh console --app adai-basel -C "node /app/dist/cli/privacy-migrate.js --dry-run"`
 
@@ -38,10 +39,11 @@ function main(): void {
     for (const id of r.admin_before_images.ids) console.log(`admin_before_images\t${id}`);
     for (const x of r.notes.ids) console.log(`notes\t${x.id}\t${x.reason}`);
     for (const id of r.rejected.ids) console.log(`rejected\t${id}`);
+    for (const id of r.pending.ids) console.log(`pending\t${id}`);
   }
   console.error(
     `[privacy] ${r.priors.signals} signals / ${r.priors.entries} before-images, ${r.words.signals} withheld words, ` +
-      `${r.anonymous.signals} anonymous, ${r.admin_before_images.signals} admin records, ${r.notes.signals} notes, ${r.rejected.signals} rejected` +
+      `${r.anonymous.signals} anonymous, ${r.admin_before_images.signals} admin records, ${r.notes.signals} notes, ${r.rejected.signals} rejected, ${r.pending.signals} pending review` +
       (dryRun ? " (dry run, nothing written)" : ` — moved; left: ${JSON.stringify(r.left)}`)
   );
 }

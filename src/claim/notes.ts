@@ -29,7 +29,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { isAutoMerge, type AuthedContributor } from "../auth.js";
 import { insertSignal, priorValues, recordPrior } from "../utils/contribution.js";
 import { insertAdminSignal } from "../utils/admin-actions.js";
-import { priorsOf, updateTrace, withholdSignal } from "../utils/signal-private.js";
+import { priorsOf, publishSignal, updateTrace, withholdSignal } from "../utils/signal-private.js";
 import { tripleKey } from "../utils/claims.js";
 import { ClaimError, CLAIMABLE_TYPES, approvedClaimsFor, claimedNodeIds, hasApprovedClaim, requestClaim, contributorById, type Claim } from "./store.js";
 
@@ -346,6 +346,9 @@ export function fileNote(db: DatabaseSync, args: FileNoteArgs): RelationNote {
       content: JSON.stringify(content),
       source_type: args.kind === "objection" ? "subject_objection" : `subject_${args.kind}`,
       source_origin: "human_primary",
+      // an objection is for the curator only; a context note in review is published on approval
+      unpublished: args.kind === "objection",
+      pending: state === "pending",
     });
     db.prepare("UPDATE signals SET lived_experience = 1 WHERE id = ?").run(signalId);
     let queueId: string | null = null;
@@ -434,6 +437,7 @@ export function fileReading(db: DatabaseSync, args: FileReadingArgs): RelationNo
       consent_scope: args.consent_scope ?? undefined,
       consent_attribution: args.consent_attribution ?? undefined,
       batch_id: args.batch_id ?? null,
+      pending: !autoLive,
     });
     const queueId = `intake-${crypto.randomBytes(8).toString("hex")}`;
     db.prepare(
@@ -551,6 +555,7 @@ function settle(db: DatabaseSync, n: RelationNote, state: string, by: string, re
     db.prepare("UPDATE intake_queue SET status = ?, rejection_reason = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ? AND status = 'pending'")
       .run(approved ? "approved" : "rejected", approved ? null : reason, by, nowIso(), n.queue_id);
   }
+  if (state === "live") publishSignal(db, n.signal_id, "pending");
   if (state === "rejected") {
     db.prepare("UPDATE signals SET status = 'superseded' WHERE id = ?").run(n.signal_id);
     // never published: its words leave the CRR (kept in signal_private)

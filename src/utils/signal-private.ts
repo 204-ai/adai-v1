@@ -8,7 +8,8 @@
 // id, and its CRR cell is blank:
 //
 //   words  — structural_only (the contributor gave the relations, not their
-//            words), revoked, a rejected / withdrawn-before-publication note:
+//            words), revoked, pending review (published on approval),
+//            rejected, a note withdrawn before publication, an objection:
 //            title, summary, content, source_url, provenance_chain,
 //            processing_trace → NULL in the CRR;
 //   who    — anonymous: submitted_by → 'anonymous', batch_id and
@@ -34,7 +35,10 @@ export const WHO_COLS = ["submitted_by", "batch_id", "provenance_chain"] as cons
 export type PrivateCol = (typeof WORD_COLS)[number] | (typeof WHO_COLS)[number];
 const ALL_COLS: PrivateCol[] = ["title", "summary", "content", "source_url", "provenance_chain", "processing_trace", "submitted_by", "batch_id"];
 
-export type WithholdReason = "structural_only" | "revoked" | "rejected" | "withdrawn" | "anonymous" | "before_images";
+export type WithholdReason = "structural_only" | "revoked" | "rejected" | "withdrawn" | "pending" | "objection" | "anonymous" | "before_images";
+
+/** Reasons that withhold the words (all but anonymous and before_images). */
+const wordReason = (r: string) => r !== "anonymous" && r !== "before_images" && r !== "";
 
 /** The name every anonymous signal carries in the CRR, and the sentinel contributor it is credited to. */
 export const ANONYMOUS = "anonymous";
@@ -176,10 +180,10 @@ export interface SignalRow {
  * structural_only or anonymous signal's words / name reach signal_private
  * only, and the CRR row is born blank. Every signal INSERT goes here.
  */
-export function insertSignalRow(db: DatabaseSync, row: SignalRow): void {
+export function insertSignalRow(db: DatabaseSync, row: SignalRow, extra: WithholdReason[] = []): void {
   savepoint(db, "insert_signal", () => {
     const crr: Record<string, unknown> = { ...row };
-    for (const reason of consentReasons(row)) {
+    for (const reason of [...consentReasons(row), ...extra]) {
       const originals: Partial<Record<PrivateCol, unknown>> = {};
       for (const c of colsFor(reason)) {
         const v = (row as any)[c];
@@ -203,19 +207,51 @@ export function fullSignal(db: DatabaseSync, signalId: string): any {
 export function wordsWithheld(db: DatabaseSync, signalId: string): boolean {
   if (!hasTable(db, "signal_private")) return false;
   const r = db.prepare("SELECT reasons FROM signal_private WHERE signal_id = ?").get(signalId) as any;
-  return !!r && String(r.reasons ?? "").split(",").some((x) => x !== "anonymous" && x !== "before_images");
+  return !!r && String(r.reasons ?? "").split(",").some(wordReason);
 }
 
 /**
- * The signals a rejected review item leaves unpublished: its own signal, the
- * evidence signals its operations name, and — for a URL-intake anchor — every
- * signal of that batch; minus any signal an approved item names or a
- * relation was ever made from (those were published). Human contributions
- * only (an AI suggestion's signal is the shared derive run).
+ * Lift one reason (a review item approved: 'pending'). When no reason to
+ * withhold the words is left, they go back into the CRR (an UPDATE, so forks
+ * receive them); the private row stays while another reason (anonymous)
+ * needs it, and goes once it holds nothing the CRR does not.
  */
-export function rejectedSignals(db: DatabaseSync, queueId: string): string[] {
-  const q = db.prepare("SELECT signal_id, kind, status, proposed_nodes, proposed_edges FROM intake_queue WHERE id = ?").get(queueId) as any;
-  if (!q || q.status !== "rejected" || (q.kind ?? "human_signal") !== "human_signal") return [];
+export function publishSignal(db: DatabaseSync, signalId: string, reason: WithholdReason): boolean {
+  if (!hasTable(db, "signal_private")) return false;
+  return savepoint(db, "publish", () => {
+    const p = db.prepare("SELECT * FROM signal_private WHERE signal_id = ?").get(signalId) as any;
+    if (!p) return false;
+    const reasons = String(p.reasons ?? "").split(",").filter(Boolean);
+    if (!reasons.includes(reason)) return false;
+    const left = reasons.filter((r) => r !== reason);
+    let changed = false;
+    if (!left.some(wordReason)) {
+      const row = db.prepare(`SELECT ${WORD_COLS.join(", ")} FROM signals WHERE id = ?`).get(signalId) as any;
+      const back = WORD_COLS.filter((c) => p[c] !== null && p[c] !== undefined && row?.[c] !== p[c]);
+      // provenance stays private while the signal is anonymous
+      const cols = left.includes("anonymous") ? back.filter((c) => c !== "provenance_chain") : back;
+      if (cols.length) {
+        db.prepare(`UPDATE signals SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`).run(...cols.map((c) => p[c]), signalId);
+        changed = true;
+      }
+      const keep = left.length ? (left.includes("anonymous") ? WHO_COLS : ["content"]) : [];
+      const clear = WORD_COLS.filter((c) => !(keep as readonly string[]).includes(c));
+      if (!left.length) db.prepare("DELETE FROM signal_private WHERE signal_id = ?").run(signalId);
+      else db.prepare(`UPDATE signal_private SET reasons = ?, updated_at = ?${clear.map((c) => `, ${c} = NULL`).join("")} WHERE signal_id = ?`).run(left.join(","), nowIso(), signalId);
+    } else {
+      db.prepare("UPDATE signal_private SET reasons = ?, updated_at = ? WHERE signal_id = ?").run(left.join(","), nowIso(), signalId);
+    }
+    return changed;
+  });
+}
+
+/**
+ * The signals a review item stands for: its own, the evidence signals its
+ * operations name, and — for a URL-intake anchor — every signal of its batch.
+ */
+export function queueSignals(db: DatabaseSync, queueId: string): string[] {
+  const q = db.prepare("SELECT signal_id, proposed_nodes, proposed_edges FROM intake_queue WHERE id = ?").get(queueId) as any;
+  if (!q) return [];
   const ids = new Set<string>();
   if (q.signal_id) ids.add(q.signal_id);
   for (const op of parse(q.proposed_nodes) ?? []) if (typeof op?.signal_id === "string") ids.add(op.signal_id);
@@ -227,6 +263,29 @@ export function rejectedSignals(db: DatabaseSync, queueId: string): string[] {
       for (const r of db.prepare("SELECT id FROM signals_full WHERE batch_id = ?").all(batch) as any[]) ids.add(r.id);
     }
   }
+  return [...ids];
+}
+
+/** A pending review item: every signal it stands for keeps its words private until it is approved. */
+export function withholdQueued(db: DatabaseSync, queueId: string): void {
+  for (const id of queueSignals(db, queueId)) withholdSignal(db, id, "pending");
+}
+
+/** An approved review item: its signals' words are published. */
+export function publishQueued(db: DatabaseSync, queueId: string): void {
+  for (const id of queueSignals(db, queueId)) publishSignal(db, id, "pending");
+}
+
+/**
+ * The signals a rejected review item leaves unpublished: its own signal, the
+ * evidence signals its operations name, and — for a URL-intake anchor — every
+ * signal of that batch; minus any signal an approved item names or a
+ * relation was ever made from (those were published). Human contributions
+ * only (an AI suggestion's signal is the shared derive run).
+ */
+export function rejectedSignals(db: DatabaseSync, queueId: string): string[] {
+  const q = db.prepare("SELECT kind, status FROM intake_queue WHERE id = ?").get(queueId) as any;
+  if (!q || q.status !== "rejected" || (q.kind ?? "human_signal") !== "human_signal") return [];
   const approvedNames = (id: string) => {
     const like = `%${JSON.stringify(id).slice(1, -1)}%`;
     return !!db.prepare(
@@ -234,7 +293,7 @@ export function rejectedSignals(db: DatabaseSync, queueId: string): string[] {
     ).get(id, like, like);
   };
   const anchorsEdge = (id: string) => !!db.prepare("SELECT 1 FROM edges WHERE signal_id = ? OR invalidated_by = ? LIMIT 1").get(id, id);
-  return [...ids].filter((id) => !approvedNames(id) && !anchorsEdge(id));
+  return queueSignals(db, queueId).filter((id) => !approvedNames(id) && !anchorsEdge(id));
 }
 
 // ---- anonymous ----------------------------------------------------------------------------
@@ -321,19 +380,22 @@ export function appendPrior(db: DatabaseSync, signalId: string, entry: PriorEntr
   savepoint(db, "append_prior", () => {
     movePriorsOf(db, signalId);
     const row = db.prepare("SELECT processing_trace FROM signals WHERE id = ?").get(signalId) as any;
-    let trace: any = parse(row?.processing_trace) ?? {};
-    if (!trace || typeof trace !== "object" || Array.isArray(trace)) trace = {};
-    const list = Array.isArray(trace.prior) ? trace.prior : [];
+    const crrTrace = parse(row?.processing_trace);
+    const privTrace = wordsWithheld(db, signalId) ? parse((db.prepare("SELECT processing_trace FROM signal_private WHERE signal_id = ?").get(signalId) as any)?.processing_trace) : null;
+    const list = Array.isArray((privTrace ?? crrTrace)?.prior) ? (privTrace ?? crrTrace).prior : [];
     const localMax = (db.prepare("SELECT MAX(idx) AS m FROM signal_priors WHERE signal_id = ?").get(signalId) as any)?.m;
     const idx = Math.max(list.length, localMax === null || localMax === undefined ? 0 : Number(localMax) + 1);
     db.prepare("INSERT INTO signal_priors (signal_id, idx, op, node_id, at, updated_by, before) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(signalId, idx, entry.op, entry.node_id, entry.at, entry.updated_by ?? null, JSON.stringify(entry.before ?? {}));
-    if (wordsWithheld(db, signalId)) return;
-    // pad so the CRR list index stays the local idx
-    while (list.length < idx) list.push(null);
-    list[idx] = publicPrior(entry);
-    trace.prior = list;
-    db.prepare("UPDATE signals SET processing_trace = ? WHERE id = ?").run(JSON.stringify(trace), signalId);
+    // the public stub {op, node_id, at}: in the CRR trace — or, while the
+    // signal's words are withheld, in its private trace (published with them)
+    updateTrace(db, signalId, (t) => {
+      const trace = t && typeof t === "object" && !Array.isArray(t) ? t : {};
+      const lst = Array.isArray(trace.prior) ? trace.prior : [];
+      while (lst.length < idx) lst.push(null); // keep list index = local idx
+      lst[idx] = publicPrior(entry);
+      return { ...trace, prior: lst };
+    });
   });
 }
 
@@ -382,6 +444,7 @@ export interface PrivacyMigrationReport {
   admin_before_images: { signals: number; ids: string[] };
   notes: { signals: number; ids: Array<{ id: string; reason: WithholdReason }> };
   rejected: { signals: number; ids: string[] };
+  pending: { signals: number; ids: string[] };
   /** After a real run: what is still left to move (must be all zero). */
   left?: PrivacyBacklog;
 }
@@ -393,9 +456,23 @@ export interface PrivacyBacklog {
   admin_before_images: number;
   notes: number;
   rejected: number;
+  pending: number;
 }
 
 const WORDS_PRESENT = WORD_COLS.map((c) => `${c} IS NOT NULL`).join(" OR ");
+/** A note that was never published: an objection, one in review, rejected, or withdrawn while in review. */
+const UNPUBLISHED_NOTE = "rn.kind = 'objection' OR rn.state IN ('pending', 'rejected') OR (rn.state = 'withdrawn' AND q.status = 'rejected')";
+
+/** Signals of review items still pending whose words are in the CRR. */
+function pendingBacklog(db: DatabaseSync): string[] {
+  if (!hasTable(db, "intake_queue")) return [];
+  const out = new Set<string>();
+  const present = db.prepare(`SELECT 1 FROM signals WHERE id = ? AND (${WORDS_PRESENT})`);
+  for (const q of db.prepare("SELECT id FROM intake_queue WHERE status = 'pending' AND COALESCE(kind, 'human_signal') = 'human_signal' ORDER BY rowid").all() as any[]) {
+    for (const id of queueSignals(db, q.id)) if (present.get(id)) out.add(id);
+  }
+  return [...out];
+}
 
 /** Signals whose CRR row still holds what it must not (cheap; the boot check). */
 export function privacyBacklog(db: DatabaseSync): PrivacyBacklog {
@@ -408,13 +485,14 @@ export function privacyBacklog(db: DatabaseSync): PrivacyBacklog {
     notes: hasTable(db, "relation_notes")
       ? n(`SELECT COUNT(*) AS n FROM signals s JOIN relation_notes rn ON rn.signal_id = s.id
             LEFT JOIN intake_queue q ON q.id = rn.queue_id
-           WHERE (rn.state = 'rejected' OR (rn.state = 'withdrawn' AND q.status = 'rejected')) AND (${WORD_COLS.map((c) => `s.${c} IS NOT NULL`).join(" OR ")})`)
+           WHERE (${UNPUBLISHED_NOTE}) AND (${WORD_COLS.map((c) => `s.${c} IS NOT NULL`).join(" OR ")})`)
       : 0,
     rejected: rejectedBacklog(db).length,
+    pending: pendingBacklog(db).length,
   };
 }
 
-export const backlogTotal = (b: PrivacyBacklog) => b.priors + b.words + b.anonymous + b.admin_before_images + b.notes + b.rejected;
+export const backlogTotal = (b: PrivacyBacklog) => b.priors + b.words + b.anonymous + b.admin_before_images + b.notes + b.rejected + b.pending;
 
 /** Signals of rejected human contributions whose words are still in the CRR. */
 function rejectedBacklog(db: DatabaseSync): string[] {
@@ -442,6 +520,7 @@ export function migratePrivacy(db: DatabaseSync, opts: { dryRun?: boolean } = {}
     admin_before_images: { signals: 0, ids: [] },
     notes: { signals: 0, ids: [] },
     rejected: { signals: 0, ids: [] },
+    pending: { signals: 0, ids: [] },
   };
   const run = () => {
     // 1. before-images
@@ -481,10 +560,10 @@ export function migratePrivacy(db: DatabaseSync, opts: { dryRun?: boolean } = {}
     // 5. notes never published: rejected, or withdrawn while in review
     if (hasTable(db, "relation_notes")) {
       for (const r of db.prepare(
-        `SELECT s.id, rn.state FROM signals s JOIN relation_notes rn ON rn.signal_id = s.id LEFT JOIN intake_queue q ON q.id = rn.queue_id
-          WHERE (rn.state = 'rejected' OR (rn.state = 'withdrawn' AND q.status = 'rejected')) AND (${WORD_COLS.map((c) => `s.${c} IS NOT NULL`).join(" OR ")})`
+        `SELECT s.id, rn.state, rn.kind FROM signals s JOIN relation_notes rn ON rn.signal_id = s.id LEFT JOIN intake_queue q ON q.id = rn.queue_id
+          WHERE (${UNPUBLISHED_NOTE}) AND (${WORD_COLS.map((c) => `s.${c} IS NOT NULL`).join(" OR ")})`
       ).all() as any[]) {
-        const reason: WithholdReason = r.state === "rejected" ? "rejected" : "withdrawn";
+        const reason: WithholdReason = r.kind === "objection" ? "objection" : r.state === "pending" ? "pending" : r.state === "rejected" ? "rejected" : "withdrawn";
         report.notes.signals++;
         report.notes.ids.push({ id: r.id, reason });
         if (!dryRun) withholdSignal(db, r.id, reason);
@@ -495,6 +574,12 @@ export function migratePrivacy(db: DatabaseSync, opts: { dryRun?: boolean } = {}
       report.rejected.signals++;
       report.rejected.ids.push(id);
       if (!dryRun) withholdSignal(db, id, "rejected");
+    }
+    // 7. contributions still in review: published when approved
+    for (const id of pendingBacklog(db)) {
+      report.pending.signals++;
+      report.pending.ids.push(id);
+      if (!dryRun) withholdSignal(db, id, "pending");
     }
   };
   if (dryRun) {

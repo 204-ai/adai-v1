@@ -1394,6 +1394,7 @@ export async function confirmDraft(
       batch_id: draft.id,
       source_origin: "url_intake",
       provenance_chain: JSON.stringify({ draft_id: draft.id, summary: draft.summary, ...(pickedFrom ? { picked_from: pickedFrom } : {}) }),
+      pending: !auto, // a probationary read is published when its review item is approved
     });
 
     const queuedNodes: ProposedNodeOp[] = [];
@@ -1410,6 +1411,7 @@ export async function confirmDraft(
         batch_id: draft.id,
         source_origin: "url_intake",
         provenance_chain: prov(cand),
+        pending: !auto,
       });
       if (auto) {
         if (op.node_op) {
@@ -1489,11 +1491,15 @@ function pageEntry(draft: Draft, url: string | undefined): PageEntry | null {
   return draft.pages.find((x) => x.url === url || x.final_url === url) ?? null;
 }
 
-/** Receipt view: everything the batch produced, by batch_id. */
-export function batchReceipt(db: DatabaseSync, batchId: string): Record<string, unknown> | null {
+/**
+ * Receipt view: everything the batch produced, by batch_id. `full`: the
+ * owner's (or an admin's) view, words still in review or withdrawn included
+ * (signals_full); without it, what the commons publishes (signals).
+ */
+export function batchReceipt(db: DatabaseSync, batchId: string, opts: { full?: boolean } = {}): Record<string, unknown> | null {
   const draft = getDraft(db, batchId);
   const signals = db
-    .prepare("SELECT id, title, source_type, source_url, content, status, created_at, submitted_by, provenance_chain FROM signals WHERE batch_id = ? ORDER BY created_at ASC")
+    .prepare(`SELECT id, title, source_type, source_url, content, status, created_at, submitted_by, provenance_chain FROM ${opts.full ? "signals_full" : "signals"} WHERE batch_id = ? ORDER BY created_at ASC`)
     .all(batchId) as any[];
   if (draft ? draft.status !== "submitted" : !signals.length) return null;
   const intake = db

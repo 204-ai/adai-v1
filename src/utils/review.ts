@@ -26,7 +26,7 @@ import {
 } from "./contribution.js";
 import { embedNodeAsync } from "../embed/server.js";
 import { ClaimError, approveClaim, claimByQueueId, rejectClaim } from "../claim/store.js";
-import { ensureAnonymousContributor, isAnonymousSignal, rejectedSignals, withholdSignal } from "./signal-private.js";
+import { ensureAnonymousContributor, isAnonymousSignal, publishQueued, rejectedSignals, withholdSignal } from "./signal-private.js";
 import { approveContext, dismissContest, rejectContext, settleObjections, upholdContest } from "../claim/notes.js";
 
 // Claims and a subject's notes (docs/CLAIM-SPEC.md) settle through their
@@ -156,6 +156,8 @@ export function approveIntakeItem(
   db.prepare(
     "UPDATE intake_queue SET status = 'approved', reviewed_by = ?, reviewed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?"
   ).run(reviewedBy, id);
+  // What was in review is published: its words go into the CRR now.
+  if (item.kind === "human_signal") publishQueued(db, id);
 
   // An anonymous contribution counts on the anonymous sentinel, never on its author's row.
   if (isAnonymousSignal(db, item.signal_id)) {

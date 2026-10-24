@@ -268,6 +268,7 @@ router.post("/api/v1/signals", requireToken, (req, res) => {
     consent_scope,
     consent_attribution,
     batch_id: batch.value,
+    pending: !isAutoMerge(req.contributor!.trust_tier),
   });
   const { intake_id, status } = insertIntake(db, {
     contributor: req.contributor!,
@@ -372,6 +373,7 @@ router.post("/api/v1/nodes", requireToken, (req, res) => {
     content: JSON.stringify({ type, name, slug, metadata: effectiveMetadata, aliases: aliasItems }),
     source_type: "api_node",
     batch_id: batch.value,
+    pending: !isAutoMerge(req.contributor!.trust_tier),
   });
 
   if (isAutoMerge(req.contributor!.trust_tier)) {
@@ -477,6 +479,7 @@ router.patch("/api/v1/nodes/:id", requireToken, (req, res) => {
     content: JSON.stringify({ node_id: nodeId, patch }),
     source_type: "api_node",
     batch_id: batch.value,
+    pending: !isAutoMerge(req.contributor!.trust_tier),
   });
 
   if (isAutoMerge(req.contributor!.trust_tier)) {
@@ -576,6 +579,7 @@ router.post("/api/v1/edges", requireToken, (req, res) => {
     content: JSON.stringify(proposed),
     source_type: "api_edge",
     batch_id: batch.value,
+    pending: !isAutoMerge(req.contributor!.trust_tier),
   });
 
   if (isAutoMerge(req.contributor!.trust_tier)) {
@@ -710,6 +714,7 @@ router.post(
       source_url: imageUrl,
       source_type: "api_image",
       batch_id: batch.value,
+      pending: !isAutoMerge(req.contributor!.trust_tier),
     });
 
     const op: ProposedNodeOp = {
