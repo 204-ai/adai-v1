@@ -118,6 +118,8 @@ function main(): void {
   try {
     db.prepare("UPDATE contributors SET name = ? WHERE id = ?").run(to, fromRow.id);
     db.prepare("UPDATE signals SET submitted_by = ? WHERE submitted_by = ?").run(to, from);
+    // an anonymous signal's real author (local, never in the CRR)
+    db.prepare("UPDATE signal_private SET submitted_by = ? WHERE submitted_by = ?").run(to, from);
     db.prepare("UPDATE intake_queue SET submitted_by = ? WHERE submitted_by = ?").run(to, from);
     db.prepare("UPDATE edges SET created_by = ? WHERE created_by = ?").run(apiNew, apiOld);
     db.prepare("UPDATE edges SET created_by = ? WHERE created_by = ?").run(curatorNew, curatorOld);

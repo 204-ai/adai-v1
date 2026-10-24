@@ -25,6 +25,7 @@ import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { isAutoMerge, type AuthedContributor } from "../auth.js";
 import { contributionWritten } from "../notify/kick.js";
+import { appendPrior, creditedContributor, insertSignalRow, writerLabelFor } from "./signal-private.js";
 
 export type ProposedNodeOp =
   | { op: "create_node"; type: string; name: string; slug: string; metadata?: any; aliases?: Array<{ source: string; external_id: string }> }
@@ -71,18 +72,20 @@ export function validateSourceUrl(
   return { ok: true, value: trimmed };
 }
 
-export function ensureContributorRow(db: DatabaseSync, contributor: AuthedContributor): void {
+export function ensureContributorRow(db: DatabaseSync, contributor: AuthedContributor, signalId?: string | null): void {
   // Keep `contributions` accurate. The contributor row already exists (we
-  // joined to it on auth), so increment unconditionally.
-  db.prepare("UPDATE contributors SET contributions = contributions + 1 WHERE id = ?").run(contributor.id);
+  // joined to it on auth), so increment unconditionally — on the anonymous
+  // sentinel for an anonymous signal (a real counter ticking with it would
+  // name its author in the public change stream).
+  db.prepare("UPDATE contributors SET contributions = contributions + 1 WHERE id = ?").run(creditedContributor(db, contributor.id, signalId));
 }
 
 // Bump `approved_count` when a contribution lands live, either immediately
 // (auto-merge) or later (curator approval). For the curator path the existing
 // /api/review approve handler already does this — we only call it from the
 // auto-merge path.
-export function bumpApprovedCount(db: DatabaseSync, contributorId: string): void {
-  db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE id = ?").run(contributorId);
+export function bumpApprovedCount(db: DatabaseSync, contributorId: string, signalId?: string | null): void {
+  db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE id = ?").run(creditedContributor(db, contributorId, signalId));
 }
 
 // Write a signal row that captures the contributor's intent verbatim. We use
@@ -108,25 +111,26 @@ export function insertSignal(db: DatabaseSync, args: CreateSignalArgs): string {
     args.consent_attribution === "anonymous" || args.consent_attribution === "attributed_with_notification"
       ? args.consent_attribution
       : "attributed";
-  db.prepare(
-    "INSERT INTO signals (id, title, source_url, source_type, cla_layer, summary, content, submitted_by, confidence, lived_experience, consent_scope, consent_attribution, source_origin, batch_id, provenance_chain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(
-    signalId,
-    args.title,
-    args.source_url ?? null,
-    args.source_type ?? "contribution",
-    null,
-    null,
-    args.content,
-    args.contributor.name,
-    args.contributor.trust_tier,
-    0,
-    scope,
-    attribution,
-    args.source_origin ?? "human_primary",
-    args.batch_id ?? null,
-    args.provenance_chain ?? null
-  );
+  // Consent splits the row (src/utils/signal-private.ts): a structural_only
+  // signal's words and an anonymous signal's name go to the local
+  // signal_private only; the CRR row is born blank.
+  insertSignalRow(db, {
+    id: signalId,
+    title: args.title,
+    source_url: args.source_url ?? null,
+    source_type: args.source_type ?? "contribution",
+    cla_layer: null,
+    summary: null,
+    content: args.content,
+    submitted_by: args.contributor.name,
+    confidence: args.contributor.trust_tier,
+    lived_experience: 0,
+    consent_scope: scope,
+    consent_attribution: attribution,
+    source_origin: args.source_origin ?? "human_primary",
+    batch_id: args.batch_id ?? null,
+    provenance_chain: args.provenance_chain ?? null,
+  });
   // The authenticated author, by id (issue #80): submitted_by is only a name.
   db.prepare("INSERT OR IGNORE INTO signal_authors (signal_id, contributor_id, via) VALUES (?, ?, 'write')").run(signalId, args.contributor.id);
   // Claimants hear about it (issue #81): the listener only schedules a pass,
@@ -192,6 +196,8 @@ export function materialiseCreateNode(
     // First-write-wins. Don't clobber.
     return { node_id: nodeId, created: false };
   }
+  refuseStructural(db, context.signalId);
+  context = { ...context, createdBy: writerLabelFor(db, context.signalId, context.createdBy) };
   const metadataStr = op.metadata ? JSON.stringify(op.metadata) : null;
   db.prepare(
     "INSERT INTO nodes (id, type, name, slug, metadata, updated_by) VALUES (?, ?, ?, ?, ?, ?)"
@@ -217,17 +223,27 @@ export function recordPrior(
   entry: { op: string; node_id: string; updated_by: string | null; before: Record<string, unknown> }
 ): void {
   if (!signalId) return;
-  const row = db.prepare("SELECT processing_trace FROM signals WHERE id = ?").get(signalId) as any;
-  if (!row) return;
-  let trace: any = {};
-  if (row.processing_trace) {
-    try { trace = JSON.parse(row.processing_trace); } catch { trace = {}; }
+  if (!db.prepare("SELECT 1 FROM signals WHERE id = ?").get(signalId)) return;
+  // The values go to the local signal_priors; the CRR trace keeps
+  // {op, node_id, at} (src/utils/signal-private.ts).
+  appendPrior(db, signalId, { op: entry.op, node_id: entry.node_id, at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), updated_by: entry.updated_by, before: entry.before });
+}
+
+/**
+ * A structural_only contribution gave the relations, not its words — and
+ * node metadata is words (descriptions, names, notes) that would land in a
+ * CRR. So a node write anchored to one is refused, at every materialise.
+ */
+export class StructuralWriteError extends Error {
+  constructor(public signalId: string) {
+    super(`signal ${signalId} is structural_only: it cannot write node metadata`);
+    this.name = "StructuralWriteError";
   }
-  if (!trace || typeof trace !== "object" || Array.isArray(trace)) trace = {};
-  const prior = Array.isArray(trace.prior) ? trace.prior : [];
-  prior.push({ op: entry.op, node_id: entry.node_id, at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), updated_by: entry.updated_by, before: entry.before });
-  trace.prior = prior;
-  db.prepare("UPDATE signals SET processing_trace = ? WHERE id = ?").run(JSON.stringify(trace), signalId);
+}
+function refuseStructural(db: DatabaseSync, signalId: string | null | undefined): void {
+  if (!signalId) return;
+  const r = db.prepare("SELECT consent_scope FROM signals WHERE id = ?").get(signalId) as any;
+  if (r?.consent_scope === "structural_only") throw new StructuralWriteError(signalId);
 }
 
 export function priorValues(base: any, keys: string[]): Record<string, unknown> {
@@ -243,6 +259,8 @@ export function materialisePatchNode(
 ): void {
   const row = db.prepare("SELECT metadata, updated_by FROM nodes WHERE id = ?").get(op.node_id) as any;
   if (!row) return;
+  refuseStructural(db, context.signalId);
+  context = { ...context, createdBy: writerLabelFor(db, context.signalId, context.createdBy) };
   let base: any = {};
   if (row.metadata) {
     try { base = JSON.parse(row.metadata); } catch { base = {}; }
@@ -261,6 +279,8 @@ export function materialiseAttachImage(
 ): void {
   const row = db.prepare("SELECT metadata, updated_by FROM nodes WHERE id = ?").get(op.node_id) as any;
   if (!row) return;
+  refuseStructural(db, context.signalId);
+  context = { ...context, createdBy: writerLabelFor(db, context.signalId, context.createdBy) };
   let base: any = {};
   if (row.metadata) {
     try { base = JSON.parse(row.metadata); } catch { base = {}; }
@@ -314,6 +334,8 @@ export function materialiseEdge(
   edge: ProposedEdge,
   context: { signalId: string | null; createdBy: string }
 ): { edge_id: string; superseded: string | null } {
+  // An anonymous signal's edge names no one: created_by (and so the id) is 'anonymous'.
+  context = { ...context, createdBy: writerLabelFor(db, edge.signal_id ?? context.signalId, context.createdBy) };
   const base = `${edge.source_id}--${edge.edge_type}--${edge.target_id}--${context.createdBy}`;
   const edgeId = edge.supersedes_edge_id
     ? `${base}--${crypto.randomBytes(4).toString("hex")}`

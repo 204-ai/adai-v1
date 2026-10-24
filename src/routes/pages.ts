@@ -359,7 +359,7 @@ function profileHandler(req: any, res: any) {
   // NULL/other consent_scope values pass through (allow-by-default).
   const contribs = db
     .prepare(
-      "SELECT s.title, s.content, s.source_url, s.source_type, s.submitted_by, s.created_at, s.consent_attribution, iq.proposed_nodes, iq.proposed_edges FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id WHERE iq.target_node = ? AND iq.status = 'approved' AND (s.consent_scope IS NULL OR s.consent_scope != 'structural_only') ORDER BY s.created_at DESC"
+      "SELECT s.title, s.content, s.source_url, s.source_type, s.submitted_by, s.created_at, s.consent_attribution, iq.proposed_nodes, iq.proposed_edges FROM signals s JOIN intake_queue iq ON iq.signal_id = s.id WHERE iq.target_node = ? AND iq.status = 'approved' AND (s.consent_scope IS NULL OR s.consent_scope != 'structural_only') AND COALESCE(s.status, 'active') != 'revoked' ORDER BY s.created_at DESC"
     )
     .all(node.id) as unknown as ContributionRow[];
 
@@ -1011,7 +1011,7 @@ router.get("/review", (req, res) => {
   } else {
     const items = db
       .prepare(
-        "SELECT iq.id, iq.signal_id, iq.target_node, iq.submitted_by, iq.trust_tier, iq.created_at, iq.proposed_nodes, iq.proposed_edges, s.title, s.content, s.source_url, s.source_type, n.name as target_name, n.type as target_type, n.slug as target_slug FROM intake_queue iq LEFT JOIN signals s ON iq.signal_id = s.id LEFT JOIN nodes n ON iq.target_node = n.id WHERE iq.status='pending' AND iq.kind='human_signal' ORDER BY iq.created_at DESC"
+        "SELECT iq.id, iq.signal_id, iq.target_node, iq.submitted_by, iq.trust_tier, iq.created_at, iq.proposed_nodes, iq.proposed_edges, s.title, s.content, s.source_url, s.source_type, n.name as target_name, n.type as target_type, n.slug as target_slug FROM intake_queue iq LEFT JOIN signals_full s ON iq.signal_id = s.id LEFT JOIN nodes n ON iq.target_node = n.id WHERE iq.status='pending' AND iq.kind='human_signal' ORDER BY iq.created_at DESC"
       )
       .all() as any[];
 
@@ -1086,7 +1086,7 @@ router.get("/review", (req, res) => {
   // recent decisions
   const recentDecisions = db
     .prepare(
-      "SELECT iq.id, iq.status, iq.kind, iq.reviewed_at, s.title, n.name as target_name FROM intake_queue iq LEFT JOIN signals s ON iq.signal_id = s.id LEFT JOIN nodes n ON iq.target_node = n.id WHERE iq.status != 'pending' ORDER BY iq.reviewed_at DESC LIMIT 10"
+      "SELECT iq.id, iq.status, iq.kind, iq.reviewed_at, s.title, n.name as target_name FROM intake_queue iq LEFT JOIN signals_full s ON iq.signal_id = s.id LEFT JOIN nodes n ON iq.target_node = n.id WHERE iq.status != 'pending' ORDER BY iq.reviewed_at DESC LIMIT 10"
     )
     .all() as any[];
 

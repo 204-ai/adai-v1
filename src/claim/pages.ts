@@ -117,7 +117,7 @@ export function claimReviewCards(db: DatabaseSync, kind: "claim" | "contest" | "
       } else if (n.meta_key) {
         html += `<h3>${nodeLink(db, n.node_id)} · <code>${esc(n.meta_key)}</code></h3><p class='meta'>Written by signal <code>${esc(n.edit_signal_id)}</code>. Upholding restores the value from before that edit, when one was recorded.</p>`;
       }
-      const sig = db.prepare("SELECT source_url, consent_scope, consent_attribution FROM signals WHERE id = ?").get(n.signal_id) as any;
+      const sig = db.prepare("SELECT source_url, consent_scope, consent_attribution FROM signals_full WHERE id = ?").get(n.signal_id) as any;
       const consent = [
         sig?.consent_attribution === "anonymous" ? "anonymous — the public sees “someone”" : "",
         sig?.consent_scope === "structural_only" ? "structural only — the public does not see these words" : "",

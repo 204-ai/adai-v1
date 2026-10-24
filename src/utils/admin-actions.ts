@@ -24,6 +24,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { mergeMetadata, priorValues, recordPrior } from "./contribution.js";
 import { keepOldSlug } from "./moved.js";
 import { slugify } from "./slug.js";
+import { insertSignalRow, priorsOf, stripBeforeImages, withholdSignal } from "./signal-private.js";
 
 export class AdminActionError extends Error {
   constructor(
@@ -63,15 +64,19 @@ export function insertAdminSignal(
   args: { by: string; title: string; content: unknown }
 ): string {
   const id = `signal-${crypto.randomBytes(8).toString("hex")}`;
-  db.prepare(
-    `INSERT INTO signals (
-       id, title, source_url, source_type, cla_layer, summary, content,
-       submitted_by, confidence, lived_experience,
-       consent_scope, consent_attribution, source_origin, batch_id
-     ) VALUES (?, ?, NULL, 'api_admin', NULL, NULL, ?,
-               ?, 'high', 0,
-               'full_commons', 'attributed', 'human_primary', NULL)`
-  ).run(id, args.title, JSON.stringify(args.content), args.by);
+  // An admin record never carries before-images in the CRR (a batch
+  // retirement's patches_to_review list them): the full record is kept in
+  // signal_private, the CRR gets it without the values.
+  const { stripped, had } = stripBeforeImages(args.content);
+  insertSignalRow(db, {
+    id, title: args.title, source_url: null, source_type: "api_admin", cla_layer: null, summary: null,
+    content: JSON.stringify(had ? stripped : args.content),
+    submitted_by: args.by, confidence: "high", lived_experience: 0,
+    consent_scope: "full_commons", consent_attribution: "attributed", source_origin: "human_primary", batch_id: null,
+  });
+  if (had) {
+    db.prepare("INSERT INTO signal_private (signal_id, reasons, content) VALUES (?, 'before_images', ?)").run(id, JSON.stringify(args.content));
+  }
   return id;
 }
 
@@ -106,6 +111,9 @@ export function revokeSignal(
       content: { action: "revoke_signal", signal_id: signalId, reason: opts.reason },
     });
     db.prepare("UPDATE signals SET status = 'revoked' WHERE id = ?").run(signalId);
+    // Its words leave the CRR (kept in signal_private): a cell change every
+    // fork receives on its next pull.
+    withholdSignal(db, signalId, "revoked");
     let edges = 0;
     if (opts.cascade !== false) {
       const r = db
@@ -229,21 +237,15 @@ export interface RetireBatchResult extends BatchRetirePlan {
 // recordPrior in contribution.ts), or null when none was recorded.
 function priorFor(db: DatabaseSync, signalId: string | null, op: string, nodeId: string): Record<string, unknown> | null {
   if (!signalId) return null;
-  const row = db.prepare("SELECT processing_trace FROM signals WHERE id = ?").get(signalId) as any;
-  if (!row?.processing_trace) return null;
-  try {
-    const prior = JSON.parse(row.processing_trace)?.prior;
-    const hit = Array.isArray(prior) ? prior.find((p: any) => p?.op === op && p?.node_id === nodeId) : null;
-    return hit?.before ?? null;
-  } catch {
-    return null;
-  }
+  const hit = priorsOf(db, signalId).find((p) => p.op === op && p.node_id === nodeId);
+  return hit?.before ?? null;
 }
 
 function buildBatchPlan(db: DatabaseSync, batchId: string): BatchRetirePlan & { signalIds: string[] } {
   const signals = db
     .prepare(
-      "SELECT id, submitted_by, created_at, status FROM signals WHERE batch_id = ? ORDER BY created_at ASC"
+      // signals_full: an anonymous signal's batch id is on the private side
+      "SELECT id, submitted_by, created_at, status FROM signals_full WHERE batch_id = ? ORDER BY created_at ASC"
     )
     .all(batchId) as Array<{ id: string; submitted_by: string; created_at: string; status: string }>;
   if (signals.length === 0) {
@@ -387,9 +389,11 @@ export function retireBatch(
       },
     });
 
+    const active = (db.prepare(`SELECT id FROM signals WHERE id IN (${placeholders}) AND status = 'active'`).all(...signalIds) as any[]).map((r) => r.id as string);
     const revoked = db
-      .prepare("UPDATE signals SET status = 'revoked' WHERE batch_id = ? AND status = 'active'")
-      .run(batchId);
+      .prepare(`UPDATE signals SET status = 'revoked' WHERE id IN (${placeholders}) AND status = 'active'`)
+      .run(...signalIds);
+    for (const id of active) withholdSignal(db, id, "revoked");
 
     const superseded = db
       .prepare(
@@ -457,7 +461,7 @@ export function listBatches(
               GROUP_CONCAT(DISTINCT submitted_by) AS contributors,
               MIN(created_at) AS first_at,
               MAX(created_at) AS last_at
-         FROM signals
+         FROM signals_full
         WHERE ${where.join(" AND ")}
         GROUP BY batch_id
         ORDER BY last_at DESC
@@ -469,7 +473,7 @@ export function listBatches(
     .prepare(
       `SELECT s.batch_id AS batch_id, q.status AS status, COUNT(*) AS n
          FROM intake_queue q
-         JOIN signals s ON s.id = q.signal_id
+         JOIN signals_full s ON s.id = q.signal_id
         WHERE s.batch_id IS NOT NULL
         GROUP BY s.batch_id, q.status`
     )

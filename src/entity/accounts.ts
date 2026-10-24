@@ -101,7 +101,7 @@ function contributions(db: DatabaseSync, nodeId: string, cursor: AccountCursor |
             EXISTS (SELECT 1 FROM node_claims c WHERE c.contributor_id = sa.contributor_id AND c.node_id = :node AND c.status = 'approved') AS claimant_now,
             tn.id AS tn_id, tn.type AS tn_type, tn.slug AS tn_slug, tn.name AS tn_name
        FROM intake_queue iq
-       JOIN signals s ON s.id = iq.signal_id
+       JOIN signals_full s ON s.id = iq.signal_id
        LEFT JOIN signal_authors sa ON sa.signal_id = s.id
        LEFT JOIN contributors k ON k.id = sa.contributor_id
        LEFT JOIN nodes tn ON tn.id = (SELECT t.node_id FROM contributor_tokens t
@@ -143,7 +143,7 @@ function contributions(db: DatabaseSync, nodeId: string, cursor: AccountCursor |
 }
 
 function countContributions(db: DatabaseSync, nodeId: string): number {
-  return Number((db.prepare(`SELECT COUNT(DISTINCT s.id) AS n FROM intake_queue iq JOIN signals s ON s.id = iq.signal_id ${CONTRIBUTIONS_WHERE}`).get({ node: nodeId }) as any).n);
+  return Number((db.prepare(`SELECT COUNT(DISTINCT s.id) AS n FROM intake_queue iq JOIN signals_full s ON s.id = iq.signal_id ${CONTRIBUTIONS_WHERE}`).get({ node: nodeId }) as any).n);
 }
 
 /** Node refs for many ids at once. */

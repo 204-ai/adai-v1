@@ -159,7 +159,9 @@ export interface FoundEvent { key: string; kind: EventKind; ref: EventRef; at: s
 /** The raw submitter of a signal (consent hides it from the line, not from this check). */
 function submitterOf(db: DatabaseSync, signalId: string | null | undefined): string | null {
   if (!signalId) return null;
-  return (db.prepare("SELECT submitted_by FROM signals WHERE id = ?").get(signalId) as any)?.submitted_by ?? null;
+  // signals_full: an anonymous signal's author is on the private side, and
+  // their own contribution is still theirs (not news to them).
+  return (db.prepare("SELECT submitted_by FROM signals_full WHERE id = ?").get(signalId) as any)?.submitted_by ?? null;
 }
 
 function liveEvents(db: DatabaseSync, subj: Subject, events: HistoryEvent[], floor: string): FoundEvent[] {

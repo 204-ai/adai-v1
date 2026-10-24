@@ -2,6 +2,7 @@
 // materialises, probationary queues ONE row that approveIntakeItem replays,
 // everything rolls back on a throw, and nothing leaves the draft unaccepted.
 
+import { priorsOf } from "../src/utils/signal-private.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { freshDb, insertNode } from "./helpers.js";
@@ -155,7 +156,8 @@ describe("confirmDraft", () => {
     // The approval recorded what the image write replaced on that op's signal.
     const trace = JSON.parse((db.prepare("SELECT processing_trace FROM signals WHERE id = ?").get(imageSignal) as any).processing_trace);
     assert.deepEqual(trace.prior.map((p: any) => [p.op, p.node_id]), [["attach_image", "artwork:process-4"]]);
-    assert.deepEqual(trace.prior[0].before, { cdn_image_url: null, image_url: null, image_sha256: null });
+    assert.equal(trace.prior[0].before, undefined, "the values are local, not in the CRR");
+    assert.deepEqual(priorsOf(db, imageSignal)[0].before, { cdn_image_url: null, image_url: null, image_sha256: null });
   });
 
   it("preserves reviewed question provenance and individual revocation", async () => {

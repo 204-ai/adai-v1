@@ -164,7 +164,7 @@ router.get("/api/v1/contributions", requireToken, (req, res) => {
               q.proposed_nodes, q.proposed_edges,
               s.title AS title, s.source_type AS source_type, s.batch_id AS batch_id
          FROM intake_queue q
-         LEFT JOIN signals s ON s.id = q.signal_id
+         LEFT JOIN signals_full s ON s.id = q.signal_id
         WHERE ${where.join(" AND ")}
         ORDER BY q.created_at DESC
         LIMIT ?`
@@ -1040,7 +1040,7 @@ router.get("/api/v1/review", requireAdmin, (req, res) => {
               q.proposed_nodes, q.proposed_edges,
               s.title AS title, s.source_type AS source_type, s.batch_id AS batch_id
          FROM intake_queue q
-         LEFT JOIN signals s ON s.id = q.signal_id
+         LEFT JOIN signals_full s ON s.id = q.signal_id
         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
         ORDER BY q.created_at DESC
         LIMIT ?`
@@ -1117,7 +1117,7 @@ router.post("/api/v1/review/bulk", requireAdmin, (req, res) => {
   if (typeof batch_id === "string" && batch_id) { where.push("s.batch_id = ?"); params.push(batch_id); }
   if (typeof contributor === "string" && contributor) { where.push("q.submitted_by = ?"); params.push(contributor); }
 
-  const matchSql = `FROM intake_queue q LEFT JOIN signals s ON s.id = q.signal_id WHERE ${where.join(" AND ")}`;
+  const matchSql = `FROM intake_queue q LEFT JOIN signals_full s ON s.id = q.signal_id WHERE ${where.join(" AND ")}`;
   const { count: matched } = db.prepare(`SELECT COUNT(*) AS count ${matchSql}`).get(...params) as any;
   const rows = db
     .prepare(`SELECT q.id ${matchSql} ORDER BY q.created_at ASC LIMIT 500`)

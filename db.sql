@@ -502,6 +502,78 @@ CREATE TABLE IF NOT EXISTS signal_authors (
 );
 CREATE INDEX IF NOT EXISTS idx_signal_authors_contributor ON signal_authors(contributor_id);
 
+-- === THE PRIVATE SIDE OF SIGNALS (public CRDT sync) ===
+-- The CRR tables only ever hold what the commons publishes: anyone can fork
+-- them by pulling cr-sqlite's own change stream (GET /api/sync/changes). So
+-- whatever a signal must not publish lives here, local, and its CRR cells are
+-- blank (src/utils/signal-private.ts):
+--   structural_only / revoked / rejected / withdrawn — the words: title,
+--       summary, content, source_url, provenance_chain, processing_trace
+--       (CRR cells NULL);
+--   anonymous — who: submitted_by (CRR 'anonymous'), batch_id and
+--       provenance_chain (CRR NULL) — correlation handles;
+--   before_images — an admin record whose content carried before-images
+--       (a batch retirement's patches_to_review): the CRR keeps the record
+--       without the values.
+-- One row per signal; each column holds the ORIGINAL value of a CRR cell
+-- that was blanked, NULL where nothing was moved. Never deleted: "nothing is
+-- ever deleted" holds on the operator's side; back-office surfaces read the
+-- originals through the signals_full view below.
+CREATE TABLE IF NOT EXISTS signal_private (
+    signal_id        TEXT PRIMARY KEY NOT NULL,
+    reasons          TEXT NOT NULL,                  -- comma set: structural_only, revoked, rejected, withdrawn, anonymous, before_images
+    title            TEXT,
+    summary          TEXT,
+    content          TEXT,
+    source_url       TEXT,
+    provenance_chain TEXT,
+    processing_trace TEXT,
+    submitted_by     TEXT,
+    batch_id         TEXT,
+    moved_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_signal_private_batch ON signal_private(batch_id);
+CREATE INDEX IF NOT EXISTS idx_signal_private_by ON signal_private(submitted_by);
+
+-- Before-images (recordPrior, src/utils/contribution.ts): what a node write
+-- replaced. They can hold values removed on purpose (an upheld contest, a
+-- takedown), so they are local; the signal's CRR processing_trace keeps only
+-- {"prior": [{op, node_id, at}]} — index `idx` of that list is this row.
+CREATE TABLE IF NOT EXISTS signal_priors (
+    signal_id   TEXT NOT NULL,
+    idx         INTEGER NOT NULL,
+    op          TEXT NOT NULL,
+    node_id     TEXT NOT NULL,
+    at          TEXT,
+    updated_by  TEXT,                                -- the previous writer label
+    before      TEXT,                                -- JSON: {key: old value | null}
+    PRIMARY KEY (signal_id, idx)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_priors_node ON signal_priors(node_id);
+
+-- A signal as the operator knows it: the CRR row with the private originals
+-- laid back over it. Back office only (/review, admin audit, the owner's own
+-- receipts and history); a public surface reads `signals`. A view, so never
+-- a CRR and never in the change stream.
+CREATE VIEW IF NOT EXISTS signals_full AS
+  SELECT s.id,
+         COALESCE(p.title, s.title)                       AS title,
+         COALESCE(p.source_url, s.source_url)             AS source_url,
+         s.source_type, s.cla_layer,
+         COALESCE(p.summary, s.summary)                   AS summary,
+         COALESCE(p.content, s.content)                   AS content,
+         COALESCE(p.submitted_by, s.submitted_by)         AS submitted_by,
+         s.confidence, s.lived_experience, s.created_at,
+         s.consent_scope, s.consent_attribution, s.consent_revocable,
+         COALESCE(p.processing_trace, s.processing_trace) AS processing_trace,
+         s.source_origin,
+         COALESCE(p.batch_id, s.batch_id)                 AS batch_id,
+         s.status,
+         COALESCE(p.provenance_chain, s.provenance_chain) AS provenance_chain,
+         p.reasons                                        AS private_reasons
+    FROM signals s LEFT JOIN signal_private p ON p.signal_id = s.id;
+
 -- The accounts section reads approved rows by target node, and notes by
 -- either end of a relation.
 CREATE INDEX IF NOT EXISTS idx_intake_target ON intake_queue(target_node, status);
