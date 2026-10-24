@@ -40,12 +40,19 @@ function main(): void {
     for (const x of r.notes.ids) console.log(`notes\t${x.id}\t${x.reason}`);
     for (const id of r.rejected.ids) console.log(`rejected\t${id}`);
     for (const id of r.pending.ids) console.log(`pending\t${id}`);
+    for (const id of r.private_batches.ids) console.log(`private_batch\t${id}`);
+    for (const id of r.anonymous_graph) console.log(`ANONYMOUS_GRAPH (not moved — clean by hand)\t${id}`);
   }
   console.error(
     `[privacy] ${r.priors.signals} signals / ${r.priors.entries} before-images, ${r.words.signals} withheld words, ` +
-      `${r.anonymous.signals} anonymous, ${r.admin_before_images.signals} admin records, ${r.notes.signals} notes, ${r.rejected.signals} rejected, ${r.pending.signals} pending review` +
+      `${r.anonymous.signals} anonymous, ${r.admin_before_images.signals} admin records, ${r.notes.signals} notes, ${r.rejected.signals} rejected, ${r.pending.signals} pending review, ${r.private_batches.signals} private batch records` +
       (dryRun ? " (dry run, nothing written)" : ` — moved; left: ${JSON.stringify(r.left)}`)
   );
+  if (r.anonymous_graph.length) {
+    console.error(`[privacy] ⚠️ ${r.anonymous_graph.length} rows still attribute anonymous contributions to their author (legacy edges.created_by / edge ids / nodes.updated_by). ` +
+      "The migration does not rewrite them; /api/sync stays closed until they are cleaned by hand (docs/PUBLIC-SYNC.md).");
+    process.exitCode = 3;
+  }
 }
 
 try {

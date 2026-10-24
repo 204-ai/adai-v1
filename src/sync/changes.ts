@@ -25,6 +25,8 @@ export const SYNC_FORMAT = "adai-crsql-changes/1";
 export const CRR_TABLES = ["nodes", "edges", "signals", "contributors", "node_aliases"] as const;
 export const DEFAULT_LIMIT = 5000;
 export const MAX_LIMIT = 20000;
+/** About this many bytes of encoded changes per page (the JSON array, before gzip). */
+export const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
 
 export type EncodedVal = null | string | number | { i: string } | { r: number | string } | { b: string };
 export type WireChange = [string, string, string, EncodedVal, number, number, string | null, number, number];
@@ -128,18 +130,21 @@ const CHANGES_SQL = `SELECT "table" AS tbl, pk, cid, val, col_version, db_versio
   FROM crsql_changes`;
 
 /**
- * One page of changes after the cursor, at most `limit`, ordered by
- * (db_version, seq). Pages end on whole db_versions (a transaction is never
- * split) — except a single transaction larger than the limit (the genesis
- * load, a nightly re-derive), which is delivered in seq order across pages
- * with a "<db_version>:<seq>" cursor. One read transaction, so a page is a
- * consistent picture while the server writes; a cell written later leaves
- * its old db_version for a newer one, so nothing behind a cursor is ever
- * missed.
+ * One page of changes after the cursor, ordered by (db_version, seq), within
+ * two budgets: at most `limit` changes and about `maxBytes` of encoded JSON.
+ * Pages end on whole db_versions (a transaction is never split) — except a
+ * single transaction larger than a budget (the genesis load, a nightly
+ * re-derive), delivered in seq order across pages with a
+ * "<db_version>:<seq>" cursor. A page always carries at least one change, so
+ * a single cell larger than `maxBytes` makes a page of its own (over budget).
+ * One read transaction: a consistent picture while the server writes; a cell
+ * written later leaves its old db_version for a newer one, so nothing behind
+ * a cursor is ever missed.
  */
-export function readChanges(db: DatabaseSync, since: Cursor | number, limit = DEFAULT_LIMIT): ChangesPage {
+export function readChanges(db: DatabaseSync, since: Cursor | number, limit = DEFAULT_LIMIT, maxBytes = DEFAULT_MAX_BYTES): ChangesPage {
   const cur: Cursor = typeof since === "number" ? { v: since, seq: null } : since;
   const lim = Math.max(1, Math.min(MAX_LIMIT, Math.floor(limit)));
+  const budget = Math.max(1, Math.floor(maxBytes));
   db.exec("BEGIN");
   try {
     const head = db.prepare("SELECT hex(crsql_site_id()) AS site, crsql_db_version() AS v").get() as any;
@@ -147,47 +152,50 @@ export function readChanges(db: DatabaseSync, since: Cursor | number, limit = DE
     const within = db.prepare(`${CHANGES_SQL} WHERE db_version = ? AND seq > ? ORDER BY seq LIMIT ?`);
     rest.setReadBigInts(true);
     within.setReadBigInts(true);
-    let rows: any[] = [];
-    let next: Cursor = { v: cur.v, seq: null };
+    // candidates: the rest of a transaction split by an earlier page, then what follows
+    let rows: any[] = cur.seq !== null ? (within.all(BigInt(cur.v), BigInt(cur.seq), BigInt(lim + 1)) as any[]) : [];
+    if (rows.length < lim + 1) rows = rows.concat(rest.all(BigInt(cur.v), BigInt(lim + 1 - rows.length)) as any[]);
+
+    const out: Array<{ c: WireChange; v: bigint; seq: bigint }> = [];
+    let bytes = 0;
+    let stop = -1; // the first candidate not taken
+    for (let i = 0; i < rows.length; i++) {
+      if (out.length >= lim) { stop = i; break; }
+      const r = rows[i];
+      const c: WireChange = [
+        String(r.tbl),
+        Buffer.from(r.pk as Uint8Array).toString("base64"),
+        String(r.cid),
+        encodeVal(r.val),
+        toNum(r.col_version),
+        toNum(r.db_version),
+        hex(r.site_id),
+        toNum(r.cl),
+        toNum(r.seq),
+      ];
+      const size = JSON.stringify(c).length + 1;
+      if (out.length && bytes + size > budget) { stop = i; break; }
+      out.push({ c, v: r.db_version as bigint, seq: r.seq as bigint });
+      bytes += size;
+    }
+
+    let page = out;
     let more = false;
-    // the rest of a transaction split by an earlier page
-    if (cur.seq !== null) rows = within.all(BigInt(cur.v), BigInt(cur.seq), BigInt(lim + 1)) as any[];
-    if (rows.length > lim) {
-      rows = rows.slice(0, lim);
-      more = true;
-      next = { v: cur.v, seq: Number(rows[rows.length - 1].seq) };
+    let next: Cursor;
+    if (stop < 0) {
+      next = { v: out.length ? Number(out[out.length - 1]!.v) : cur.v, seq: null };
     } else {
-      const room = lim - rows.length;
-      const after = rest.all(BigInt(cur.v), BigInt(room + 1)) as any[];
-      if (after.length <= room) {
-        rows = rows.concat(after);
-        if (after.length) next = { v: Number(after[after.length - 1].db_version), seq: null };
+      more = true;
+      const cut = rows[stop].db_version as bigint; // the first version not wholly in the page
+      const whole = out.filter((x) => x.v < cut);
+      if (whole.length) {
+        page = whole;
+        next = { v: Number(whole[whole.length - 1]!.v), seq: null };
       } else {
-        more = true;
-        const cut = after[room].db_version as bigint; // the first version not wholly in the window
-        const whole = after.slice(0, room).filter((r) => (r.db_version as bigint) < cut);
-        if (whole.length) {
-          rows = rows.concat(whole);
-          next = { v: Number(whole[whole.length - 1].db_version), seq: null };
-        } else if (!rows.length) {
-          // one transaction larger than the limit: deliver it in seq order
-          rows = after.slice(0, lim);
-          next = { v: Number(cut), seq: Number(rows[rows.length - 1].seq) };
-        }
-        // else: only the remainder of the split transaction fits; next = its version, whole
+        // everything taken is one transaction that does not fit: split it by seq
+        next = { v: Number(cut), seq: Number(out[out.length - 1]!.seq) };
       }
     }
-    const changes: WireChange[] = rows.map((r) => [
-      String(r.tbl),
-      Buffer.from(r.pk as Uint8Array).toString("base64"),
-      String(r.cid),
-      encodeVal(r.val),
-      toNum(r.col_version),
-      toNum(r.db_version),
-      hex(r.site_id),
-      toNum(r.cl),
-      toNum(r.seq),
-    ]);
     return {
       format: SYNC_FORMAT,
       site_id: String(head.site).toLowerCase(),
@@ -195,8 +203,8 @@ export function readChanges(db: DatabaseSync, since: Cursor | number, limit = DE
       next: formatCursor(next),
       more,
       db_version: Number(head.v),
-      count: changes.length,
-      changes,
+      count: page.length,
+      changes: page.map((x) => x.c),
     };
   } finally {
     try { db.exec("COMMIT"); } catch { /* nothing to commit */ }

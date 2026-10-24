@@ -169,8 +169,15 @@ blank (`src/utils/signal-private.ts`):
 - **who** — `anonymous`: `submitted_by` → `'anonymous'`, `batch_id` and
   `provenance_chain` → NULL; the real author stays in `signal_private` and
   `signal_authors`; writes it anchors are labelled `anonymous` (`edges.created_by`,
-  hence the edge id, `nodes.updated_by`) and its counters go to the sentinel
-  contributor `contributor:anonymous`;
+  `nodes.updated_by`; the edge id is `…--anonymous--<signal id>`, one row per
+  attesting signal) and its counters go to the sentinel contributor
+  `contributor:anonymous` (`ensureContributorRow` / `bumpApprovedCount` take the
+  signal id — required). A batch holding an anonymous signal has a private
+  handle: its retirement record is public as `Retire batch: correction-<hex>`
+  (the full record in `signal_private`, reason `private_batch`);
+- **the public form's name** — a `POST /api/contribute` in review holds back
+  `submitted_by` too (`pending_name`, CRR NULL) and writes no contributors row;
+  approval publishes the name and writes / bumps the row (`approveIntakeItem`);
 - **before-images** — `recordPrior` writes the values to **`signal_priors`**
   (`signal_id, idx, op, node_id, at, updated_by, before`); the CRR trace keeps
   `{"prior":[{op, node_id, at}]}`. An admin record carrying them (retire_batch's
@@ -187,8 +194,15 @@ digest, an owner's receipt and `/me` log, batch tools) reads **`signals_full`**
 (the CRR row with the originals laid over it); a public surface reads `signals`
 and must never output a `signals_full` value. A new private column means a local
 table, never a CRR column. Existing data: `npm run privacy:migrate -- --dry-run`,
-then without (idempotent, one transaction); `initDb` warns at boot while rows are
-left, and the sync endpoint answers 503 until none are.
+then without (idempotent, one transaction; it verifies every kept original EQUALS
+the CRR value before blanking and aborts on a conflict — `PrivacyConflictError`,
+`signal_priors conflict`); `initDb` warns at boot while rows are left, and the
+sync endpoint answers 503 until none are. One kind it never moves:
+**legacy anonymous graph attribution** (`anonymousGraphAttribution()`: edges /
+edge ids / references / `nodes.updated_by` an anonymous signal wrote under its
+author's name before the labelling) — rewriting edge ids is hand work, so sync
+stays closed (`503 anonymous_graph_attribution`) until an operator cleans them
+(prod had none when this shipped).
 
 **Node types**: `artwork`, `practitioner`, `concept`, `classification_regime`,
 `collective`, `platform`, `institution` (schema reserves `scene`, `publication`,
@@ -520,8 +534,12 @@ no per-cell filtering.
   beyond 2^53, real = `{"r":n}`, blob = `{"b":base64}`, null). Ordered by
   `(db_version, seq)` in one read transaction; pages end on whole db_versions,
   except one transaction bigger than the limit (the genesis load, a nightly
-  re-derive), split by seq with a `"<db_version>:<seq>"` cursor. `since=0` = all.
-  gzip; `Cache-Control` 5–30 s; no auth; 240 requests / 10 min per client;
+  re-derive), split by seq with a `"<db_version>:<seq>"` cursor. A page also keeps
+  a byte budget (~4 MB of encoded JSON, `DEFAULT_MAX_BYTES`), cut by the same
+  rule; a single cell bigger than that is a page of its own. `since=0` = all.
+  gzip off the request thread (async zlib); `Cache-Control` 5–30 s; no auth;
+  240 requests / 10 min per client (`clientIp`: `Fly-Client-IP`, else the last
+  `X-Forwarded-For` hop);
   `PUBLIC_SYNC=off` disables it; 503 while `privacyBacklog()` is not zero.
   Code: `src/sync/changes.ts`, `src/routes/sync.ts` — its own route, never the
   stamp-pinned `/api/graph/stream`.

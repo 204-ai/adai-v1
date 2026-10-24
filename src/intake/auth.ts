@@ -98,8 +98,17 @@ export function loginRateOk(email: string, ip: string | null): boolean {
   return okEmail && okIp;
 }
 
+/**
+ * The client's address for rate limits. On Fly the proxy sets Fly-Client-IP
+ * (a client cannot forge it: the proxy overwrites it); behind another proxy
+ * the LAST X-Forwarded-For hop is the one the proxy itself appended — the
+ * first is whatever the client sent. Without a proxy, the socket.
+ */
 export function clientIp(req: Request): string | null {
-  return req.header("x-forwarded-for")?.split(",")[0]?.trim() || req.socket.remoteAddress || null;
+  const fly = req.header("fly-client-ip")?.trim();
+  if (fly) return fly;
+  const hops = (req.header("x-forwarded-for") ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+  return hops[hops.length - 1] || req.socket.remoteAddress || null;
 }
 
 // ---- magic links ---------------------------------------------------------

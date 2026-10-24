@@ -1447,7 +1447,7 @@ export async function confirmDraft(
     }
 
     if (auto) {
-      bumpApprovedCount(db, contributor.id);
+      bumpApprovedCount(db, contributor.id, anchorId);
     } else {
       const { intake_id } = insertIntake(db, {
         contributor,
@@ -1458,7 +1458,7 @@ export async function confirmDraft(
       });
       intakeIds.push(intake_id);
     }
-    ensureContributorRow(db, contributor);
+    ensureContributorRow(db, contributor, anchorId);
 
     touch(db, draft.id, {
       status: "submitted",

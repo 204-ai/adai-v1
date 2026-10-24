@@ -25,6 +25,8 @@ Tests: `tests/public-sync.test.ts`.
 | an `anonymous` signal's author | `submitted_by='anonymous'`, `batch_id`, `provenance_chain` NULL; edges/nodes it writes labelled `anonymous`; counters on `contributor:anonymous` | `signal_private.submitted_by/batch_id/provenance_chain`, `signal_authors` |
 | before-images (`recordPrior`) | `processing_trace.prior = [{op, node_id, at}]` | `signal_priors (signal_id, idx, op, node_id, at, updated_by, before)` |
 | an admin record with before-images (retire_batch `patches_to_review`) | the record without `before` | `signal_private.content` (reason `before_images`) |
+| the retirement record of a batch holding an anonymous signal | `Retire batch: correction-<hex>`, content without `batch_id` | `signal_private.title/content` (reason `private_batch`) |
+| the typed name of a public-form contribution in review | `submitted_by` NULL, no contributors row | `signal_private.submitted_by` (reason `pending_name`); the row is written on approval |
 
 `signals_full` (a view) lays the originals back over the CRR row for the back
 office. Pending words go public on approval (`publishQueued` /
@@ -45,10 +47,13 @@ office. Pending words go public on approval (`publishQueued` /
   attributed published signals (`/history` shows `proposed_as`, `picked_from`;
   `provenance_chain.summary` is the reader's summary of the public site — not
   shown anywhere, kept), admin records' reasons (public by design).
-- **contributors** — `trust_tier` and counts stay (decided: policy). ⚠️ The
-  public form (`POST /api/contribute`) creates a contributors row under the
-  name typed in, at submission, even while the contribution waits in review —
-  a typed name is public at once (unless the contribution is anonymous).
+- **contributors** — `trust_tier` and counts stay (decided: policy). The public
+  form writes its contributors row only when the contribution is approved.
+  Rows created by the old code for form names whose contributions were never
+  approved stay (a delete would be a CRR change of its own; decide by hand).
+- **claims** — the dedup key of a structural_only claim is derived from its
+  withheld URL; it is internal: `GET /api/edge/attribution` serialises an
+  opaque `source-<n>` id per source, never the key.
 - **node_aliases** — handles (public by design), old slugs, evidence page URLs,
   platform ids; written only by published writes.
 
@@ -67,6 +72,21 @@ left. The originals stay in `signal_private` / `signal_priors` on the volume
 (Litestream-replicated like the rest). Litestream's older WAL generations in
 the private backup bucket still hold the pre-migration values — they are the
 operator's, never public.
+
+## Legacy anonymous graph attribution (clean by hand)
+
+Before anonymous writes were labelled, an anonymous signal's edges carried
+`created_by='api-<name>'` and an id ending in it, and nodes it wrote carried
+`updated_by='api-<name>'`. The migration does not rewrite those (an edge id is
+a primary key referenced by `invalidated_by`, and a superseded row is in the
+stream too). `privacyBacklog().anonymous_graph` / `anonymousGraphAttribution()`
+find them — current and historical rows, author-bearing ids and the edges that
+reference them — and `/api/sync/*` answers `503 anonymous_graph_attribution`
+while any exist; `privacy:migrate` lists them (`ANONYMOUS_GRAPH …`, exit 3).
+Prod had 0 anonymous signals when this shipped. If it ever reports rows: re-make
+each relation with a new id (`…--anonymous--<signal id>`, `created_by
+'anonymous'`), supersede the old one, then decide by hand what to do with the old
+rows (they stay in the stream until they no longer name the author).
 
 ## Limits
 

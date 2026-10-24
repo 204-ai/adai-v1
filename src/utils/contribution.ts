@@ -25,7 +25,7 @@ import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { isAutoMerge, type AuthedContributor } from "../auth.js";
 import { contributionWritten } from "../notify/kick.js";
-import { appendPrior, creditedContributor, insertSignalRow, writerLabelFor } from "./signal-private.js";
+import { ANONYMOUS, appendPrior, creditedContributor, insertSignalRow, writerLabelFor } from "./signal-private.js";
 
 export type ProposedNodeOp =
   | { op: "create_node"; type: string; name: string; slug: string; metadata?: any; aliases?: Array<{ source: string; external_id: string }> }
@@ -72,7 +72,7 @@ export function validateSourceUrl(
   return { ok: true, value: trimmed };
 }
 
-export function ensureContributorRow(db: DatabaseSync, contributor: AuthedContributor, signalId?: string | null): void {
+export function ensureContributorRow(db: DatabaseSync, contributor: AuthedContributor, signalId: string | null): void {
   // Keep `contributions` accurate. The contributor row already exists (we
   // joined to it on auth), so increment unconditionally — on the anonymous
   // sentinel for an anonymous signal (a real counter ticking with it would
@@ -84,7 +84,7 @@ export function ensureContributorRow(db: DatabaseSync, contributor: AuthedContri
 // (auto-merge) or later (curator approval). For the curator path the existing
 // /api/review approve handler already does this — we only call it from the
 // auto-merge path.
-export function bumpApprovedCount(db: DatabaseSync, contributorId: string, signalId?: string | null): void {
+export function bumpApprovedCount(db: DatabaseSync, contributorId: string, signalId: string | null): void {
   db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE id = ?").run(creditedContributor(db, contributorId, signalId));
 }
 
@@ -340,8 +340,13 @@ export function materialiseEdge(
   context: { signalId: string | null; createdBy: string }
 ): { edge_id: string; superseded: string | null } {
   // An anonymous signal's edge names no one: created_by (and so the id) is 'anonymous'.
-  context = { ...context, createdBy: writerLabelFor(db, edge.signal_id ?? context.signalId, context.createdBy) };
-  const base = `${edge.source_id}--${edge.edge_type}--${edge.target_id}--${context.createdBy}`;
+  // Each anonymous attestation is its own row, idempotent per signal: the
+  // anchoring signal id (public, names no one) discriminates, so two
+  // independent anonymous sources never collapse into one.
+  const anchor = edge.signal_id ?? context.signalId;
+  context = { ...context, createdBy: writerLabelFor(db, anchor, context.createdBy) };
+  const writer = context.createdBy === ANONYMOUS && anchor ? `${ANONYMOUS}--${anchor}` : context.createdBy;
+  const base = `${edge.source_id}--${edge.edge_type}--${edge.target_id}--${writer}`;
   const edgeId = edge.supersedes_edge_id
     ? `${base}--${crypto.randomBytes(4).toString("hex")}`
     : base;

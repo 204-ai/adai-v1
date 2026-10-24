@@ -79,8 +79,14 @@ export const CLAIM_COLS =
   "e.source_id, e.target_id, e.edge_type, e.created_by, s.source_url, s.submitted_by, s.consent_attribution, s.consent_scope, s.id AS claim_signal_id, " +
   "(SELECT sp.source_url FROM signal_private sp WHERE sp.signal_id = s.id AND s.consent_scope = 'structural_only') AS withheld_source_url";
 
-/** Every live claim of one relation, one entry per source. */
-export function claimsOf(db: DatabaseSync, source: string, target: string, type: string): Array<Origin & { attested_by: string | null; source_url: string | null; date: string | null }> {
+/**
+ * Every live claim of one relation, one entry per source — as served
+ * publicly (GET /api/edge/attribution). The dedup key (`originOf().key`) is
+ * internal and never serialised: for a structural_only claim it is derived
+ * from the withheld source URL. Each entry gets an opaque ordinal id instead.
+ */
+export interface PublicSource { id: string; label: string; attested_by: string | null; source_url: string | null; date: string | null }
+export function claimsOf(db: DatabaseSync, source: string, target: string, type: string): PublicSource[] {
   const rows = db
     .prepare(
       `SELECT ${CLAIM_COLS}, e.valid_from, e.event_time FROM edges e LEFT JOIN signals s ON s.id = e.signal_id
@@ -88,13 +94,14 @@ export function claimsOf(db: DatabaseSync, source: string, target: string, type:
         ORDER BY e.valid_from ASC`
     )
     .all(source, target, type) as any[];
-  const seen = new Map<string, Origin & { attested_by: string | null; source_url: string | null; date: string | null }>();
+  const seen = new Map<string, PublicSource>();
   for (const r of rows) {
     const o = originOf(r);
     if (seen.has(o.key)) continue;
     const anon = r.consent_attribution === "anonymous";
     seen.set(o.key, {
-      ...o,
+      id: `source-${seen.size + 1}`,
+      label: o.label,
       attested_by: r.submitted_by ? (anon ? "anonymous" : r.submitted_by) : null,
       source_url: r.consent_scope === "structural_only" ? null : r.source_url ?? null,
       date: String(r.event_time || r.valid_from || "").slice(0, 10) || null,

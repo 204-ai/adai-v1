@@ -61,23 +61,32 @@ function withTx<T>(db: DatabaseSync, fn: () => T): T {
 // the operator CLIs that write outside the HTTP surface.
 export function insertAdminSignal(
   db: DatabaseSync,
-  args: { by: string; title: string; content: unknown }
+  args: { by: string; title: string; content: unknown; publicView?: { title: string; content: unknown } }
 ): string {
   const id = `signal-${crypto.randomBytes(8).toString("hex")}`;
   // An admin record never carries before-images in the CRR (a batch
-  // retirement's patches_to_review list them): the full record is kept in
-  // signal_private, the CRR gets it without the values.
-  const { stripped, had } = stripBeforeImages(args.content);
+  // retirement's patches_to_review list them), nor a private handle (an
+  // anonymous contribution's batch id): the full record is kept in
+  // signal_private, the CRR gets its public view.
+  const pub = args.publicView ?? { title: args.title, content: args.content };
+  const { stripped, had } = stripBeforeImages(pub.content);
   insertSignalRow(db, {
-    id, title: args.title, source_url: null, source_type: "api_admin", cla_layer: null, summary: null,
-    content: JSON.stringify(had ? stripped : args.content),
+    id, title: pub.title, source_url: null, source_type: "api_admin", cla_layer: null, summary: null,
+    content: JSON.stringify(had ? stripped : pub.content),
     submitted_by: args.by, confidence: "high", lived_experience: 0,
     consent_scope: "full_commons", consent_attribution: "attributed", source_origin: "human_primary", batch_id: null,
   });
-  if (had) {
-    db.prepare("INSERT INTO signal_private (signal_id, reasons, content) VALUES (?, 'before_images', ?)").run(id, JSON.stringify(args.content));
+  const reasons = [...(had || stripBeforeImages(args.content).had ? ["before_images"] : []), ...(args.publicView ? ["private_batch"] : [])];
+  if (reasons.length) {
+    db.prepare("INSERT INTO signal_private (signal_id, reasons, title, content) VALUES (?, ?, ?, ?)")
+      .run(id, reasons.sort().join(","), args.publicView ? args.title : null, JSON.stringify(args.content));
   }
   return id;
+}
+
+/** Whether a batch id is private: some signal of it is anonymous (its batch id lives in signal_private only). */
+export function batchIsPrivate(db: DatabaseSync, batchId: string): boolean {
+  return !!db.prepare("SELECT 1 FROM signal_private WHERE batch_id = ? LIMIT 1").get(batchId);
 }
 
 // ---------- revoke a signal -------------------------------------------------
@@ -375,18 +384,26 @@ export function retireBatch(
 
   const placeholders = signalIds.map(() => "?").join(",");
   return withTx(db, () => {
+    const record = {
+      action: "retire_batch",
+      batch_id: batchId,
+      reason: opts.reason,
+      signals: plan.signals_total,
+      nodes_retired: plan.nodes_to_retire,
+      nodes_skipped_preexisting: plan.nodes_skipped_preexisting,
+      patches_to_review: plan.patches_to_review,
+    };
+    // A batch with an anonymous contribution in it has a private handle: the
+    // public record names an opaque correction id instead (the operator's
+    // audit keeps the batch id, signal_private).
+    const correction = batchIsPrivate(db, batchId) ? `correction-${crypto.randomBytes(6).toString("hex")}` : null;
     const anchor = insertAdminSignal(db, {
       by: opts.by,
       title: `Retire batch: ${batchId}`,
-      content: {
-        action: "retire_batch",
-        batch_id: batchId,
-        reason: opts.reason,
-        signals: plan.signals_total,
-        nodes_retired: plan.nodes_to_retire,
-        nodes_skipped_preexisting: plan.nodes_skipped_preexisting,
-        patches_to_review: plan.patches_to_review,
-      },
+      content: record,
+      publicView: correction
+        ? { title: `Retire batch: ${correction}`, content: { ...record, batch_id: undefined, correction_id: correction } }
+        : undefined,
     });
 
     const active = (db.prepare(`SELECT id FROM signals WHERE id IN (${placeholders}) AND status = 'active'`).all(...signalIds) as any[]).map((r) => r.id as string);

@@ -275,8 +275,8 @@ router.post("/api/v1/signals", requireToken, (req, res) => {
     signal_id: signalId,
     target_node,
   });
-  ensureContributorRow(db, req.contributor!);
-  if (status === "approved") bumpApprovedCount(db, req.contributor!.id);
+  ensureContributorRow(db, req.contributor!, signalId);
+  if (status === "approved") bumpApprovedCount(db, req.contributor!.id, signalId);
 
   res.set(JSON_HEADERS).json({ signal_id: signalId, intake_id, status, target_node });
 });
@@ -389,8 +389,8 @@ router.post("/api/v1/nodes", requireToken, (req, res) => {
       target_node: computedId,
       proposed_nodes: [{ op: "create_node", type, name, slug, metadata: effectiveMetadata, aliases: aliasItems }],
     });
-    ensureContributorRow(db, req.contributor!);
-    bumpApprovedCount(db, req.contributor!.id);
+    ensureContributorRow(db, req.contributor!, signalId);
+    bumpApprovedCount(db, req.contributor!.id, signalId);
     // Embed the new node in the background; failures are caught by the
     // daily backfill in .github/workflows/embed-derive-daily.yml.
     embedNodeAsync(db, computedId);
@@ -412,7 +412,7 @@ router.post("/api/v1/nodes", requireToken, (req, res) => {
     target_node: computedId,
     proposed_nodes: [{ op: "create_node", type, name, slug, metadata: effectiveMetadata, aliases: aliasItems }],
   });
-  ensureContributorRow(db, req.contributor!);
+  ensureContributorRow(db, req.contributor!, signalId);
   res.set(JSON_HEADERS).json({
     node_id: computedId,
     created: false,
@@ -490,8 +490,8 @@ router.patch("/api/v1/nodes/:id", requireToken, (req, res) => {
       target_node: nodeId,
       proposed_nodes: [{ op: "patch_node", node_id: nodeId, metadata: patch }],
     });
-    ensureContributorRow(db, req.contributor!);
-    bumpApprovedCount(db, req.contributor!.id);
+    ensureContributorRow(db, req.contributor!, signalId);
+    bumpApprovedCount(db, req.contributor!.id, signalId);
     // Re-embed if the patched metadata changed text-derived content. The
     // (text_hash, image_hash) idempotency check in embedNodeNow makes this
     // a no-op when nothing meaningful shifted.
@@ -506,7 +506,7 @@ router.patch("/api/v1/nodes/:id", requireToken, (req, res) => {
     target_node: nodeId,
     proposed_nodes: [{ op: "patch_node", node_id: nodeId, metadata: patch }],
   });
-  ensureContributorRow(db, req.contributor!);
+  ensureContributorRow(db, req.contributor!, signalId);
   res.set(JSON_HEADERS).json({ node_id: nodeId, status, signal_id: signalId, intake_id });
 });
 
@@ -594,8 +594,8 @@ router.post("/api/v1/edges", requireToken, (req, res) => {
       target_node: target_id,
       proposed_edges: [proposed],
     });
-    ensureContributorRow(db, req.contributor!);
-    bumpApprovedCount(db, req.contributor!.id);
+    ensureContributorRow(db, req.contributor!, signalId);
+    bumpApprovedCount(db, req.contributor!.id, signalId);
     res.set(JSON_HEADERS).json({ edge_id, superseded, status: "approved", signal_id: signalId, intake_id, warnings });
     return;
   }
@@ -606,7 +606,7 @@ router.post("/api/v1/edges", requireToken, (req, res) => {
     target_node: target_id,
     proposed_edges: [proposed],
   });
-  ensureContributorRow(db, req.contributor!);
+  ensureContributorRow(db, req.contributor!, signalId);
   res.set(JSON_HEADERS).json({ status, signal_id: signalId, intake_id, warnings });
 });
 
@@ -734,8 +734,8 @@ router.post(
         target_node: nodeId,
         proposed_nodes: [op],
       });
-      ensureContributorRow(db, req.contributor!);
-      bumpApprovedCount(db, req.contributor!.id);
+      ensureContributorRow(db, req.contributor!, signalId);
+      bumpApprovedCount(db, req.contributor!.id, signalId);
       // Re-embed: artwork identity vectors fuse the image, so a new image
       // changes the embedding. embedNodeNow's image_hash check makes this
       // idempotent if the same bytes were already attached.
@@ -756,7 +756,7 @@ router.post(
       target_node: nodeId,
       proposed_nodes: [op],
     });
-    ensureContributorRow(db, req.contributor!);
+    ensureContributorRow(db, req.contributor!, signalId);
     res.set(JSON_HEADERS).json({
       node_id: nodeId,
       upload: upresult,

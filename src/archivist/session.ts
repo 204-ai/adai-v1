@@ -19,6 +19,7 @@ import type { Request, Response } from "express";
 import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { SESSION_WINDOW_SECONDS } from "./ratelimit.js";
+import { clientIp } from "../intake/auth.js";
 
 const COOKIE_NAME = "adai_arch";
 const MAX_AGE_S = 60 * 60 * 24 * 30; // 30 days
@@ -116,7 +117,7 @@ export function issueSession(db: DatabaseSync, req: Request, res: Response): Arc
   }
   const sessionId = crypto.randomBytes(16).toString("hex");
   const now = Date.now();
-  const ip = (req.header("x-forwarded-for")?.split(",")[0].trim()) || req.socket.remoteAddress || null;
+  const ip = clientIp(req);
   const ua = req.header("user-agent") || null;
   db.prepare(
     "INSERT INTO archivist_sessions (session_id, created_at, ip, user_agent, message_count, last_message_at) VALUES (?, ?, ?, ?, 0, NULL)"

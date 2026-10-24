@@ -28,6 +28,7 @@
 // never touch the CRR. Nothing is deleted: the originals stay on the
 // operator's side, read back through the signals_full view.
 
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 export const WORD_COLS = ["title", "summary", "content", "source_url", "provenance_chain", "processing_trace"] as const;
@@ -35,18 +36,19 @@ export const WHO_COLS = ["submitted_by", "batch_id", "provenance_chain"] as cons
 export type PrivateCol = (typeof WORD_COLS)[number] | (typeof WHO_COLS)[number];
 const ALL_COLS: PrivateCol[] = ["title", "summary", "content", "source_url", "provenance_chain", "processing_trace", "submitted_by", "batch_id"];
 
-export type WithholdReason = "structural_only" | "revoked" | "rejected" | "withdrawn" | "pending" | "objection" | "anonymous" | "before_images";
+export type WithholdReason = "structural_only" | "revoked" | "rejected" | "withdrawn" | "pending" | "pending_name" | "objection" | "anonymous" | "before_images" | "private_batch";
 
 /** Reasons that withhold the words (all but anonymous and before_images). */
-const wordReason = (r: string) => r !== "anonymous" && r !== "before_images" && r !== "";
+const wordReason = (r: string) => r !== "anonymous" && r !== "before_images" && r !== "private_batch" && r !== "pending_name" && r !== "";
 
 /** The name every anonymous signal carries in the CRR, and the sentinel contributor it is credited to. */
 export const ANONYMOUS = "anonymous";
 export const ANONYMOUS_CONTRIBUTOR_ID = "contributor:anonymous";
 
 /** What a blanked CRR cell holds. */
-function blankOf(col: PrivateCol): string | null {
-  return col === "submitted_by" ? ANONYMOUS : null;
+function blankOf(col: PrivateCol, reason?: WithholdReason): string | null {
+  // an anonymous signal says so; a name held back while in review is simply absent
+  return col === "submitted_by" && reason !== "pending_name" ? ANONYMOUS : null;
 }
 
 const nowIso = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -84,6 +86,8 @@ const mergeReasons = (a: string | null | undefined, b: string): string =>
 export function colsFor(reason: WithholdReason): readonly PrivateCol[] {
   if (reason === "anonymous") return WHO_COLS;
   if (reason === "before_images") return ["content"];
+  if (reason === "private_batch") return ["title", "content"];
+  if (reason === "pending_name") return ["submitted_by"];
   return WORD_COLS;
 }
 
@@ -104,18 +108,46 @@ function upsertPrivate(db: DatabaseSync, signalId: string, reason: string, origi
       `INSERT INTO signal_private (signal_id, reasons${cols.map((c) => `, ${c}`).join("")}) VALUES (?, ?${cols.map(() => ", ?").join("")})`
     ).run(signalId, reason, ...cols.map((c) => originals[c] as any));
   } else {
-    // An original already kept is never overwritten (a second withholding sees
-    // the blank, not the original).
+    // An original already kept is never overwritten (a second withholding
+    // sees the blank, not the original). A kept value that DIFFERS from the
+    // CRR value about to be blanked is a conflict: abort, never pick one —
+    // except the public view of a before_images record (the CRR content is
+    // the stripped projection of the kept original).
+    for (const c of cols) {
+      const k = existing[c];
+      if (k === null || k === undefined || k === originals[c]) continue;
+      if (projected(existing.reasons, c)) continue;
+      throw new PrivacyConflictError(signalId, c, k, originals[c]);
+    }
     const sets = cols.filter((c) => existing[c] === null || existing[c] === undefined);
     db.prepare(
       `UPDATE signal_private SET reasons = ?, updated_at = ?${sets.map((c) => `, ${c} = ?`).join("")} WHERE signal_id = ?`
     ).run(mergeReasons(existing.reasons, reason), nowIso(), ...sets.map((c) => originals[c] as any), signalId);
   }
-  // Verify before anything is blanked: every original is where it should be.
+  // Verify before anything is blanked: every original is kept, equal.
   const kept = db.prepare("SELECT * FROM signal_private WHERE signal_id = ?").get(signalId) as any;
   for (const c of cols) {
     if (originals[c] === null || originals[c] === undefined) continue;
     if (kept?.[c] === null || kept?.[c] === undefined) throw new Error(`signal_private: ${signalId}.${c} not kept; refusing to blank it`);
+    if (kept[c] !== originals[c] && !projected(kept.reasons, c)) {
+      throw new PrivacyConflictError(signalId, c, kept[c], originals[c]);
+    }
+  }
+}
+
+/** A CRR cell that holds a public projection of the kept original (not the original itself). */
+function projected(reasons: unknown, col: string): boolean {
+  return String(reasons ?? "").split(",").some((r) => (r === "before_images" || r === "private_batch") && (colsFor(r as WithholdReason) as readonly string[]).includes(col));
+}
+
+/** A private value already kept differs from the CRR value about to be blanked. */
+export class PrivacyConflictError extends Error {
+  constructor(public signalId: string, public col: string, kept: unknown, crr: unknown) {
+    super(
+      `signal_private conflict on ${signalId}.${col}: the kept original (${String(kept).length} chars) differs from the CRR value ` +
+        `(${String(crr).length} chars); nothing blanked — compare signal_private and signals for this id and resolve by hand`
+    );
+    this.name = "PrivacyConflictError";
   }
 }
 
@@ -139,7 +171,7 @@ export function withholdSignal(
     const cols = [...(opts.cols ?? colsFor(reason))];
     const row = db.prepare(`SELECT ${cols.join(", ")} FROM signals WHERE id = ?`).get(signalId) as any;
     if (!row) return false;
-    const target = (c: PrivateCol) => (opts.overrides && c in opts.overrides ? opts.overrides[c]! : blankOf(c));
+    const target = (c: PrivateCol) => (opts.overrides && c in opts.overrides ? opts.overrides[c]! : blankOf(c, reason));
     const originals: Partial<Record<PrivateCol, unknown>> = {};
     for (const c of cols) {
       const v = row[c];
@@ -187,8 +219,8 @@ export function insertSignalRow(db: DatabaseSync, row: SignalRow, extra: Withhol
       const originals: Partial<Record<PrivateCol, unknown>> = {};
       for (const c of colsFor(reason)) {
         const v = (row as any)[c];
-        if (v !== null && v !== undefined && v !== blankOf(c)) originals[c] = v;
-        crr[c] = blankOf(c);
+        if (v !== null && v !== undefined && v !== blankOf(c, reason)) originals[c] = v;
+        crr[c] = blankOf(c, reason);
       }
       upsertPrivate(db, row.id, reason, originals);
     }
@@ -224,24 +256,15 @@ export function publishSignal(db: DatabaseSync, signalId: string, reason: Withho
     const reasons = String(p.reasons ?? "").split(",").filter(Boolean);
     if (!reasons.includes(reason)) return false;
     const left = reasons.filter((r) => r !== reason);
-    let changed = false;
-    if (!left.some(wordReason)) {
-      const row = db.prepare(`SELECT ${WORD_COLS.join(", ")} FROM signals WHERE id = ?`).get(signalId) as any;
-      const back = WORD_COLS.filter((c) => p[c] !== null && p[c] !== undefined && row?.[c] !== p[c]);
-      // provenance stays private while the signal is anonymous
-      const cols = left.includes("anonymous") ? back.filter((c) => c !== "provenance_chain") : back;
-      if (cols.length) {
-        db.prepare(`UPDATE signals SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`).run(...cols.map((c) => p[c]), signalId);
-        changed = true;
-      }
-      const keep = left.length ? (left.includes("anonymous") ? WHO_COLS : ["content"]) : [];
-      const clear = WORD_COLS.filter((c) => !(keep as readonly string[]).includes(c));
-      if (!left.length) db.prepare("DELETE FROM signal_private WHERE signal_id = ?").run(signalId);
-      else db.prepare(`UPDATE signal_private SET reasons = ?, updated_at = ?${clear.map((c) => `, ${c} = NULL`).join("")} WHERE signal_id = ?`).run(left.join(","), nowIso(), signalId);
-    } else {
-      db.prepare("UPDATE signal_private SET reasons = ?, updated_at = ? WHERE signal_id = ?").run(left.join(","), nowIso(), signalId);
-    }
-    return changed;
+    // what the remaining reasons still hold back stays private; the rest goes back
+    const still = new Set<string>(left.flatMap((r) => [...colsFor(r as WithholdReason)]));
+    const row = db.prepare(`SELECT ${ALL_COLS.join(", ")} FROM signals WHERE id = ?`).get(signalId) as any;
+    const back = ALL_COLS.filter((c) => !still.has(c) && p[c] !== null && p[c] !== undefined);
+    const write = back.filter((c) => row?.[c] !== p[c]);
+    if (write.length) db.prepare(`UPDATE signals SET ${write.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`).run(...write.map((c) => p[c]), signalId);
+    if (!left.length) db.prepare("DELETE FROM signal_private WHERE signal_id = ?").run(signalId);
+    else db.prepare(`UPDATE signal_private SET reasons = ?, updated_at = ?${back.map((c) => `, ${c} = NULL`).join("")} WHERE signal_id = ?`).run(left.join(","), nowIso(), signalId);
+    return write.length > 0;
   });
 }
 
@@ -273,7 +296,17 @@ export function withholdQueued(db: DatabaseSync, queueId: string): void {
 
 /** An approved review item: its signals' words are published. */
 export function publishQueued(db: DatabaseSync, queueId: string): void {
-  for (const id of queueSignals(db, queueId)) publishSignal(db, id, "pending");
+  for (const id of queueSignals(db, queueId)) {
+    publishSignal(db, id, "pending_name");
+    publishSignal(db, id, "pending");
+  }
+}
+
+/** Whether a signal's author name is held back while it is in review (the public form). */
+export function nameHeldBack(db: DatabaseSync, signalId: string | null | undefined): boolean {
+  if (!signalId || !hasTable(db, "signal_private")) return false;
+  const r = db.prepare("SELECT reasons FROM signal_private WHERE signal_id = ?").get(signalId) as any;
+  return !!r && String(r.reasons ?? "").split(",").includes("pending_name");
 }
 
 /**
@@ -354,15 +387,22 @@ export function movePriorsOf(db: DatabaseSync, signalId: string): number {
   const prior = trace && typeof trace === "object" && !Array.isArray(trace) ? trace.prior : null;
   if (!Array.isArray(prior) || !prior.some((p: any) => p && typeof p === "object" && ("before" in p || "updated_by" in p))) return 0;
   return savepoint(db, "move_priors", () => {
-    const ins = db.prepare("INSERT OR IGNORE INTO signal_priors (signal_id, idx, op, node_id, at, updated_by, before) VALUES (?, ?, ?, ?, ?, ?, ?)");
-    const get = db.prepare("SELECT before FROM signal_priors WHERE signal_id = ? AND idx = ?");
+    const ins = db.prepare("INSERT INTO signal_priors (signal_id, idx, op, node_id, at, updated_by, before) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    const get = db.prepare("SELECT op, node_id, at, updated_by, before FROM signal_priors WHERE signal_id = ? AND idx = ?");
     let moved = 0;
     prior.forEach((p: any, i: number) => {
       if (!p || typeof p !== "object" || !("before" in p || "updated_by" in p)) return;
-      const before = p.before === undefined ? null : JSON.stringify(p.before);
-      ins.run(signalId, i, String(p.op ?? ""), String(p.node_id ?? ""), p.at ?? null, p.updated_by ?? null, before);
-      const kept = get.get(signalId, i) as any;
-      if (!kept || (before !== null && kept.before === null)) throw new Error(`signal_priors: ${signalId}[${i}] not kept; refusing to strip it`);
+      const want = {
+        op: String(p.op ?? ""), node_id: String(p.node_id ?? ""), at: p.at ?? null, updated_by: p.updated_by ?? null,
+        before: p.before === undefined ? null : JSON.stringify(p.before),
+      };
+      const same = (k: any) => !!k && k.op === want.op && k.node_id === want.node_id && (k.at ?? null) === want.at && (k.updated_by ?? null) === want.updated_by && (k.before ?? null) === want.before;
+      const had = get.get(signalId, i) as any;
+      if (had && !same(had)) {
+        throw new Error(`signal_priors conflict on ${signalId}[${i}]: a different before-image is already kept; nothing stripped — resolve by hand`);
+      }
+      if (!had) ins.run(signalId, i, want.op, want.node_id, want.at, want.updated_by, want.before);
+      if (!same(get.get(signalId, i))) throw new Error(`signal_priors: ${signalId}[${i}] not kept; refusing to strip it`);
       moved++;
     });
     trace.prior = prior.map(publicPrior);
@@ -445,6 +485,9 @@ export interface PrivacyMigrationReport {
   notes: { signals: number; ids: Array<{ id: string; reason: WithholdReason }> };
   rejected: { signals: number; ids: string[] };
   pending: { signals: number; ids: string[] };
+  private_batches: { signals: number; ids: string[] };
+  /** Rows the migration does NOT move (see PrivacyBacklog.anonymous_graph): clean by hand before enabling sync. */
+  anonymous_graph: string[];
   /** After a real run: what is still left to move (must be all zero). */
   left?: PrivacyBacklog;
 }
@@ -457,6 +500,16 @@ export interface PrivacyBacklog {
   notes: number;
   rejected: number;
   pending: number;
+  /** Retirement records naming a private (anonymous) batch handle. */
+  private_batches: number;
+  /**
+   * Legacy anonymous graph attribution — rows an anonymous signal wrote
+   * before anonymous writes were labelled: edges whose created_by (or id)
+   * names the author, edges referencing those ids, nodes whose updated_by
+   * does. NOT moved by the migration (rewriting edge ids and their
+   * references is hand work): sync stays closed until it is zero.
+   */
+  anonymous_graph: number;
 }
 
 const WORDS_PRESENT = WORD_COLS.map((c) => `${c} IS NOT NULL`).join(" OR ");
@@ -469,9 +522,19 @@ function pendingBacklog(db: DatabaseSync): string[] {
   const out = new Set<string>();
   const present = db.prepare(`SELECT 1 FROM signals WHERE id = ? AND (${WORDS_PRESENT})`);
   for (const q of db.prepare("SELECT id FROM intake_queue WHERE status = 'pending' AND COALESCE(kind, 'human_signal') = 'human_signal' ORDER BY rowid").all() as any[]) {
-    for (const id of queueSignals(db, q.id)) if (present.get(id)) out.add(id);
+    for (const id of queueSignals(db, q.id)) if (present.get(id) || formNameShown(db, id)) out.add(id);
   }
   return [...out];
+}
+
+/** A public-form contribution (no authenticated author) in review whose typed name is in the CRR. */
+function formNameShown(db: DatabaseSync, signalId: string): boolean {
+  if (!hasTable(db, "signal_authors")) return false;
+  return !!db.prepare(
+    `SELECT 1 FROM signals s WHERE s.id = ? AND s.source_type = 'contribution' AND s.submitted_by IS NOT NULL
+        AND COALESCE(s.consent_attribution, '') != 'anonymous'
+        AND NOT EXISTS (SELECT 1 FROM signal_authors a WHERE a.signal_id = s.id)`
+  ).get(signalId);
 }
 
 /** Signals whose CRR row still holds what it must not (cheap; the boot check). */
@@ -489,10 +552,75 @@ export function privacyBacklog(db: DatabaseSync): PrivacyBacklog {
       : 0,
     rejected: rejectedBacklog(db).length,
     pending: pendingBacklog(db).length,
+    private_batches: privateBatchRecords(db).length,
+    anonymous_graph: anonymousGraphAttribution(db).length,
   };
 }
 
-export const backlogTotal = (b: PrivacyBacklog) => b.priors + b.words + b.anonymous + b.admin_before_images + b.notes + b.rejected + b.pending;
+export const backlogTotal = (b: PrivacyBacklog) =>
+  b.priors + b.words + b.anonymous + b.admin_before_images + b.notes + b.rejected + b.pending + b.private_batches + b.anonymous_graph;
+
+/** What the migration can move (everything but legacy anonymous graph attribution). */
+const movableTotal = (b: PrivacyBacklog) => backlogTotal(b) - b.anonymous_graph;
+
+/** The real author of an anonymous signal, if it is known anywhere. */
+function anonymousAuthor(db: DatabaseSync, signalId: string, crrName: unknown): string | null {
+  const kept = hasTable(db, "signal_private") ? (db.prepare("SELECT submitted_by FROM signal_private WHERE signal_id = ?").get(signalId) as any)?.submitted_by : null;
+  const name = kept ?? (crrName !== ANONYMOUS ? crrName : null);
+  return typeof name === "string" && name ? name : null;
+}
+
+/**
+ * Rows an anonymous signal wrote that still name its author (see
+ * PrivacyBacklog.anonymous_graph), as "<table>:<id>" for the diagnostic.
+ * Current and historical rows alike (a superseded edge is in the stream too).
+ */
+export function anonymousGraphAttribution(db: DatabaseSync): string[] {
+  const out = new Set<string>();
+  const anon = db.prepare("SELECT id, submitted_by FROM signals WHERE consent_attribution = 'anonymous'").all() as any[];
+  if (!anon.length) return [];
+  const flaggedEdges: string[] = [];
+  for (const s of anon) {
+    const name = anonymousAuthor(db, s.id, s.submitted_by);
+    const labels = name ? [name, `api-${name}`, `curator-from-${name}`] : [];
+    for (const e of db.prepare("SELECT id, created_by FROM edges WHERE signal_id = ?").all(s.id) as any[]) {
+      if (e.created_by !== ANONYMOUS || (name && String(e.id).includes(name))) { out.add(`edges:${e.id}`); flaggedEdges.push(e.id); }
+    }
+    // the nodes it wrote: its before-images, and the review items naming it
+    const nodes = new Set<string>(priorsOf(db, s.id).map((p) => p.node_id));
+    if (hasTable(db, "intake_queue")) {
+      const like = `%${JSON.stringify(s.id).slice(1, -1)}%`;
+      for (const q of db.prepare("SELECT signal_id, proposed_nodes FROM intake_queue WHERE status = 'approved' AND (signal_id = ? OR proposed_nodes LIKE ?)").all(s.id, like) as any[]) {
+        for (const op of parse(q.proposed_nodes) ?? []) {
+          if ((op?.signal_id ?? q.signal_id) !== s.id) continue;
+          if (op?.op === "create_node" && op.type && op.slug) nodes.add(`${op.type}:${op.slug}`);
+          else if (op?.node_id) nodes.add(op.node_id);
+        }
+      }
+    }
+    for (const id of nodes) {
+      const n = db.prepare("SELECT updated_by FROM nodes WHERE id = ?").get(id) as any;
+      if (n && labels.includes(String(n.updated_by))) out.add(`nodes:${id}`);
+    }
+  }
+  // references to an author-bearing edge id
+  const ref = db.prepare("SELECT id FROM edges WHERE invalidated_by = ?");
+  for (const id of flaggedEdges) for (const r of ref.all(id) as any[]) out.add(`edges:${r.id}`);
+  return [...out];
+}
+
+/** Retirement records (api_admin retire_batch) that name a private batch handle in the CRR. */
+function privateBatchRecords(db: DatabaseSync): Array<{ id: string; batch_id: string }> {
+  const out: Array<{ id: string; batch_id: string }> = [];
+  for (const r of db.prepare(`SELECT id, title, content FROM signals WHERE source_type = 'api_admin' AND content LIKE '%"retire_batch"%'`).all() as any[]) {
+    const b = parse(r.content)?.batch_id;
+    if (typeof b !== "string" || !b) continue;
+    const priv = (hasTable(db, "signal_private") && !!db.prepare("SELECT 1 FROM signal_private WHERE batch_id = ? LIMIT 1").get(b))
+      || !!db.prepare("SELECT 1 FROM signals WHERE batch_id = ? AND consent_attribution = 'anonymous' LIMIT 1").get(b);
+    if (priv) out.push({ id: r.id, batch_id: b });
+  }
+  return out;
+}
 
 /** Signals of rejected human contributions whose words are still in the CRR. */
 function rejectedBacklog(db: DatabaseSync): string[] {
@@ -521,6 +649,8 @@ export function migratePrivacy(db: DatabaseSync, opts: { dryRun?: boolean } = {}
     notes: { signals: 0, ids: [] },
     rejected: { signals: 0, ids: [] },
     pending: { signals: 0, ids: [] },
+    private_batches: { signals: 0, ids: [] },
+    anonymous_graph: [],
   };
   const run = () => {
     // 1. before-images
@@ -579,19 +709,36 @@ export function migratePrivacy(db: DatabaseSync, opts: { dryRun?: boolean } = {}
     for (const id of pendingBacklog(db)) {
       report.pending.signals++;
       report.pending.ids.push(id);
-      if (!dryRun) withholdSignal(db, id, "pending");
+      if (!dryRun) {
+        const form = formNameShown(db, id);
+        withholdSignal(db, id, "pending");
+        if (form) withholdSignal(db, id, "pending_name");
+      }
+    }
+    // 8. retirement records naming a private batch handle (after step 3 moved the handles)
+    for (const r of privateBatchRecords(db)) {
+      report.private_batches.signals++;
+      report.private_batches.ids.push(r.id);
+      if (!dryRun) {
+        const full = parse(fullSignal(db, r.id)?.content) ?? {};
+        const correction = `correction-${createHash("sha256").update(r.id).digest("hex").slice(0, 12)}`;
+        const { stripped } = stripBeforeImages({ ...full, batch_id: undefined, correction_id: correction });
+        withholdSignal(db, r.id, "private_batch", { overrides: { title: `Retire batch: ${correction}`, content: JSON.stringify(stripped) } });
+      }
     }
   };
   if (dryRun) {
     run();
+    report.anonymous_graph = anonymousGraphAttribution(db);
     return report;
   }
   db.exec("BEGIN IMMEDIATE");
   try {
     run();
     const left = privacyBacklog(db);
-    if (backlogTotal(left)) throw new Error(`privacy migration left rows behind: ${JSON.stringify(left)}`);
+    if (movableTotal(left)) throw new Error(`privacy migration left rows behind: ${JSON.stringify(left)}`);
     report.left = left;
+    report.anonymous_graph = anonymousGraphAttribution(db);
     db.exec("COMMIT");
   } catch (e) {
     try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }

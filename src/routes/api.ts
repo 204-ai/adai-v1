@@ -557,7 +557,7 @@ router.post("/api/contribute", (req, res) => {
     id: signalId, title, source_url: srcUrl.value, source_type: "contribution", cla_layer: null, summary: null, content,
     submitted_by: contributor_name, confidence: trustTier, lived_experience: 0,
     consent_scope: scope, consent_attribution: attribution, source_origin: "human_primary",
-  }, intakeStatus === "pending" ? ["pending"] : []);
+  }, intakeStatus === "pending" ? (attribution === "anonymous" ? ["pending"] : ["pending", "pending_name"]) : []);
 
   db.prepare(
     "INSERT INTO intake_queue (id, signal_id, target_node, submitted_by, trust_tier, status) VALUES (?, ?, ?, ?, ?, ?)"
@@ -565,7 +565,12 @@ router.post("/api/contribute", (req, res) => {
 
   // An anonymous contribution is counted on the anonymous sentinel: a row
   // (or a counter) under the typed name would name its author in the CRR.
-  if (attribution === "anonymous") {
+  // One in review writes no contributor row or counter at all: the typed name
+  // is held back with the words (signal_private, 'pending_name') and the row
+  // is written when a curator approves it (approveIntakeItem).
+  if (intakeStatus === "pending" && attribution !== "anonymous") {
+    // nothing public yet
+  } else if (attribution === "anonymous") {
     db.prepare("UPDATE contributors SET contributions = contributions + 1 WHERE id = ?").run(ensureAnonymousContributor(db));
   } else {
     const existing = db.prepare("SELECT id FROM contributors WHERE name = ?").get(contributor_name) as any;
