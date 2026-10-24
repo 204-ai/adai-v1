@@ -98,8 +98,25 @@ export function loginRateOk(email: string, ip: string | null): boolean {
   return okEmail && okIp;
 }
 
+/**
+ * The client's address for rate limits. Proxy headers are trusted only
+ * behind a proxy that sets them: on Fly (FLY_APP_NAME is set on every Fly
+ * machine) Fly-Client-IP, which Fly's proxy overwrites; behind another
+ * trusted proxy (TRUST_PROXY=1) the LAST X-Forwarded-For hop, the one that
+ * proxy appended. Otherwise — a direct connection, where any header is the
+ * client's own — the socket address.
+ */
 export function clientIp(req: Request): string | null {
-  return req.header("x-forwarded-for")?.split(",")[0]?.trim() || req.socket.remoteAddress || null;
+  const socket = req.socket?.remoteAddress || null;
+  if (process.env.FLY_APP_NAME) {
+    const fly = req.header("fly-client-ip")?.trim();
+    if (fly) return fly;
+  }
+  if (process.env.FLY_APP_NAME || process.env.TRUST_PROXY === "1") {
+    const hops = (req.header("x-forwarded-for") ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+    if (hops.length) return hops[hops.length - 1]!;
+  }
+  return socket;
 }
 
 // ---- magic links ---------------------------------------------------------

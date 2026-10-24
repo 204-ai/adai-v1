@@ -13,6 +13,7 @@ import { rosterFor } from "../utils/roster.js";
 import { collapseClaims, claimsOf, CLAIM_COLS } from "../utils/claims.js";
 import { requireCurator } from "../intake/auth.js";
 import { notifyAfterReview } from "../claim/mail.js";
+import { ensureAnonymousContributor, insertSignalRow } from "../utils/signal-private.js";
 
 // SQL fragment that exposes the two metadata keys sourceLabel() reads. Kept
 // next to the helper so the projection and the deriver can't drift.
@@ -548,24 +549,39 @@ router.post("/api/contribute", (req, res) => {
       ? consent_attribution
       : "attributed";
 
-  db.prepare(
-    "INSERT INTO signals (id, title, source_url, source_type, cla_layer, summary, content, submitted_by, confidence, lived_experience, consent_scope, consent_attribution, source_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(signalId, title, srcUrl.value, "contribution", null, null, content, contributor_name, trustTier, 0, scope, attribution, "human_primary");
-
+  // Consent splits the row (src/utils/signal-private.ts): structural_only
+  // words / an anonymous name never reach the CRR.
   const intakeStatus = trustTier === "auto" || trustTier === "reviewed" ? "approved" : "pending";
+  // A queued contribution's words are published when a curator approves it.
+  insertSignalRow(db, {
+    id: signalId, title, source_url: srcUrl.value, source_type: "contribution", cla_layer: null, summary: null, content,
+    submitted_by: contributor_name, confidence: trustTier, lived_experience: 0,
+    consent_scope: scope, consent_attribution: attribution, source_origin: "human_primary",
+  }, intakeStatus === "pending" ? (attribution === "anonymous" ? ["pending"] : ["pending", "pending_name"]) : []);
 
   db.prepare(
     "INSERT INTO intake_queue (id, signal_id, target_node, submitted_by, trust_tier, status) VALUES (?, ?, ?, ?, ?, ?)"
   ).run(intakeId, signalId, target_node, contributor_name, trustTier, intakeStatus);
 
-  const existing = db.prepare("SELECT id FROM contributors WHERE name = ?").get(contributor_name) as any;
-  if (!existing) {
-    const contribId = `contributor-${crypto.randomBytes(8).toString("hex")}`;
-    db.prepare(
-      "INSERT INTO contributors (id, name, type, trust_tier, contributions, approved_count) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run(contribId, contributor_name, "contributor", "probationary", 1, 0);
+  // An anonymous contribution is counted on the anonymous sentinel: a row
+  // (or a counter) under the typed name would name its author in the CRR.
+  // One in review writes no contributor row or counter at all: the typed name
+  // is held back with the words (signal_private, 'pending_name') and the row
+  // is written when a curator approves it (approveIntakeItem).
+  if (intakeStatus === "pending" && attribution !== "anonymous") {
+    // nothing public yet
+  } else if (attribution === "anonymous") {
+    db.prepare("UPDATE contributors SET contributions = contributions + 1 WHERE id = ?").run(ensureAnonymousContributor(db));
   } else {
-    db.prepare("UPDATE contributors SET contributions = contributions + 1 WHERE name = ?").run(contributor_name);
+    const existing = db.prepare("SELECT id FROM contributors WHERE name = ?").get(contributor_name) as any;
+    if (!existing) {
+      const contribId = `contributor-${crypto.randomBytes(8).toString("hex")}`;
+      db.prepare(
+        "INSERT INTO contributors (id, name, type, trust_tier, contributions, approved_count) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(contribId, contributor_name, "contributor", "probationary", 1, 0);
+    } else {
+      db.prepare("UPDATE contributors SET contributions = contributions + 1 WHERE name = ?").run(contributor_name);
+    }
   }
 
   const responseHtml =

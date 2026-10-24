@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extensionPath } from "@shards-lang/crsqlite";
+import { backlogTotal, privacyBacklog, recordPrivacyBlocks } from "./utils/signal-private.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
@@ -22,8 +23,25 @@ export function initDb(dbPath: string): DatabaseSync {
   db.exec(schema);
 
   runMigrations(db);
+  warnPrivacyBacklog(db);
 
   return db;
+}
+
+// The CRR tables are published as they are (GET /api/sync/changes): a row
+// that still holds what must not be published is a leak. Moving it is an
+// operator step with a dry run (`npm run privacy:migrate`), never automatic
+// at boot — this only says so, loudly.
+function warnPrivacyBacklog(db: DatabaseSync) {
+  try {
+    recordPrivacyBlocks(db); // a legacy anonymous signal becomes a block that only the stream audit clears
+    const b = privacyBacklog(db);
+    if (backlogTotal(b)) {
+      console.warn(`[db] ⚠️ CRR rows hold unpublishable values ${JSON.stringify(b)} — run \`npm run privacy:migrate -- --dry-run\`, then without --dry-run`);
+    }
+  } catch (e) {
+    console.warn(`[db] privacy backlog check failed: ${(e as Error).message}`);
+  }
 }
 
 // Before db.sql runs: shapes db.sql's own statements would trip over.
@@ -105,6 +123,19 @@ function runMigrations(db: DatabaseSync) {
   // stands for (issue #70).
   try {
     db.exec("ALTER TABLE contributor_tokens ADD COLUMN node_id TEXT");
+  } catch (e: any) {
+    if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
+  }
+  // signal_private.born_safe (public sync review): marks anonymous signals
+  // inserted blank; same idempotent pattern for a file made before it.
+  try {
+    db.exec("ALTER TABLE signal_private ADD COLUMN born_safe INTEGER NOT NULL DEFAULT 0");
+  } catch (e: any) {
+    if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
+  }
+  // privacy_blocks.resolution (public sync review): same pattern.
+  try {
+    db.exec("ALTER TABLE privacy_blocks ADD COLUMN resolution TEXT");
   } catch (e: any) {
     if (!String(e?.message ?? e).includes("duplicate column name")) throw e;
   }

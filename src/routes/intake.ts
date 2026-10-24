@@ -299,7 +299,7 @@ router.get("/api/intake/batches/:batch_id", requireContributor, (req, res) => {
   if (d.contributor_id !== req.contributor!.id && req.contributor!.scope !== "admin") {
     res.status(403).set(JSON_HEADERS).json({ error: "forbidden" }); return;
   }
-  const r = batchReceipt(getDb(), String(req.params.batch_id));
+  const r = batchReceipt(getDb(), String(req.params.batch_id), { full: true });
   if (!r) { res.status(404).set(JSON_HEADERS).json({ error: "not_found" }); return; }
   res.set(JSON_HEADERS).json(r);
 });
@@ -320,14 +320,15 @@ router.get("/draft/:id", (req, res) => {
 
 router.get("/batch/:batch_id", (req, res) => {
   const db = getDb();
-  const r = batchReceipt(db, String(req.params.batch_id));
+  const s = readSession(db, req);
+  const draft = getDraft(db, String(req.params.batch_id));
+  const isOwner = !!(s && draft && draft.contributor_id === s.contributor.id);
+  // the owner sees their words while in review; everyone else what is published
+  const r = batchReceipt(db, String(req.params.batch_id), { full: isOwner });
   if (!r) {
     res.status(404).set(HTML_HEADERS).send(htmlPage("Receipt", "<h2>No such batch</h2>"));
     return;
   }
-  const s = readSession(db, req);
-  const draft = getDraft(db, String(req.params.batch_id));
-  const isOwner = !!(s && draft && draft.contributor_id === s.contributor.id);
   const admins = (process.env.ADMIN_NOTIFY_EMAILS || "").split(/[,\s]+/).filter(Boolean);
   // "Is one of these you?" (docs/CLAIM-SPEC.md §6) — the owner only.
   const prompt = isOwner && draft ? postIntakeClaimPrompt(db, s!.contributor.id, draft.id, r) : "";

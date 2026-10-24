@@ -44,7 +44,7 @@ function pendingAbout(db: DatabaseSync, nodeId: string, contributorId: string): 
   const rows = db
     .prepare(
       `SELECT q.id, q.kind, q.submitted_by, q.created_at, q.target_node, q.proposed_nodes, q.proposed_edges, s.title, s.source_url
-         FROM intake_queue q LEFT JOIN signals s ON s.id = q.signal_id
+         FROM intake_queue q LEFT JOIN signals_full s ON s.id = q.signal_id
         WHERE q.status = 'pending' AND q.kind IN ('human_signal','ai_suggestion')
           AND (q.target_node = ? OR q.proposed_edges LIKE ? OR q.proposed_nodes LIKE ?)
         ORDER BY q.created_at DESC LIMIT 100`

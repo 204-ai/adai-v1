@@ -25,6 +25,8 @@ export interface ClaimRow {
   submitted_by?: string | null;
   consent_attribution?: string | null;
   consent_scope?: string | null;
+  claim_signal_id?: string | null;
+  withheld_source_url?: string | null;
 }
 
 export interface Origin {
@@ -33,16 +35,21 @@ export interface Origin {
 }
 
 export function originOf(r: ClaimRow): Origin {
-  if (r.source_url && /^https?:\/\//i.test(r.source_url)) {
+  // A structural_only claim's page is on the private side (signal_private):
+  // it still counts as its source, never shown. (A fork has no private side:
+  // there the claim counts by who made it.)
+  const url = r.source_url ?? (r.consent_scope === "structural_only" ? r.withheld_source_url ?? null : null);
+  if (url && /^https?:\/\//i.test(url)) {
     try {
-      const host = new URL(r.source_url).hostname.toLowerCase().replace(/^www\./, "");
+      const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
       // structural_only: counts as its source, but the page is not shown.
       if (host) return { key: `web:${host}`, label: r.consent_scope === "structural_only" ? "withheld source" : host };
     } catch { /* fall through */ }
   }
   if (r.submitted_by) {
-    const anon = r.consent_attribution === "anonymous";
-    return { key: `person:${r.submitted_by}`, label: anon ? "anonymous" : r.submitted_by };
+    // anonymous: one source per contribution, keyed by nothing that names anyone
+    if (r.consent_attribution === "anonymous") return { key: `anonymous:${r.claim_signal_id ?? "?"}`, label: "anonymous" };
+    return { key: `person:${r.submitted_by}`, label: r.submitted_by };
   }
   const by = r.created_by ?? "unknown";
   return { key: `writer:${by}`, label: by === "contributor:migration" ? "A(DAI) canon" : by.replace(/^api-/, "") };
@@ -69,10 +76,17 @@ export function collapseClaims<T extends ClaimRow>(rows: T[]): Array<T & { origi
 
 /** The SQL columns collapseClaims reads, for an `edges e LEFT JOIN signals s ON s.id = e.signal_id` query. */
 export const CLAIM_COLS =
-  "e.source_id, e.target_id, e.edge_type, e.created_by, s.source_url, s.submitted_by, s.consent_attribution, s.consent_scope";
+  "e.source_id, e.target_id, e.edge_type, e.created_by, s.source_url, s.submitted_by, s.consent_attribution, s.consent_scope, s.id AS claim_signal_id, " +
+  "(SELECT sp.source_url FROM signal_private sp WHERE sp.signal_id = s.id AND s.consent_scope = 'structural_only') AS withheld_source_url";
 
-/** Every live claim of one relation, one entry per source. */
-export function claimsOf(db: DatabaseSync, source: string, target: string, type: string): Array<Origin & { attested_by: string | null; source_url: string | null; date: string | null }> {
+/**
+ * Every live claim of one relation, one entry per source — as served
+ * publicly (GET /api/edge/attribution). The dedup key (`originOf().key`) is
+ * internal and never serialised: for a structural_only claim it is derived
+ * from the withheld source URL. Each entry gets an opaque ordinal id instead.
+ */
+export interface PublicSource { id: string; label: string; attested_by: string | null; source_url: string | null; date: string | null }
+export function claimsOf(db: DatabaseSync, source: string, target: string, type: string): PublicSource[] {
   const rows = db
     .prepare(
       `SELECT ${CLAIM_COLS}, e.valid_from, e.event_time FROM edges e LEFT JOIN signals s ON s.id = e.signal_id
@@ -80,13 +94,14 @@ export function claimsOf(db: DatabaseSync, source: string, target: string, type:
         ORDER BY e.valid_from ASC`
     )
     .all(source, target, type) as any[];
-  const seen = new Map<string, Origin & { attested_by: string | null; source_url: string | null; date: string | null }>();
+  const seen = new Map<string, PublicSource>();
   for (const r of rows) {
     const o = originOf(r);
     if (seen.has(o.key)) continue;
     const anon = r.consent_attribution === "anonymous";
     seen.set(o.key, {
-      ...o,
+      id: `source-${seen.size + 1}`,
+      label: o.label,
       attested_by: r.submitted_by ? (anon ? "anonymous" : r.submitted_by) : null,
       source_url: r.consent_scope === "structural_only" ? null : r.source_url ?? null,
       date: String(r.event_time || r.valid_from || "").slice(0, 10) || null,

@@ -29,6 +29,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { isAutoMerge, type AuthedContributor } from "../auth.js";
 import { insertSignal, priorValues, recordPrior } from "../utils/contribution.js";
 import { insertAdminSignal } from "../utils/admin-actions.js";
+import { priorsOf, publishSignal, updateTrace, withholdSignal } from "../utils/signal-private.js";
 import { tripleKey } from "../utils/claims.js";
 import { ClaimError, CLAIMABLE_TYPES, approvedClaimsFor, claimedNodeIds, hasApprovedClaim, requestClaim, contributorById, type Claim } from "./store.js";
 
@@ -200,7 +201,7 @@ export function auditNotesFor(db: DatabaseSync, nodeId: string): AuditNote[] {
          FROM relation_notes rn
          LEFT JOIN contributors c ON c.id = rn.contributor_id
          LEFT JOIN nodes n ON n.id = rn.node_id
-         LEFT JOIN signals s ON s.id = rn.signal_id
+         LEFT JOIN signals_full s ON s.id = rn.signal_id
         -- the audit reaches every note written from or about the node: an
         -- objection carries only node_id + queue_ref, no relation or key
         WHERE rn.source_id = ? OR rn.target_id = ? OR rn.node_id = ?
@@ -345,6 +346,9 @@ export function fileNote(db: DatabaseSync, args: FileNoteArgs): RelationNote {
       content: JSON.stringify(content),
       source_type: args.kind === "objection" ? "subject_objection" : `subject_${args.kind}`,
       source_origin: "human_primary",
+      // an objection is for the curator only; a context note in review is published on approval
+      unpublished: args.kind === "objection",
+      pending: state === "pending",
     });
     db.prepare("UPDATE signals SET lived_experience = 1 WHERE id = ?").run(signalId);
     let queueId: string | null = null;
@@ -433,6 +437,7 @@ export function fileReading(db: DatabaseSync, args: FileReadingArgs): RelationNo
       consent_scope: args.consent_scope ?? undefined,
       consent_attribution: args.consent_attribution ?? undefined,
       batch_id: args.batch_id ?? null,
+      pending: !autoLive,
     });
     const queueId = `intake-${crypto.randomBytes(8).toString("hex")}`;
     db.prepare(
@@ -470,6 +475,8 @@ export function withdrawNote(db: DatabaseSync, signalId: string, contributorId: 
       db.prepare("UPDATE intake_queue SET status = 'rejected', rejection_reason = 'withdrawn by author', reviewed_by = 'author', reviewed_at = ? WHERE id = ? AND status = 'pending'")
         .run(nowIso(), n.queue_id);
     }
+    // Withdrawn before it was ever published: its words leave the CRR.
+    if (n.state === "pending") withholdSignal(db, signalId, "withdrawn");
     db.exec("COMMIT");
   } catch (e) {
     try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
@@ -502,8 +509,7 @@ export function upholdContest(db: DatabaseSync, queueId: string, opts: { by: str
       .run(anchor, n.relation.source_id, n.relation.edge_type, n.relation.target_id);
     edges = Number(r.changes);
   } else if (n.meta_key && n.edit_signal_id) {
-    const sig = db.prepare("SELECT processing_trace FROM signals WHERE id = ?").get(n.edit_signal_id) as any;
-    const prior = (parse(sig?.processing_trace)?.prior ?? []).find((p: any) => p?.node_id === n.node_id && p?.before && n.meta_key! in p.before);
+    const prior = priorsOf(db, n.edit_signal_id).find((p: any) => p?.node_id === n.node_id && p?.before && n.meta_key! in p.before) as any;
     if (prior) {
       const row = db.prepare("SELECT metadata, updated_by FROM nodes WHERE id = ?").get(n.node_id) as any;
       const base = parse(row?.metadata) ?? {};
@@ -549,13 +555,16 @@ function settle(db: DatabaseSync, n: RelationNote, state: string, by: string, re
     db.prepare("UPDATE intake_queue SET status = ?, rejection_reason = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ? AND status = 'pending'")
       .run(approved ? "approved" : "rejected", approved ? null : reason, by, nowIso(), n.queue_id);
   }
-  if (state === "rejected") db.prepare("UPDATE signals SET status = 'superseded' WHERE id = ?").run(n.signal_id);
+  if (state === "live") publishSignal(db, n.signal_id, "pending");
+  if (state === "rejected") {
+    db.prepare("UPDATE signals SET status = 'superseded' WHERE id = ?").run(n.signal_id);
+    // never published: its words leave the CRR (kept in signal_private)
+    withholdSignal(db, n.signal_id, "rejected");
+  }
   if (anchor) {
-    // The contest signal points at what settled it.
-    const sig = db.prepare("SELECT processing_trace FROM signals WHERE id = ?").get(n.signal_id) as any;
-    const trace = parse(sig?.processing_trace) ?? {};
-    trace.settled_by = anchor;
-    db.prepare("UPDATE signals SET processing_trace = ? WHERE id = ?").run(JSON.stringify(trace), n.signal_id);
+    // The contest signal points at what settled it (on the private side when
+    // its words are withheld).
+    updateTrace(db, n.signal_id, (trace) => ({ ...trace, settled_by: anchor }));
   }
 }
 

@@ -1,7 +1,7 @@
 ---
 name: adai-contribute
 description: Contribute to the A(DAI) Digital Arts Knowledge Commons graph (https://digitalartsinstitute.io) on behalf of a practitioner using their bearer token in ADAI_TOKEN. Use when the user wants to add a text signal about an existing node, create a node (practitioner, artwork, concept, scene, institution, collective, platform, etc.), add or supersede an edge (CREATED_BY, EMBODIES, PRACTICES, EXHIBITED_AT, CLASSIFIED_BY, BELONGS_TO, COLLABORATES_WITH, USES_TECHNIQUE, INFLUENCES, RESPONDS_TO, PARTICIPATED_IN, PRESENTED_BY, CURATED_BY, REPRESENTS, HELD_BY, DOCUMENTS), upload an image and attach it to a node, tag a session of writes with a batch_id, review their contribution history, claim the practitioner's own page and speak for it (contest or add context to relations about them, invite the people at the other end), or — with an admin-scope token — mint/list/revoke tokens, work the curator review queue (approve/reject/bulk), revoke a signal, retire a node, or roll back a contribution batch (provenance-preserving). Talks to /api/v1/* via curl. Respects trust tiers (auto/reviewed go live, probationary queue at /review). Never infer INFLUENCES or RESPONDS_TO from style or visual similarity; both require attested artist intent.
-version: 2026-10-09
+version: 2026-10-24
 ---
 
 # A(DAI) contributor skill — for Claude (and any other AI assistant) writing to the knowledge commons
@@ -179,6 +179,24 @@ Response: `{ signal_id, intake_id, status: "approved" | "pending", target_node }
 `source_url` is optional, but when present it must be an absolute
 `http(s)://` URL with a real host — it is rendered as a link on the
 node's public surfaces, so malformed values are rejected with a `400`.
+
+**Consent** (`consent_scope`, `consent_attribution`, optional here, on
+readings §1.10 and on the public form): the commons is public *and
+forkable* — anyone can pull its tables (`/offline` → "Fork the commons").
+So what consent withholds never enters them:
+
+- `"consent_scope": "structural_only"` — the relation counts, the words
+  don't: `title`, `content`, `source_url` are kept by the operator only
+  and are never published or synced. A structural-only contribution can
+  carry relations, **never node metadata** — a create / patch / image
+  write anchored to one is refused (node metadata is words in the public
+  tables). Node, patch and image writes are always `full_commons`.
+- `"consent_attribution": "anonymous"` — the public record says
+  `anonymous`; your name, your batch id and the provenance stay with the
+  operator, and the contribution is counted on an anonymous sentinel, not
+  on your contributor row.
+- While a write waits in review (`status: "pending"`) its words are not
+  published either; they are on approval, and never if it is rejected.
 
 ### 1.2 `POST /api/v1/nodes` — create a new entity
 
@@ -815,6 +833,11 @@ curl -s -X POST "$ADAI_BASE/api/v1/signals/<signal_id>/revoke" \
 # pass {"cascade":false} to leave the anchored edges alive
 ```
 
+A revoked signal keeps its row (status `revoked`) but loses its words
+publicly — title, content, source, provenance — on the site and in every
+fork on its next pull. Nothing is deleted: the operator keeps the
+original (`signal_private`, shown on `/review`).
+
 ### 4.6 Retire a node
 
 For a node that shouldn't exist (wrong entity, junk upload, duplicate the
@@ -923,7 +946,9 @@ batch. What it deliberately does NOT do:
   back in `patches_to_review`, each with its `signal_id` (whose `content`
   records the exact patch) and `before`: the values the write replaced
   (`null` for a key that was absent; `before` itself is `null` for writes
-  older than before-image recording). Restore by hand with PATCH (§1.3);
+  older than before-image recording). Before-images are operator-side
+  (never in the public tables): they are in this response and on
+  `/history`, not in the anchoring admin signal. Restore by hand with PATCH (§1.3);
 - R2 image bytes stay (content-addressed, immutable, harmless orphans).
 
 After the rollback the gallery starts again with a **new** batch_id.

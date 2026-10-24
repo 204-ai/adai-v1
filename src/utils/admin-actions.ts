@@ -24,6 +24,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { mergeMetadata, priorValues, recordPrior } from "./contribution.js";
 import { keepOldSlug } from "./moved.js";
 import { slugify } from "./slug.js";
+import { insertSignalRow, priorsOf, stripBeforeImages, withholdSignal } from "./signal-private.js";
 
 export class AdminActionError extends Error {
   constructor(
@@ -60,19 +61,32 @@ function withTx<T>(db: DatabaseSync, fn: () => T): T {
 // the operator CLIs that write outside the HTTP surface.
 export function insertAdminSignal(
   db: DatabaseSync,
-  args: { by: string; title: string; content: unknown }
+  args: { by: string; title: string; content: unknown; publicView?: { title: string; content: unknown } }
 ): string {
   const id = `signal-${crypto.randomBytes(8).toString("hex")}`;
-  db.prepare(
-    `INSERT INTO signals (
-       id, title, source_url, source_type, cla_layer, summary, content,
-       submitted_by, confidence, lived_experience,
-       consent_scope, consent_attribution, source_origin, batch_id
-     ) VALUES (?, ?, NULL, 'api_admin', NULL, NULL, ?,
-               ?, 'high', 0,
-               'full_commons', 'attributed', 'human_primary', NULL)`
-  ).run(id, args.title, JSON.stringify(args.content), args.by);
+  // An admin record never carries before-images in the CRR (a batch
+  // retirement's patches_to_review list them), nor a private handle (an
+  // anonymous contribution's batch id): the full record is kept in
+  // signal_private, the CRR gets its public view.
+  const pub = args.publicView ?? { title: args.title, content: args.content };
+  const { stripped, had } = stripBeforeImages(pub.content);
+  insertSignalRow(db, {
+    id, title: pub.title, source_url: null, source_type: "api_admin", cla_layer: null, summary: null,
+    content: JSON.stringify(had ? stripped : pub.content),
+    submitted_by: args.by, confidence: "high", lived_experience: 0,
+    consent_scope: "full_commons", consent_attribution: "attributed", source_origin: "human_primary", batch_id: null,
+  });
+  const reasons = [...(had || stripBeforeImages(args.content).had ? ["before_images"] : []), ...(args.publicView ? ["private_batch"] : [])];
+  if (reasons.length) {
+    db.prepare("INSERT INTO signal_private (signal_id, reasons, title, content) VALUES (?, ?, ?, ?)")
+      .run(id, reasons.sort().join(","), args.publicView ? args.title : null, JSON.stringify(args.content));
+  }
   return id;
+}
+
+/** Whether a batch id is private: some signal of it is anonymous (its batch id lives in signal_private only). */
+export function batchIsPrivate(db: DatabaseSync, batchId: string): boolean {
+  return !!db.prepare("SELECT 1 FROM signal_private WHERE batch_id = ? LIMIT 1").get(batchId);
 }
 
 // ---------- revoke a signal -------------------------------------------------
@@ -106,6 +120,9 @@ export function revokeSignal(
       content: { action: "revoke_signal", signal_id: signalId, reason: opts.reason },
     });
     db.prepare("UPDATE signals SET status = 'revoked' WHERE id = ?").run(signalId);
+    // Its words leave the CRR (kept in signal_private): a cell change every
+    // fork receives on its next pull.
+    withholdSignal(db, signalId, "revoked");
     let edges = 0;
     if (opts.cascade !== false) {
       const r = db
@@ -229,21 +246,15 @@ export interface RetireBatchResult extends BatchRetirePlan {
 // recordPrior in contribution.ts), or null when none was recorded.
 function priorFor(db: DatabaseSync, signalId: string | null, op: string, nodeId: string): Record<string, unknown> | null {
   if (!signalId) return null;
-  const row = db.prepare("SELECT processing_trace FROM signals WHERE id = ?").get(signalId) as any;
-  if (!row?.processing_trace) return null;
-  try {
-    const prior = JSON.parse(row.processing_trace)?.prior;
-    const hit = Array.isArray(prior) ? prior.find((p: any) => p?.op === op && p?.node_id === nodeId) : null;
-    return hit?.before ?? null;
-  } catch {
-    return null;
-  }
+  const hit = priorsOf(db, signalId).find((p) => p.op === op && p.node_id === nodeId);
+  return hit?.before ?? null;
 }
 
 function buildBatchPlan(db: DatabaseSync, batchId: string): BatchRetirePlan & { signalIds: string[] } {
   const signals = db
     .prepare(
-      "SELECT id, submitted_by, created_at, status FROM signals WHERE batch_id = ? ORDER BY created_at ASC"
+      // signals_full: an anonymous signal's batch id is on the private side
+      "SELECT id, submitted_by, created_at, status FROM signals_full WHERE batch_id = ? ORDER BY created_at ASC"
     )
     .all(batchId) as Array<{ id: string; submitted_by: string; created_at: string; status: string }>;
   if (signals.length === 0) {
@@ -373,23 +384,33 @@ export function retireBatch(
 
   const placeholders = signalIds.map(() => "?").join(",");
   return withTx(db, () => {
+    const record = {
+      action: "retire_batch",
+      batch_id: batchId,
+      reason: opts.reason,
+      signals: plan.signals_total,
+      nodes_retired: plan.nodes_to_retire,
+      nodes_skipped_preexisting: plan.nodes_skipped_preexisting,
+      patches_to_review: plan.patches_to_review,
+    };
+    // A batch with an anonymous contribution in it has a private handle: the
+    // public record names an opaque correction id instead (the operator's
+    // audit keeps the batch id, signal_private).
+    const correction = batchIsPrivate(db, batchId) ? `correction-${crypto.randomBytes(6).toString("hex")}` : null;
     const anchor = insertAdminSignal(db, {
       by: opts.by,
       title: `Retire batch: ${batchId}`,
-      content: {
-        action: "retire_batch",
-        batch_id: batchId,
-        reason: opts.reason,
-        signals: plan.signals_total,
-        nodes_retired: plan.nodes_to_retire,
-        nodes_skipped_preexisting: plan.nodes_skipped_preexisting,
-        patches_to_review: plan.patches_to_review,
-      },
+      content: record,
+      publicView: correction
+        ? { title: `Retire batch: ${correction}`, content: { ...record, batch_id: undefined, correction_id: correction } }
+        : undefined,
     });
 
+    const active = (db.prepare(`SELECT id FROM signals WHERE id IN (${placeholders}) AND status = 'active'`).all(...signalIds) as any[]).map((r) => r.id as string);
     const revoked = db
-      .prepare("UPDATE signals SET status = 'revoked' WHERE batch_id = ? AND status = 'active'")
-      .run(batchId);
+      .prepare(`UPDATE signals SET status = 'revoked' WHERE id IN (${placeholders}) AND status = 'active'`)
+      .run(...signalIds);
+    for (const id of active) withholdSignal(db, id, "revoked");
 
     const superseded = db
       .prepare(
@@ -457,7 +478,7 @@ export function listBatches(
               GROUP_CONCAT(DISTINCT submitted_by) AS contributors,
               MIN(created_at) AS first_at,
               MAX(created_at) AS last_at
-         FROM signals
+         FROM signals_full
         WHERE ${where.join(" AND ")}
         GROUP BY batch_id
         ORDER BY last_at DESC
@@ -469,7 +490,7 @@ export function listBatches(
     .prepare(
       `SELECT s.batch_id AS batch_id, q.status AS status, COUNT(*) AS n
          FROM intake_queue q
-         JOIN signals s ON s.id = q.signal_id
+         JOIN signals_full s ON s.id = q.signal_id
         WHERE s.batch_id IS NOT NULL
         GROUP BY s.batch_id, q.status`
     )

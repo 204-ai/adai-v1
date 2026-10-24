@@ -13,6 +13,7 @@ import intakeRoutes from "./routes/intake.js";
 import claimRoutes from "./routes/claim.js";
 import activityRoutes from "./routes/activity.js";
 import offlineRoutes from "./routes/offline.js";
+import syncRoutes from "./routes/sync.js";
 import internalRoutes, { workerKey } from "./routes/internal.js";
 import { startSpawnerInterval, isSpawnerConfigured } from "./intake/spawn.js";
 import { isSessionConfigured } from "./intake/auth.js";
@@ -172,6 +173,7 @@ app.use(intakeRoutes);
 app.use(claimRoutes);
 app.use(activityRoutes);
 app.use(offlineRoutes);
+app.use(syncRoutes);
 if (workerKey()) {
   app.use(internalRoutes);
   console.log("[intake] /internal/intake/* mounted");

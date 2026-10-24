@@ -5,6 +5,7 @@
 // signals flip status, edges gain valid_until/invalidated_by, nodes gain
 // metadata.retired.
 
+import { priorsOf } from "../src/utils/signal-private.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { freshDb, insertNode } from "./helpers.js";
@@ -277,8 +278,14 @@ describe("retireBatch", () => {
 });
 
 describe("before-images", () => {
-  const prior = (db: any, signalId: string) =>
-    JSON.parse((db.prepare("SELECT processing_trace FROM signals WHERE id = ?").get(signalId) as any).processing_trace).prior;
+  // The values live in the local signal_priors; the CRR trace keeps {op, node_id, at} only.
+  const prior = (db: any, signalId: string) => {
+    const crr = JSON.parse((db.prepare("SELECT processing_trace FROM signals WHERE id = ?").get(signalId) as any).processing_trace).prior;
+    for (const e of crr) assert.deepEqual(Object.keys(e).sort(), ["at", "node_id", "op"]);
+    const local = priorsOf(db, signalId);
+    assert.deepEqual(local.map((e) => [e.op, e.node_id]), crr.map((e: any) => [e.op, e.node_id]));
+    return local as any[];
+  };
 
   it("a patch and an image write record the values they replaced on their signal", () => {
     const db = freshDb();

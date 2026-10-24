@@ -26,6 +26,7 @@ import {
 } from "./contribution.js";
 import { embedNodeAsync } from "../embed/server.js";
 import { ClaimError, approveClaim, claimByQueueId, rejectClaim } from "../claim/store.js";
+import { ensureAnonymousContributor, isAnonymousSignal, nameHeldBack, publishQueued, rejectedSignals, withholdSignal } from "./signal-private.js";
 import { approveContext, dismissContest, rejectContext, settleObjections, upholdContest } from "../claim/notes.js";
 
 // Claims and a subject's notes (docs/CLAIM-SPEC.md) settle through their
@@ -155,8 +156,23 @@ export function approveIntakeItem(
   db.prepare(
     "UPDATE intake_queue SET status = 'approved', reviewed_by = ?, reviewed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?"
   ).run(reviewedBy, id);
+  // What was in review is published: its words go into the CRR now — and,
+  // for the public form, the contributor row under the typed name.
+  const heldName = nameHeldBack(db, item.signal_id);
+  if (item.kind === "human_signal") publishQueued(db, id);
+  if (heldName && item.submitted_by) {
+    const known = db.prepare("SELECT id FROM contributors WHERE name = ?").get(item.submitted_by) as any;
+    if (known) db.prepare("UPDATE contributors SET contributions = contributions + 1 WHERE id = ?").run(known.id);
+    else db.prepare("INSERT INTO contributors (id, name, type, trust_tier, contributions, approved_count) VALUES (?, ?, 'contributor', 'probationary', 1, 0)")
+      .run(`contributor-${crypto.randomBytes(8).toString("hex")}`, item.submitted_by);
+  }
 
-  db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE name = ?").run(item.submitted_by);
+  // An anonymous contribution counts on the anonymous sentinel, never on its author's row.
+  if (isAnonymousSignal(db, item.signal_id)) {
+    db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE id = ?").run(ensureAnonymousContributor(db));
+  } else {
+    db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE name = ?").run(item.submitted_by);
+  }
   settleObjections(db, id, "approved", reviewedBy);
   contributionWritten(); // what was in review is live now (issue #81)
 
@@ -203,6 +219,8 @@ export function rejectIntakeItem(
   db.prepare(
     "UPDATE intake_queue SET status = 'rejected', rejection_reason = ?, reviewed_by = ?, reviewed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?"
   ).run(reason, reviewedBy, id);
+  // A rejected contribution was never published: its words leave the CRR.
+  for (const sid of rejectedSignals(db, id)) withholdSignal(db, sid, "rejected");
   settleObjections(db, id, "rejected", reviewedBy);
 
   return { ok: true, intake_id: id };

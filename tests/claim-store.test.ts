@@ -2,6 +2,7 @@
 // (metadata.claimed + before-image), handles, contests / context notes /
 // objections and their curator resolution, peer invites.
 
+import { priorsOf } from "../src/utils/signal-private.js";
 import { it } from "node:test";
 import assert from "node:assert/strict";
 import { freshDb, insertNode } from "./helpers.js";
@@ -43,8 +44,9 @@ it("an invite naming the node is instant; anything else queues for a curator", (
   assert.deepEqual(m.claimed.by, ["Ada L"]);
 
   // the before-image of that write is on the claim signal
-  const sig = db.prepare("SELECT processing_trace, source_type FROM signals WHERE source_type = 'claim'").get() as any;
-  assert.deepEqual(JSON.parse(sig.processing_trace).prior[0].before, { claimed: null });
+  const sig = db.prepare("SELECT id, processing_trace, source_type FROM signals WHERE source_type = 'claim'").get() as any;
+  assert.deepEqual(priorsOf(db, sig.id)[0].before, { claimed: null });
+  assert.equal(JSON.parse(sig.processing_trace).prior[0].before, undefined, "not in the CRR");
 
   // a request on someone else's page queues
   const r = requestClaim(db, { contributor: eve, node_id: "practitioner:bob", evidence: "I am Bob's alt", handle: "bob" });
@@ -91,8 +93,8 @@ it("collectives take several claimants; ending one rewrites the badge with its b
   const ac = db.prepare("SELECT id FROM node_claims WHERE contributor_id = ?").get(a.id) as any;
   endClaim(db, ac.id, { actor: b, mode: "revoked", reason: "test" });
   assert.equal(meta(db, "collective:k").claimed, undefined);
-  const last = db.prepare("SELECT processing_trace, source_type FROM signals WHERE source_type = 'api_admin'").get() as any;
-  assert.deepEqual(JSON.parse(last.processing_trace).prior[0].before.claimed.by, ["A"]);
+  const last = db.prepare("SELECT id, source_type FROM signals WHERE source_type = 'api_admin'").get() as any;
+  assert.deepEqual((priorsOf(db, last.id)[0].before as any).claimed.by, ["A"]);
 });
 
 it("handles: format, reserved, unique, one change per 30 days, old ones still resolve", () => {

@@ -1394,6 +1394,7 @@ export async function confirmDraft(
       batch_id: draft.id,
       source_origin: "url_intake",
       provenance_chain: JSON.stringify({ draft_id: draft.id, summary: draft.summary, ...(pickedFrom ? { picked_from: pickedFrom } : {}) }),
+      pending: !auto, // a probationary read is published when its review item is approved
     });
 
     const queuedNodes: ProposedNodeOp[] = [];
@@ -1410,6 +1411,7 @@ export async function confirmDraft(
         batch_id: draft.id,
         source_origin: "url_intake",
         provenance_chain: prov(cand),
+        pending: !auto,
       });
       if (auto) {
         if (op.node_op) {
@@ -1445,7 +1447,7 @@ export async function confirmDraft(
     }
 
     if (auto) {
-      bumpApprovedCount(db, contributor.id);
+      bumpApprovedCount(db, contributor.id, anchorId);
     } else {
       const { intake_id } = insertIntake(db, {
         contributor,
@@ -1456,7 +1458,7 @@ export async function confirmDraft(
       });
       intakeIds.push(intake_id);
     }
-    ensureContributorRow(db, contributor);
+    ensureContributorRow(db, contributor, anchorId);
 
     touch(db, draft.id, {
       status: "submitted",
@@ -1489,11 +1491,15 @@ function pageEntry(draft: Draft, url: string | undefined): PageEntry | null {
   return draft.pages.find((x) => x.url === url || x.final_url === url) ?? null;
 }
 
-/** Receipt view: everything the batch produced, by batch_id. */
-export function batchReceipt(db: DatabaseSync, batchId: string): Record<string, unknown> | null {
+/**
+ * Receipt view: everything the batch produced, by batch_id. `full`: the
+ * owner's (or an admin's) view, words still in review or withdrawn included
+ * (signals_full); without it, what the commons publishes (signals).
+ */
+export function batchReceipt(db: DatabaseSync, batchId: string, opts: { full?: boolean } = {}): Record<string, unknown> | null {
   const draft = getDraft(db, batchId);
   const signals = db
-    .prepare("SELECT id, title, source_type, source_url, content, status, created_at, submitted_by, provenance_chain FROM signals WHERE batch_id = ? ORDER BY created_at ASC")
+    .prepare(`SELECT id, title, source_type, source_url, content, status, created_at, submitted_by, provenance_chain FROM ${opts.full ? "signals_full" : "signals"} WHERE batch_id = ? ORDER BY created_at ASC`)
     .all(batchId) as any[];
   if (draft ? draft.status !== "submitted" : !signals.length) return null;
   const intake = db
@@ -1537,7 +1543,7 @@ export function batchReceipt(db: DatabaseSync, batchId: string): Record<string, 
     submitted_at: draft?.submitted_at ?? signals[0]?.created_at ?? null,
     review_state,
     subject_node_id: draft?.subject_node_id ?? null,
-    signals: signals.map((s) => ({ id: s.id, title: s.title, source_type: s.source_type, source_url: s.source_url, status: s.status, content: s.source_type === "api_url_intake" && s.title.startsWith("URL intake:") ? null : s.content })),
+    signals: signals.map((s) => ({ id: s.id, title: s.title, source_type: s.source_type, source_url: s.source_url, status: s.status, content: s.source_type === "api_url_intake" && String(s.title ?? "").startsWith("URL intake:") ? null : s.content })),
     intake: intake.map((i) => ({ id: i.id, status: i.status, target_node: i.target_node, reviewed_at: i.reviewed_at, rejection_reason: i.rejection_reason })),
     edges: edges.map((e) => ({ source_id: e.source_id, target_id: e.target_id, edge_type: e.edge_type, live: e.valid_until === null })),
     ended: ended.map((e) => ({ source_id: e.source_id, target_id: e.target_id, edge_type: e.edge_type, ended_at: e.valid_until })),

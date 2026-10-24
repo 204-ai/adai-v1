@@ -68,6 +68,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, readFileSync, rmSync, mkdirSync, writeFileSync, renameSync, realpathSync } from "node:fs";
 import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { priorsOf } from "../utils/signal-private.js";
 
 export const SNAPSHOT_SCHEMA_VERSION = "2";
 const ANON = "anonymous";
@@ -505,8 +506,8 @@ function fill(src: DatabaseSync, out: DatabaseSync, opts: SnapshotOptions): Snap
     }
   }
   for (const s of sigRows) {
-    const prior = parse(s.processing_trace)?.prior;
-    if (!Array.isArray(prior)) continue;
+    // before-images: the local signal_priors (or, before the move, the trace)
+    const prior = priorsOf(src, s.id) as any[];
     for (const p of prior) {
       if (!p?.node_id) continue;
       if (restricted(s.id)) taint(p.node_id, Object.keys(p.before ?? {}));

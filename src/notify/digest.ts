@@ -170,7 +170,7 @@ export function buildDigest(
                 q.created_at, q.target_node,
                 s.title AS title, s.batch_id AS batch_id
            FROM intake_queue q
-           LEFT JOIN signals s ON s.id = q.signal_id
+           LEFT JOIN signals_full s ON s.id = q.signal_id
           WHERE q.status = 'pending' AND q.kind = ?
           ORDER BY (q.created_at > ?) DESC, q.created_at DESC
           LIMIT ?`

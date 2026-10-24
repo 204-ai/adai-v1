@@ -164,7 +164,7 @@ router.get("/api/v1/contributions", requireToken, (req, res) => {
               q.proposed_nodes, q.proposed_edges,
               s.title AS title, s.source_type AS source_type, s.batch_id AS batch_id
          FROM intake_queue q
-         LEFT JOIN signals s ON s.id = q.signal_id
+         LEFT JOIN signals_full s ON s.id = q.signal_id
         WHERE ${where.join(" AND ")}
         ORDER BY q.created_at DESC
         LIMIT ?`
@@ -268,14 +268,15 @@ router.post("/api/v1/signals", requireToken, (req, res) => {
     consent_scope,
     consent_attribution,
     batch_id: batch.value,
+    pending: !isAutoMerge(req.contributor!.trust_tier),
   });
   const { intake_id, status } = insertIntake(db, {
     contributor: req.contributor!,
     signal_id: signalId,
     target_node,
   });
-  ensureContributorRow(db, req.contributor!);
-  if (status === "approved") bumpApprovedCount(db, req.contributor!.id);
+  ensureContributorRow(db, req.contributor!, signalId);
+  if (status === "approved") bumpApprovedCount(db, req.contributor!.id, signalId);
 
   res.set(JSON_HEADERS).json({ signal_id: signalId, intake_id, status, target_node });
 });
@@ -372,6 +373,7 @@ router.post("/api/v1/nodes", requireToken, (req, res) => {
     content: JSON.stringify({ type, name, slug, metadata: effectiveMetadata, aliases: aliasItems }),
     source_type: "api_node",
     batch_id: batch.value,
+    pending: !isAutoMerge(req.contributor!.trust_tier),
   });
 
   if (isAutoMerge(req.contributor!.trust_tier)) {
@@ -387,8 +389,8 @@ router.post("/api/v1/nodes", requireToken, (req, res) => {
       target_node: computedId,
       proposed_nodes: [{ op: "create_node", type, name, slug, metadata: effectiveMetadata, aliases: aliasItems }],
     });
-    ensureContributorRow(db, req.contributor!);
-    bumpApprovedCount(db, req.contributor!.id);
+    ensureContributorRow(db, req.contributor!, signalId);
+    bumpApprovedCount(db, req.contributor!.id, signalId);
     // Embed the new node in the background; failures are caught by the
     // daily backfill in .github/workflows/embed-derive-daily.yml.
     embedNodeAsync(db, computedId);
@@ -410,7 +412,7 @@ router.post("/api/v1/nodes", requireToken, (req, res) => {
     target_node: computedId,
     proposed_nodes: [{ op: "create_node", type, name, slug, metadata: effectiveMetadata, aliases: aliasItems }],
   });
-  ensureContributorRow(db, req.contributor!);
+  ensureContributorRow(db, req.contributor!, signalId);
   res.set(JSON_HEADERS).json({
     node_id: computedId,
     created: false,
@@ -477,6 +479,7 @@ router.patch("/api/v1/nodes/:id", requireToken, (req, res) => {
     content: JSON.stringify({ node_id: nodeId, patch }),
     source_type: "api_node",
     batch_id: batch.value,
+    pending: !isAutoMerge(req.contributor!.trust_tier),
   });
 
   if (isAutoMerge(req.contributor!.trust_tier)) {
@@ -487,8 +490,8 @@ router.patch("/api/v1/nodes/:id", requireToken, (req, res) => {
       target_node: nodeId,
       proposed_nodes: [{ op: "patch_node", node_id: nodeId, metadata: patch }],
     });
-    ensureContributorRow(db, req.contributor!);
-    bumpApprovedCount(db, req.contributor!.id);
+    ensureContributorRow(db, req.contributor!, signalId);
+    bumpApprovedCount(db, req.contributor!.id, signalId);
     // Re-embed if the patched metadata changed text-derived content. The
     // (text_hash, image_hash) idempotency check in embedNodeNow makes this
     // a no-op when nothing meaningful shifted.
@@ -503,7 +506,7 @@ router.patch("/api/v1/nodes/:id", requireToken, (req, res) => {
     target_node: nodeId,
     proposed_nodes: [{ op: "patch_node", node_id: nodeId, metadata: patch }],
   });
-  ensureContributorRow(db, req.contributor!);
+  ensureContributorRow(db, req.contributor!, signalId);
   res.set(JSON_HEADERS).json({ node_id: nodeId, status, signal_id: signalId, intake_id });
 });
 
@@ -576,6 +579,7 @@ router.post("/api/v1/edges", requireToken, (req, res) => {
     content: JSON.stringify(proposed),
     source_type: "api_edge",
     batch_id: batch.value,
+    pending: !isAutoMerge(req.contributor!.trust_tier),
   });
 
   if (isAutoMerge(req.contributor!.trust_tier)) {
@@ -590,8 +594,8 @@ router.post("/api/v1/edges", requireToken, (req, res) => {
       target_node: target_id,
       proposed_edges: [proposed],
     });
-    ensureContributorRow(db, req.contributor!);
-    bumpApprovedCount(db, req.contributor!.id);
+    ensureContributorRow(db, req.contributor!, signalId);
+    bumpApprovedCount(db, req.contributor!.id, signalId);
     res.set(JSON_HEADERS).json({ edge_id, superseded, status: "approved", signal_id: signalId, intake_id, warnings });
     return;
   }
@@ -602,7 +606,7 @@ router.post("/api/v1/edges", requireToken, (req, res) => {
     target_node: target_id,
     proposed_edges: [proposed],
   });
-  ensureContributorRow(db, req.contributor!);
+  ensureContributorRow(db, req.contributor!, signalId);
   res.set(JSON_HEADERS).json({ status, signal_id: signalId, intake_id, warnings });
 });
 
@@ -710,6 +714,7 @@ router.post(
       source_url: imageUrl,
       source_type: "api_image",
       batch_id: batch.value,
+      pending: !isAutoMerge(req.contributor!.trust_tier),
     });
 
     const op: ProposedNodeOp = {
@@ -729,8 +734,8 @@ router.post(
         target_node: nodeId,
         proposed_nodes: [op],
       });
-      ensureContributorRow(db, req.contributor!);
-      bumpApprovedCount(db, req.contributor!.id);
+      ensureContributorRow(db, req.contributor!, signalId);
+      bumpApprovedCount(db, req.contributor!.id, signalId);
       // Re-embed: artwork identity vectors fuse the image, so a new image
       // changes the embedding. embedNodeNow's image_hash check makes this
       // idempotent if the same bytes were already attached.
@@ -751,7 +756,7 @@ router.post(
       target_node: nodeId,
       proposed_nodes: [op],
     });
-    ensureContributorRow(db, req.contributor!);
+    ensureContributorRow(db, req.contributor!, signalId);
     res.set(JSON_HEADERS).json({
       node_id: nodeId,
       upload: upresult,
@@ -1040,7 +1045,7 @@ router.get("/api/v1/review", requireAdmin, (req, res) => {
               q.proposed_nodes, q.proposed_edges,
               s.title AS title, s.source_type AS source_type, s.batch_id AS batch_id
          FROM intake_queue q
-         LEFT JOIN signals s ON s.id = q.signal_id
+         LEFT JOIN signals_full s ON s.id = q.signal_id
         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
         ORDER BY q.created_at DESC
         LIMIT ?`
@@ -1117,7 +1122,7 @@ router.post("/api/v1/review/bulk", requireAdmin, (req, res) => {
   if (typeof batch_id === "string" && batch_id) { where.push("s.batch_id = ?"); params.push(batch_id); }
   if (typeof contributor === "string" && contributor) { where.push("q.submitted_by = ?"); params.push(contributor); }
 
-  const matchSql = `FROM intake_queue q LEFT JOIN signals s ON s.id = q.signal_id WHERE ${where.join(" AND ")}`;
+  const matchSql = `FROM intake_queue q LEFT JOIN signals_full s ON s.id = q.signal_id WHERE ${where.join(" AND ")}`;
   const { count: matched } = db.prepare(`SELECT COUNT(*) AS count ${matchSql}`).get(...params) as any;
   const rows = db
     .prepare(`SELECT q.id ${matchSql} ORDER BY q.created_at ASC LIMIT 500`)

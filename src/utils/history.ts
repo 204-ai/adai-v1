@@ -3,8 +3,8 @@
 // assembles what the correction model already keeps (nothing is deleted):
 //
 //   metadata  — patch / image ops from intake_queue (what was set), joined to
-//               the before-image recordPrior wrote on the causing signal
-//               (signals.processing_trace.prior, src/utils/contribution.ts),
+//               the before-image recordPrior kept for the causing signal
+//               (the local signal_priors, src/utils/signal-private.ts),
 //               plus trace-only writes (retire, apply-image-patch). Writes
 //               older than before-image recording show `before: null`.
 //   relations — every edge touching the node, live or closed: `added` at
@@ -21,6 +21,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { contributorNode, type StandsFor } from "./contributor-node.js";
+import { priorsOf, signalsWithPriorsFor } from "./signal-private.js";
 
 export interface HistorySource {
   signal_id: string;
@@ -129,10 +130,10 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
     if (as) out.by_node = { type: as.type, slug: as.slug };
     return out;
   };
-  const priorOf = (s: any, op: string): any => {
-    const prior = parse(s?.processing_trace)?.prior;
-    return Array.isArray(prior) ? prior.find((p: any) => p?.op === op && p?.node_id === nodeId) ?? null : null;
-  };
+  // Before-images live in the local signal_priors (src/utils/signal-private.ts);
+  // the CRR trace keeps only {op, node_id, at} — so a fork shows the write
+  // without its before side.
+  const priorOf = (s: any, op: string): any => (s ? priorsOf(db, s.id).find((p: any) => p?.op === op && p?.node_id === nodeId) ?? null : null);
 
   // Timestamps are to the second, so writes in one second tie; the causing
   // signal's insertion order breaks the tie.
@@ -176,12 +177,10 @@ export function nodeHistory(db: DatabaseSync, nodeId: string): NodeHistory | nul
   }
 
   // (b) writes recorded only on a signal's trace (admin retire, image shrink).
-  const traced = db.prepare("SELECT id FROM signals WHERE processing_trace LIKE ?").all(like) as any[];
-  for (const { id } of traced) {
+  for (const id of signalsWithPriorsFor(db, nodeId)) {
     const sig = signal(id);
-    const prior = parse(sig?.processing_trace)?.prior;
-    if (!Array.isArray(prior)) continue;
-    for (const p of prior) {
+    if (!sig) continue;
+    for (const p of priorsOf(db, id) as any[]) {
       if (p?.node_id !== nodeId) continue;
       const key = `${id}|${p.op}`;
       if (seen.has(key)) continue;

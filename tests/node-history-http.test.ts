@@ -10,7 +10,7 @@ import { initDb } from "../src/db.js";
 import contributorApi from "../src/routes/contributor-api.js";
 import pages from "../src/routes/pages.js";
 import { mintToken } from "../src/utils/token-mint.js";
-import { insertSignal, insertIntake, materialisePatchNode } from "../src/utils/contribution.js";
+import { insertSignal, insertIntake, materialisePatchNode, materialiseEdge } from "../src/utils/contribution.js";
 import { nodeHistory } from "../src/utils/history.js";
 
 it("history: edits chain before → after, relations show added and ended, retire is the last word", async () => {
@@ -81,19 +81,25 @@ it("history: edits chain before → after, relations show added and ended, retir
 it("history: anonymous hides who; structural_only hides title and source but keeps the change", () => {
   const db = initDb(":memory:");
   db.prepare("INSERT INTO nodes (id, type, name, slug, metadata, updated_by) VALUES ('artwork:x', 'artwork', 'X', 'x', '{\"year\":\"1\"}', 'seed')").run();
+  db.prepare("INSERT INTO nodes (id, type, name, slug, metadata, updated_by) VALUES ('practitioner:p', 'practitioner', 'P', 'p', '{}', 'seed')").run();
   const who = { id: "c", name: "Someone", trust_tier: "auto", token_label: null, token_prefix: "t", scope: "write" } as any;
-  for (const [consent, year] of [[{ consent_attribution: "anonymous" }, "2"], [{ consent_scope: "structural_only" }, "3"]] as const) {
-    const sig = insertSignal(db, { contributor: who, title: "secret title", content: "{}", source_url: "https://example.org/p", ...consent });
-    const op = { op: "patch_node" as const, node_id: "artwork:x", metadata: { year } };
-    materialisePatchNode(db, op, { createdBy: "api-Someone", signalId: sig });
-    insertIntake(db, { contributor: who, signal_id: sig, target_node: "artwork:x", proposed_nodes: [op] });
-  }
-  const [structural, anon] = nodeHistory(db, "artwork:x")!.events as any[];
+  const anonSig = insertSignal(db, { contributor: who, title: "secret title", content: "{}", source_url: "https://example.org/p", consent_attribution: "anonymous" });
+  const op = { op: "patch_node" as const, node_id: "artwork:x", metadata: { year: "2" } };
+  materialisePatchNode(db, op, { createdBy: "api-Someone", signalId: anonSig });
+  insertIntake(db, { contributor: who, signal_id: anonSig, target_node: "artwork:x", proposed_nodes: [op] });
+  // A structural_only contribution gives relations, never node metadata
+  // (it would put its words in a CRR): the write is refused.
+  const structSig = insertSignal(db, { contributor: who, title: "secret title", content: "{}", source_url: "https://example.org/p", consent_scope: "structural_only" });
+  assert.throws(() => materialisePatchNode(db, { op: "patch_node", node_id: "artwork:x", metadata: { year: "3" } }, { createdBy: "api-Someone", signalId: structSig }), /structural_only/);
+  materialiseEdge(db, { source_id: "artwork:x", target_id: "practitioner:p", edge_type: "CREATED_BY" }, { signalId: structSig, createdBy: "api-Someone" });
+  const events = nodeHistory(db, "artwork:x")!.events as any[];
+  const anon = events.find((e) => e.kind === "metadata");
+  const structural = events.find((e) => e.kind === "relation");
   assert.equal(anon.by, null);
   assert.equal(anon.source.title, "secret title");
+  assert.deepEqual(anon.changes, [{ key: "year", before: "1", after: "2" }]);
   assert.equal(structural.by, "Someone");
   assert.equal(structural.source.title, null);
   assert.equal(structural.source.source_url, null);
-  assert.deepEqual(structural.changes, [{ key: "year", before: "2", after: "3" }]);
-  assert.deepEqual(anon.changes, [{ key: "year", before: "1", after: "2" }]);
+  assert.equal(events.length, 2);
 });
