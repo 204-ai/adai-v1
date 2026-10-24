@@ -96,7 +96,7 @@ function main(): void {
     }
     let res: { changes?: number | bigint };
     if (contributor) {
-      const c = db.prepare("SELECT id FROM contributors WHERE name = ?").get(contributor) as any;
+      const c = db.prepare("SELECT id FROM contributors WHERE name = ? AND type IS NOT 'form'").get(contributor) as any;
       if (!c) {
         console.error(`No contributor named "${contributor}".`);
         process.exit(1);

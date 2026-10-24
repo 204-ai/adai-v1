@@ -26,7 +26,7 @@ import {
 } from "./contribution.js";
 import { embedNodeAsync } from "../embed/server.js";
 import { ClaimError, approveClaim, claimByQueueId, rejectClaim } from "../claim/store.js";
-import { ensureAnonymousContributor, isAnonymousSignal, nameHeldBack, publishQueued, rejectedSignals, withholdSignal } from "./signal-private.js";
+import { ensureAnonymousContributor, isAnonymousSignal, isFormSubmission, nameHeldBack, publishQueued, rejectedSignals, withholdSignal } from "./signal-private.js";
 import { approveContext, dismissContest, rejectContext, settleObjections, upholdContest } from "../claim/notes.js";
 
 // Claims and a subject's notes (docs/CLAIM-SPEC.md) settle through their
@@ -159,19 +159,26 @@ export function approveIntakeItem(
   // What was in review is published: its words go into the CRR now — and,
   // for the public form, the contributor row under the typed name.
   const heldName = nameHeldBack(db, item.signal_id);
+  const form = isFormSubmission(db, item.signal_id);
   if (item.kind === "human_signal") publishQueued(db, id);
-  if (heldName && item.submitted_by) {
-    const known = db.prepare("SELECT id FROM contributors WHERE name = ?").get(item.submitted_by) as any;
-    if (known) db.prepare("UPDATE contributors SET contributions = contributions + 1 WHERE id = ?").run(known.id);
-    else db.prepare("INSERT INTO contributors (id, name, type, trust_tier, contributions, approved_count) VALUES (?, ?, 'contributor', 'probationary', 1, 0)")
-      .run(`contributor-${crypto.randomBytes(8).toString("hex")}`, item.submitted_by);
-  }
 
-  // An anonymous contribution counts on the anonymous sentinel, never on its author's row.
+  // Counters. An anonymous contribution counts on the anonymous sentinel. A
+  // public-form one (no authenticated author: the typed name proves nothing)
+  // gets a contributor row of its own — a fresh id, type 'form', the typed
+  // name as its display name — and never counts on an existing row, which
+  // may be someone else's account. An authenticated one counts on its
+  // author's row by id (signal_authors), never by a name.
   if (isAnonymousSignal(db, item.signal_id)) {
     db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE id = ?").run(ensureAnonymousContributor(db));
+  } else if (form || heldName) {
+    if (item.submitted_by) {
+      db.prepare("INSERT INTO contributors (id, name, type, trust_tier, contributions, approved_count) VALUES (?, ?, 'form', 'probationary', 1, 1)")
+        .run(`contributor:form-${crypto.randomBytes(8).toString("hex")}`, item.submitted_by);
+    }
   } else {
-    db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE name = ?").run(item.submitted_by);
+    const author = (db.prepare("SELECT contributor_id FROM signal_authors WHERE signal_id = ?").get(item.signal_id) as any)?.contributor_id;
+    if (author) db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE id = ?").run(author);
+    else db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE name = ? AND type != 'form'").run(item.submitted_by);
   }
   settleObjections(db, id, "approved", reviewedBy);
   contributionWritten(); // what was in review is live now (issue #81)

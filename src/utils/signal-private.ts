@@ -333,6 +333,14 @@ export function publishQueued(db: DatabaseSync, queueId: string): void {
   }
 }
 
+/** A public-form submission: a plain contribution with no authenticated author (signal_authors). */
+export function isFormSubmission(db: DatabaseSync, signalId: string | null | undefined): boolean {
+  if (!signalId || !hasTable(db, "signal_authors")) return false;
+  return !!db.prepare(
+    "SELECT 1 FROM signals s WHERE s.id = ? AND s.source_type = 'contribution' AND NOT EXISTS (SELECT 1 FROM signal_authors a WHERE a.signal_id = s.id)"
+  ).get(signalId);
+}
+
 /** Whether a signal's author name is held back while it is in review (the public form). */
 export function nameHeldBack(db: DatabaseSync, signalId: string | null | undefined): boolean {
   if (!signalId || !hasTable(db, "signal_private")) return false;

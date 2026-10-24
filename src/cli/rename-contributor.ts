@@ -78,12 +78,12 @@ function main(): void {
   initDb(dbPath);
   const db = getDb();
 
-  const fromRow = db.prepare("SELECT id, name, trust_tier FROM contributors WHERE name = ?").get(from) as any;
+  const fromRow = db.prepare("SELECT id, name, trust_tier FROM contributors WHERE name = ? AND type IS NOT 'form'").get(from) as any;
   if (!fromRow) {
     console.error(`Error: no contributor named "${from}".`);
     process.exit(1);
   }
-  const toRow = db.prepare("SELECT id FROM contributors WHERE name = ?").get(to) as any;
+  const toRow = db.prepare("SELECT id FROM contributors WHERE name = ? AND type IS NOT 'form'").get(to) as any;
   if (toRow && toRow.id !== fromRow.id) {
     console.error(`Error: "${to}" already names a different contributor (${toRow.id}). This is a rename, not a merge — refusing.`);
     process.exit(1);

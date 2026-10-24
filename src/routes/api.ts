@@ -539,9 +539,11 @@ router.post("/api/contribute", (req, res) => {
   const signalId = `signal-${crypto.randomBytes(8).toString("hex")}`;
   const intakeId = `intake-${crypto.randomBytes(8).toString("hex")}`;
 
-  let trustTier = "probationary";
-  const contrib = db.prepare("SELECT trust_tier FROM contributors WHERE name = ?").get(contributor_name) as any;
-  if (contrib) trustTier = contrib.trust_tier;
+  // The public form is anonymous by identity: a typed name proves nothing, so
+  // it never borrows anyone's trust tier — every submission is probationary
+  // and goes to /review — and it never counts on an existing contributor row
+  // (approval writes a separate 'form' row: approveIntakeItem).
+  const trustTier = "probationary";
 
   const scope = consent_scope === "structural_only" ? "structural_only" : "full_commons";
   const attribution =
@@ -551,43 +553,27 @@ router.post("/api/contribute", (req, res) => {
 
   // Consent splits the row (src/utils/signal-private.ts): structural_only
   // words / an anonymous name never reach the CRR.
-  const intakeStatus = trustTier === "auto" || trustTier === "reviewed" ? "approved" : "pending";
+  const intakeStatus = "pending";
   // A queued contribution's words are published when a curator approves it.
   insertSignalRow(db, {
     id: signalId, title, source_url: srcUrl.value, source_type: "contribution", cla_layer: null, summary: null, content,
     submitted_by: contributor_name, confidence: trustTier, lived_experience: 0,
     consent_scope: scope, consent_attribution: attribution, source_origin: "human_primary",
-  }, intakeStatus === "pending" ? (attribution === "anonymous" ? ["pending"] : ["pending", "pending_name"]) : []);
+  }, attribution === "anonymous" ? ["pending"] : ["pending", "pending_name"]);
 
   db.prepare(
     "INSERT INTO intake_queue (id, signal_id, target_node, submitted_by, trust_tier, status) VALUES (?, ?, ?, ?, ?, ?)"
   ).run(intakeId, signalId, target_node, contributor_name, trustTier, intakeStatus);
 
-  // An anonymous contribution is counted on the anonymous sentinel: a row
-  // (or a counter) under the typed name would name its author in the CRR.
-  // One in review writes no contributor row or counter at all: the typed name
-  // is held back with the words (signal_private, 'pending_name') and the row
-  // is written when a curator approves it (approveIntakeItem).
-  if (intakeStatus === "pending" && attribution !== "anonymous") {
-    // nothing public yet
-  } else if (attribution === "anonymous") {
+  // An anonymous contribution is counted on the anonymous sentinel. An
+  // attributed one writes no contributor row or counter while in review: the
+  // typed name is held back with the words (signal_private, 'pending_name')
+  // and approval writes a row of its own for it (approveIntakeItem).
+  if (attribution === "anonymous") {
     db.prepare("UPDATE contributors SET contributions = contributions + 1 WHERE id = ?").run(ensureAnonymousContributor(db));
-  } else {
-    const existing = db.prepare("SELECT id FROM contributors WHERE name = ?").get(contributor_name) as any;
-    if (!existing) {
-      const contribId = `contributor-${crypto.randomBytes(8).toString("hex")}`;
-      db.prepare(
-        "INSERT INTO contributors (id, name, type, trust_tier, contributions, approved_count) VALUES (?, ?, ?, ?, ?, ?)"
-      ).run(contribId, contributor_name, "contributor", "probationary", 1, 0);
-    } else {
-      db.prepare("UPDATE contributors SET contributions = contributions + 1 WHERE name = ?").run(contributor_name);
-    }
   }
 
-  const responseHtml =
-    intakeStatus === "approved"
-      ? "<div class='msg msg-ok'>Signal submitted and auto-approved (reviewed contributor). It is now live.</div>"
-      : "<div class='msg msg-ok'>Signal submitted successfully. It has been queued for review.</div>";
+  const responseHtml = "<div class='msg msg-ok'>Signal submitted successfully. It has been queued for review.</div>";
 
   res.set(HTML_HEADERS).send(responseHtml);
 });

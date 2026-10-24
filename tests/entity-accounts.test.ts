@@ -191,12 +191,14 @@ it("impersonation: the public form cannot speak as the subject or borrow a linke
         body: JSON.stringify({ target_node: target, title: "Fake", content: `Pretending to be ${name}.`, contributor_name: name }) });
       assert.ok(r.status < 400, String(r.status));
     }
+    // the form never inherits a tier by name: both wait in review, unshown
+    for (const id of ["practitioner:artist-b", "publication:catalogue"]) assert.equal(accountsFor(db, id).find((a) => a.title === "Fake"), undefined);
+    const { approveIntakeItem } = await import("../src/utils/review.js");
+    for (const q of db.prepare("SELECT id FROM intake_queue WHERE status = 'pending'").all() as any[]) approveIntakeItem(db, q.id, "curator");
     for (const id of ["practitioner:artist-b", "publication:catalogue"]) {
       const fake = accountsFor(db, id).find((a) => a.title === "Fake");
-      // (the form inherits the named contributor's trust tier — a separate,
-      // pre-existing bug — so it may be approved and shown; it has no standing)
-      if (id === "practitioner:artist-b") assert.ok(fake, "shown, through the tier the form inherits by name");
-      if (!fake) continue;
+      // approved by a curator, it is shown — with no standing
+      assert.ok(fake, "shown once approved");
       assert.equal(fake.subject, false);
       assert.equal(fake.verified, false);
       assert.equal(fake.by_node, null);
