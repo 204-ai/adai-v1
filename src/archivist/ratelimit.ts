@@ -25,7 +25,7 @@ const SESSION_WINDOW_S = parseInt(process.env.ARCHIVIST_SESSION_WINDOW_S || "360
 // Global daily cap in USD. Default $5/day — enough for thousands of
 // haiku messages, low enough that a single bad day costs less than a
 // coffee.
-function dailyBudgetUsd(): number {
+export function dailyBudgetUsd(): number {
   const raw = process.env.ARCHIVIST_DAILY_BUDGET_USD;
   if (!raw) return 5;
   const n = parseFloat(raw);
@@ -87,7 +87,7 @@ export function estimateCostUsd(u: UsageTally): number {
   );
 }
 
-function todayUtc(): string {
+export function todayUtc(): string {
   // YYYY-MM-DD in UTC. The day rolls at 00:00 UTC regardless of where the
   // user is — keeps a single source of truth and avoids edge cases.
   return new Date().toISOString().slice(0, 10);
