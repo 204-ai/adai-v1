@@ -24,14 +24,17 @@ const has = (db: DatabaseSync, t: string) => !!db.prepare("SELECT 1 FROM sqlite_
  * SQL: whether signal alias `s` is form-shaped (rule 3, before the author /
  * form-row checks). Shared by every query that needs it.
  */
-export function formShapedSql(s = "s"): string {
-  return `(COALESCE(${s}.source_type, 'contribution') = 'contribution'
-    AND COALESCE((SELECT fp.batch_id FROM signal_private fp WHERE fp.signal_id = ${s}.id), ${s}.batch_id) IS NULL)`;
+export function formShapedSql(s = "s", withPrivate = true): string {
+  // an anonymous signal's batch id is on the private side — when the file has one
+  const batch = withPrivate ? `COALESCE((SELECT fp.batch_id FROM signal_private fp WHERE fp.signal_id = ${s}.id), ${s}.batch_id)` : `${s}.batch_id`;
+  return `(COALESCE(${s}.source_type, 'contribution') = 'contribution' AND ${batch} IS NULL)`;
 }
 
 /**
  * SQL: whether signal alias `s` belongs to the contributor bound as
- * `:owner_id` (display name `:owner_name`) — rules 1, 2 and 4.
+ * `:owner_id` (display name `:owner_name`) — rules 1, 2 and 4. For a live
+ * database (initDb: every local table present); signalOwner is the one that
+ * also reads an old-schema file.
  */
 export function ownedBySql(s = "s"): string {
   return `(EXISTS (SELECT 1 FROM signal_authors oa WHERE oa.signal_id = ${s}.id AND oa.contributor_id = :owner_id)
@@ -47,7 +50,7 @@ export function ownedBySql(s = "s"): string {
 export function isFormShaped(db: DatabaseSync, signalId: string | null | undefined): boolean {
   if (!signalId) return false;
   if (has(db, "signal_authors") && db.prepare("SELECT 1 FROM signal_authors WHERE signal_id = ?").get(signalId)) return false;
-  return !!db.prepare(`SELECT 1 FROM signals s WHERE s.id = ? AND ${formShapedSql("s")}`).get(signalId);
+  return !!db.prepare(`SELECT 1 FROM signals s WHERE s.id = ? AND ${formShapedSql("s", has(db, "signal_private"))}`).get(signalId);
 }
 
 /** The contributor a signal belongs to, and how that is known; null when it belongs to no one provably. */
@@ -61,7 +64,8 @@ export function signalOwner(db: DatabaseSync, signalId: string | null | undefine
     const f = (db.prepare("SELECT contributor_id FROM form_signals WHERE signal_id = ?").get(signalId) as any)?.contributor_id;
     if (f) return { id: f, how: "form" };
   }
-  const s = db.prepare(`SELECT s.submitted_by, ${formShapedSql("s")} AS form FROM signals s WHERE s.id = ?`).get(signalId) as any;
+  // (a snapshot source may predate the local tables: each one is optional)
+  const s = db.prepare(`SELECT s.submitted_by, ${formShapedSql("s", has(db, "signal_private"))} AS form FROM signals s WHERE s.id = ?`).get(signalId) as any;
   if (!s || s.form || !s.submitted_by) return null;
   const k = db.prepare("SELECT id FROM contributors WHERE (name = ? OR id = ?) AND type IS NOT 'form'").all(s.submitted_by, s.submitted_by) as any[];
   return k.length === 1 ? { id: k[0].id, how: "legacy" } : null;

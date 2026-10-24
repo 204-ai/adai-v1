@@ -26,7 +26,7 @@ import {
 } from "./contribution.js";
 import { embedNodeAsync } from "../embed/server.js";
 import { ClaimError, approveClaim, claimByQueueId, rejectClaim } from "../claim/store.js";
-import { isFormShaped, recordFormSignal } from "./authorship.js";
+import { isFormShaped, recordFormSignal, signalOwner } from "./authorship.js";
 import { ensureAnonymousContributor, isAnonymousSignal, nameHeldBack, publishQueued, rejectedSignals, withholdSignal } from "./signal-private.js";
 import { approveContext, dismissContest, rejectContext, settleObjections, upholdContest } from "../claim/notes.js";
 
@@ -167,8 +167,9 @@ export function approveIntakeItem(
   // public-form one (no authenticated author: the typed name proves nothing)
   // gets a contributor row of its own — a fresh id, type 'form', the typed
   // name as its display name — and never counts on an existing row, which
-  // may be someone else's account. An authenticated one counts on its
-  // author's row by id (signal_authors), never by a name.
+  // may be someone else's account. Anything else counts on exactly the row
+  // the signal provably belongs to (signalOwner: its authenticated author,
+  // or a legacy write whose name / id is unambiguous) — or on nobody.
   if (isAnonymousSignal(db, item.signal_id)) {
     db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE id = ?").run(ensureAnonymousContributor(db));
   } else if (form || heldName) {
@@ -179,9 +180,8 @@ export function approveIntakeItem(
       if (item.signal_id) recordFormSignal(db, item.signal_id, formId); // this signal is that row's, and only it
     }
   } else {
-    const author = (db.prepare("SELECT contributor_id FROM signal_authors WHERE signal_id = ?").get(item.signal_id) as any)?.contributor_id;
-    if (author) db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE id = ?").run(author);
-    else db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE name = ? AND type != 'form'").run(item.submitted_by);
+    const owner = signalOwner(db, item.signal_id);
+    if (owner) db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE id = ?").run(owner.id);
   }
   settleObjections(db, id, "approved", reviewedBy);
   contributionWritten(); // what was in review is live now (issue #81)

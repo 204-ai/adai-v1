@@ -48,6 +48,7 @@ import { createHash } from "node:crypto";
 import { cosine, invalidateVectorCache, loadAll } from "./vectors.js";
 import { embedModel } from "./provider.js";
 import { centroidsInMemory, writeCentroids } from "./centroids.js";
+import { CENTROID_EDGES_SQL, CREATED_BY_SQL, EMBODIES_MEMBERS_SQL, REJECTED_SQL, VECTORS_SQL } from "./inputs.js";
 import {
   propagateConcepts,
   CONCEPT_DEFAULTS,
@@ -262,15 +263,7 @@ function plan(db: DatabaseSync, opts: DeriveOptions): Plan {
   // or collectives — same filter as centroids.ts.
   const creatorsByArtwork = new Map<string, Set<string>>();
   {
-    const rows = db
-      .prepare(
-        `SELECT source_id, target_id FROM edges
-         WHERE edge_type = 'CREATED_BY'
-           AND valid_until IS NULL
-           AND source_id LIKE 'artwork:%'
-           AND (target_id LIKE 'practitioner:%' OR target_id LIKE 'collective:%')`
-      )
-      .all() as Array<{ source_id: string; target_id: string }>;
+    const rows = db.prepare(CREATED_BY_SQL).all() as Array<{ source_id: string; target_id: string }>;
     for (const r of rows) {
       if (!creatorsByArtwork.has(r.source_id)) creatorsByArtwork.set(r.source_id, new Set());
       creatorsByArtwork.get(r.source_id)!.add(r.target_id);
@@ -280,7 +273,7 @@ function plan(db: DatabaseSync, opts: DeriveOptions): Plan {
   // Rejection cache — skip any proposal whose pair_hash is already rejected.
   const rejected = new Set(
     (
-      db.prepare("SELECT pair_hash FROM rejected_ai_suggestions").all() as Array<{ pair_hash: string }>
+      db.prepare(REJECTED_SQL).all() as Array<{ pair_hash: string }>
     ).map((r) => r.pair_hash)
   );
 
@@ -458,26 +451,35 @@ function plan(db: DatabaseSync, opts: DeriveOptions): Plan {
 }
 
 /**
- * A fingerprint of everything derive reads: live CREATED_BY and attested
- * EMBODIES edges, retired nodes, the current model's vectors (and the stored
- * centroids when they are not recomputed), rejected suggestions. Equal
+ * A fingerprint of everything derive reads: the current model's vectors of
+ * existing, non-retired nodes (bytes included; the stored centroids only
+ * when they are not recomputed), live attributions (and those a centroid is
+ * built from), attested EMBODIES membership, rejected suggestions. Equal
  * fingerprints = the plan computed on the read snapshot is still right.
  */
 function inputFingerprint(db: DatabaseSync, opts: DeriveOptions): string {
+  // EXACTLY the queries the computation runs (src/embed/inputs.ts), in a
+  // stable order, every value hashed — vector bytes included.
   const h = createHash("sha256");
-  const feed = (sql: string, ...params: Array<string | number>) => {
-    for (const r of db.prepare(sql).iterate(...params) as Iterable<any>) h.update(JSON.stringify(Object.values(r)) + "\n");
+  const ordered = (sql: string, order: string) => `SELECT * FROM (${sql}) ORDER BY ${order}`;
+  const feed = (sql: string, params: Array<string | number>, keep: (r: any) => boolean = () => true) => {
+    for (const r of db.prepare(sql).iterate(...params) as Iterable<any>) {
+      if (!keep(r)) continue;
+      for (const v of Object.values(r)) {
+        if (v instanceof Uint8Array) h.update(v);
+        else h.update(JSON.stringify(v ?? null));
+        h.update("\u0000");
+      }
+      h.update("\n");
+    }
     h.update("|");
   };
-  feed(`SELECT source_id, target_id FROM edges WHERE edge_type = 'CREATED_BY' AND valid_until IS NULL ORDER BY source_id, target_id`);
-  feed(`SELECT source_id, target_id FROM edges WHERE edge_type = 'EMBODIES' AND valid_until IS NULL AND created_by IS NOT ? ORDER BY source_id, target_id`, CREATED_BY_TAG);
-  feed(`SELECT id, type FROM nodes WHERE json_extract(metadata, '$.retired') = 1 ORDER BY id`);
-  feed(
-    `SELECT node_id, kind, dims, text_hash, image_hash, created_at, length(vector) FROM node_embeddings
-      WHERE model = ? ${opts.skipCentroids ? "" : "AND kind = 'identity'"} ORDER BY node_id, kind`,
-    embedModel()
-  );
-  feed(`SELECT pair_hash FROM rejected_ai_suggestions ORDER BY pair_hash`);
+  // vectors: identity always; stored centroids only when they are used (skipCentroids)
+  feed(ordered(VECTORS_SQL, "node_id, kind"), [embedModel()], (r) => r.kind === "identity" || !!opts.skipCentroids);
+  feed(ordered(CREATED_BY_SQL, "source_id, target_id"), []);
+  if (!opts.skipCentroids) feed(ordered(CENTROID_EDGES_SQL, "source_id, target_id"), []);
+  feed(ordered(EMBODIES_MEMBERS_SQL, "source_id, target_id"), [CREATED_BY_TAG]);
+  feed(ordered(REJECTED_SQL, "pair_hash"), []);
   return h.digest("hex");
 }
 

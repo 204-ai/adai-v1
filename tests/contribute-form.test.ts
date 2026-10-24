@@ -259,3 +259,47 @@ it("contributor:rename rewrites only what is provably theirs; the shared predica
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it("approval credits exactly the provable owner: an ambiguous legacy name credits nobody, an unambiguous id credits that one", async () => {
+  const db = initDb(":memory:");
+  insertNode(db, "artwork:w", "artwork", "W");
+  db.prepare("INSERT INTO contributors (id, name, type, trust_tier, contributions, approved_count) VALUES ('c-a', 'Twin', 'contributor', 'reviewed', 0, 0), ('c-b', 'Twin', 'contributor', 'reviewed', 0, 0), ('c-solo', 'Solo', 'contributor', 'reviewed', 0, 0)").run();
+  // legacy /api/v1 writes (no recorded author; a batch id, so not form-shaped)
+  db.prepare("INSERT INTO signals (id, title, content, source_type, submitted_by, batch_id) VALUES ('s-twin', 't', 'c', 'api_node', 'Twin', 'b'), ('s-solo', 't', 'c', 'api_node', 'c-solo', 'b')").run();
+  db.prepare("INSERT INTO intake_queue (id, signal_id, target_node, submitted_by, trust_tier, status) VALUES ('q-twin', 's-twin', 'artwork:w', 'Twin', 'reviewed', 'pending'), ('q-solo', 's-solo', 'artwork:w', 'c-solo', 'reviewed', 'pending')").run();
+  approveIntakeItem(db, "q-twin", "curator");
+  approveIntakeItem(db, "q-solo", "curator");
+  const counts = Object.fromEntries((db.prepare("SELECT id, approved_count FROM contributors WHERE id IN ('c-a', 'c-b', 'c-solo')").all() as any[]).map((r) => [r.id, r.approved_count]));
+  assert.deepEqual(counts, { "c-a": 0, "c-b": 0, "c-solo": 1 });
+  // the same owner every other surface uses
+  const { signalOwner } = await import("../src/utils/authorship.js");
+  assert.equal(signalOwner(db, "s-twin"), null);
+  assert.deepEqual(signalOwner(db, "s-solo"), { id: "c-solo", how: "legacy" });
+});
+
+it("snapshot export reads an old-schema source (no local tables at all)", async () => {
+  const { DatabaseSync: Plain } = await import("node:sqlite");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { buildSnapshot } = await import("../src/snapshot/build.js");
+  const dir = mkdtempSync(join(tmpdir(), "oldsnap-"));
+  try {
+    const src = new Plain(join(dir, "old.sqlite"));
+    src.exec(`CREATE TABLE nodes (id TEXT PRIMARY KEY, type TEXT, name TEXT, slug TEXT, metadata TEXT, created_at TEXT, updated_by TEXT);
+      CREATE TABLE edges (id TEXT PRIMARY KEY, source_id TEXT, target_id TEXT, edge_type TEXT, signal_id TEXT, confidence TEXT, charge TEXT, created_at TEXT, created_by TEXT, event_time TEXT, valid_from TEXT, valid_until TEXT, invalidated_by TEXT);
+      CREATE TABLE signals (id TEXT PRIMARY KEY, title TEXT, source_url TEXT, source_type TEXT, cla_layer TEXT, summary TEXT, content TEXT, submitted_by TEXT, confidence TEXT, lived_experience INTEGER, created_at TEXT, consent_scope TEXT, consent_attribution TEXT, consent_revocable INTEGER, processing_trace TEXT, source_origin TEXT, batch_id TEXT, status TEXT, provenance_chain TEXT);
+      CREATE TABLE contributors (id TEXT PRIMARY KEY, name TEXT, type TEXT, trust_tier TEXT, contributions INTEGER, approved_count INTEGER, created_at TEXT);
+      CREATE TABLE node_aliases (source TEXT, external_id TEXT, node_id TEXT, created_at TEXT, PRIMARY KEY (source, external_id));
+      INSERT INTO nodes (id, type, name, slug) VALUES ('artwork:w', 'artwork', 'W', 'w');
+      INSERT INTO contributors (id, name, type) VALUES ('c1', 'Writer', 'contributor');
+      INSERT INTO signals (id, title, content, source_type, submitted_by, batch_id, status) VALUES ('s1', 't', 'words', 'api_node', 'Writer', 'b1', 'active'), ('s2', 'form', 'typed', 'contribution', 'Writer', NULL, 'active');`);
+    buildSnapshot(src, join(dir, "out.sqlite"));
+    const out = new Plain(join(dir, "out.sqlite"), { readOnly: true });
+    assert.deepEqual({ ...(out.prepare("SELECT id, contributions FROM contributors").get() as any) }, { id: "c1", contributions: 1 }, "the legacy write credited, the form-shaped one not");
+    out.close();
+    src.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

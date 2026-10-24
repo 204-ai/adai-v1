@@ -21,6 +21,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { encodeBlob, keyFor, loadAll, meanAndNormalise, invalidateVectorCache, type VectorRow, DIMS } from "./vectors.js";
 
 import { embedModel } from "./provider.js";
+import { CENTROID_EDGES_SQL } from "./inputs.js";
 
 export interface CentroidStats {
   creators_with_centroid: number;
@@ -39,15 +40,8 @@ export function centroidsInMemory(db: DatabaseSync, vectors?: Map<string, Vector
   // Map: creator_id (practitioner or collective) → list of artwork vectors.
   const byCreator = new Map<string, Float32Array[]>();
 
-  const edges = db
-    .prepare(
-      `SELECT source_id, target_id FROM edges
-       WHERE edge_type = 'CREATED_BY'
-         AND valid_until IS NULL
-         AND source_id LIKE 'artwork:%'
-         AND (target_id LIKE 'practitioner:%' OR target_id LIKE 'collective:%')`
-    )
-    .all() as Array<{ source_id: string; target_id: string }>;
+  // only to creators that exist and are not retired (CENTROID_EDGES_SQL)
+  const edges = db.prepare(CENTROID_EDGES_SQL).all() as Array<{ source_id: string; target_id: string }>;
 
   let missing = 0;
   for (const e of edges) {

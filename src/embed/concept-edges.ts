@@ -27,6 +27,7 @@
 // never collides with an attested (confidence 1.0) EMBODIES.
 
 import type { DatabaseSync } from "node:sqlite";
+import { EMBODIES_MEMBERS_SQL } from "./inputs.js";
 
 export interface ConceptPropagateOptions {
   tauCoherence: number; // min centred member→centroid cosine
@@ -99,15 +100,10 @@ export function propagateConcepts(
 
   // 1. Attested EMBODIES members per concept (exclude our own derived rows so
   //    a re-run never bootstraps off last run's guesses).
+  //    A NULL writer is attested too (EMBODIES_MEMBERS_SQL: `IS NOT`, shared
+  //    with derive's input fingerprint).
   const memberRows = db
-    .prepare(
-      `SELECT source_id, target_id FROM edges
-       WHERE edge_type = 'EMBODIES'
-         AND valid_until IS NULL
-         AND created_by != ?
-         AND source_id LIKE 'artwork:%'
-         AND target_id LIKE 'concept:%'`
-    )
+    .prepare(EMBODIES_MEMBERS_SQL)
     .all(createdByTag) as Array<{ source_id: string; target_id: string }>;
 
   const membersByConcept = new Map<string, Set<string>>();

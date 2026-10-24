@@ -198,3 +198,64 @@ it("inputs changing on every attempt: derive fails cleanly and writes nothing �
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it("the fingerprint sees a vector's bytes: a same-size replacement between read and apply is recomputed and ends right", () => {
+  const { dir, a, b } = fileSetup();
+  try {
+    derive(a, OPTS);
+    invalidateVectorCache();
+    const r = derive(a, { ...OPTS, afterRead: (n) => {
+      if (n === 1) b.prepare("UPDATE node_embeddings SET vector = ? WHERE node_id = 'artwork:b3' AND model = ?").run(new Uint8Array(vec([7, 1]).buffer), embedModel());
+    } });
+    assert.equal(r.attempts, 2, "same length, same hashes, other bytes: detected");
+    invalidateVectorCache();
+    const again = derive(a, OPTS);
+    assert.deepEqual([again.attempts, again.edges.inserted, again.edges.deleted, again.edges.updated_rows], [1, 0, 0, 0], "matches a clean run");
+  } finally {
+    a.close(); b.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("EMBODIES membership: the computation and the fingerprint share one predicate — a NULL writer is attested; a membership change is recomputed", () => {
+  const { dir, a, b } = fileSetup();
+  try {
+    // a NULL writer counts as an attested member, exactly like an ordinary one
+    a.prepare("UPDATE edges SET created_by = NULL WHERE id = 'artwork:a1--EMBODIES--concept:grid--test'").run();
+    const withNull = derive(a, OPTS);
+    const derivedNull = a.prepare("SELECT id FROM edges WHERE created_by = 'embedding-multimodal-v1' AND edge_type = 'EMBODIES' ORDER BY id").all();
+    assert.ok(withNull.concept_embodies.edges_emitted > 0, "the NULL-writer member still propagates");
+    // writer NULL → ordinary between read and apply: same membership → no recompute, still right
+    invalidateVectorCache();
+    const r1 = derive(a, { ...OPTS, afterRead: (n) => { if (n === 1) b.prepare("UPDATE edges SET created_by = 'curator' WHERE id = 'artwork:a1--EMBODIES--concept:grid--test'").run(); } });
+    assert.deepEqual([r1.attempts, r1.edges.inserted, r1.edges.deleted], [1, 0, 0]);
+    assert.deepEqual(a.prepare("SELECT id FROM edges WHERE created_by = 'embedding-multimodal-v1' AND edge_type = 'EMBODIES' ORDER BY id").all(), derivedNull);
+    // a member ended between read and apply: membership changed → recomputed
+    invalidateVectorCache();
+    const r2 = derive(a, { ...OPTS, afterRead: (n) => { if (n === 1) b.prepare("UPDATE edges SET valid_until = '2026-10-25T00:00:00Z' WHERE id = 'artwork:a2--EMBODIES--concept:grid--test'").run(); } });
+    assert.equal(r2.attempts, 2);
+    invalidateVectorCache();
+    const again = derive(a, OPTS);
+    assert.deepEqual([again.edges.inserted, again.edges.deleted, again.edges.updated_rows], [0, 0, 0], "matches a clean run");
+  } finally {
+    a.close(); b.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("a retired creator with a live CREATED_BY gets no centroid: absent from STYLE_KIN, the other kinships unchanged", async () => {
+  const { centroidsInMemory } = await import("../src/embed/centroids.js");
+  const kin = (db: DatabaseSync) => (db.prepare("SELECT id FROM edges WHERE created_by = 'embedding-multimodal-v1' AND edge_type = 'STYLE_KIN' ORDER BY id").all() as any[]).map((r) => r.id as string);
+  const base = setup();
+  derive(base, OPTS);
+  const before = kin(base);
+  assert.ok(before.some((id) => id.includes("practitioner:p6")), "p6 has kin while active");
+  const db = setup();
+  db.prepare(`UPDATE nodes SET metadata = '{"retired":true}' WHERE id = 'practitioner:p6'`).run();
+  invalidateVectorCache();
+  assert.equal(centroidsInMemory(db).centroids.has("practitioner:p6"), false);
+  derive(db, OPTS);
+  const after = kin(db);
+  assert.ok(after.length > 0 && after.every((id) => !id.includes("practitioner:p6")));
+  assert.deepEqual(after, before.filter((id) => !id.includes("practitioner:p6")), "the surviving kin set is unaffected");
+});
