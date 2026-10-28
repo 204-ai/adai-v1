@@ -76,9 +76,9 @@ const BODY = `
     <div class="step"><div class="no">01</div><div class="b"><p>We'll send you a private access token separately — treat it like a password.</p></div></div>
 
     <div class="step"><div class="no">02</div><div class="b">
-      <p><b class="k">Download the skill.</b> Open this link and save the file to your computer (Downloads is fine):</p>
-      <div class="paste"><a class="u" href="/skill.md">https://digitalartsinstitute.io/skill.md</a>
-<span class="muted">right-click  →  "save as…"  →  keep the name  skill.md</span></div>
+      <p><b class="k">Download the skill.</b> Click this link — it saves a zip file to your computer (Downloads is fine). Don't unzip it; Claude takes it as is:</p>
+      <div class="paste"><a class="u" href="/adai-contribute.zip" download>https://digitalartsinstitute.io/adai-contribute.zip</a>
+<span class="muted">the skill itself, as plain text: <a href="/skill.md">skill.md</a></span></div>
     </div></div>
 
     <div class="step"><div class="no">03</div><div class="b">
@@ -108,7 +108,7 @@ const BODY = `
     </div></div>
 
     <div class="step"><div class="no">05</div><div class="b">
-      <p><b class="k">Add the skill.</b> On the same page, under Skills, press + and choose the skill.md you saved.</p>
+      <p><b class="k">Add the skill.</b> On the same page, under Skills, press +, choose Upload a skill, and pick the adai-contribute.zip you saved.</p>
       <div class="scr">
         <div class="ln"><span>skills</span><span class="pill-sel">+&nbsp; &larr; press</span></div>
         <div class="rule"></div>

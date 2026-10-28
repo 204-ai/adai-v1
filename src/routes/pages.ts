@@ -24,6 +24,7 @@ import { entityPage } from "../entity/page.js";
 import { movedTo } from "../utils/moved.js";
 import { contributorsAs } from "../utils/contributor-node.js";
 import { ownedBySql } from "../utils/authorship.js";
+import { skillZip, SKILL_FOLDER } from "../utils/zip.js";
 import { ACCOUNTS_SHOWN, accountItems, accountsPage, decodeCursor, encodeCursor } from "../entity/accounts.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -48,6 +49,28 @@ router.get("/skill.md", (_req, res) => {
       "Access-Control-Allow-Origin": "*",
     })
     .send(fs.readFileSync(skillPath, "utf-8"));
+});
+
+// GET /adai-contribute.zip — the same SKILL.md packed the way Claude's skill
+// uploader takes it (Customize → Skills → Upload wants a .zip holding
+// `adai-contribute/SKILL.md`), so an artist downloads one file and uploads it
+// as is. Built per request from the file on disk: it can never drift from
+// /skill.md. `/skill.zip` is a short alias.
+router.get(["/adai-contribute.zip", "/skill.zip"], (_req, res) => {
+  const skillPath = path.join(PROJECT_ROOT, "SKILL.md");
+  if (!fs.existsSync(skillPath)) {
+    res.status(404).type("text/plain").send("SKILL.md not found");
+    return;
+  }
+  const zip = skillZip(fs.readFileSync(skillPath), fs.statSync(skillPath).mtime);
+  res
+    .set({
+      "Content-Type": "application/zip",
+      "Content-Disposition": `attachment; filename="${SKILL_FOLDER}.zip"`,
+      "Cache-Control": "public, max-age=300",
+      "Access-Control-Allow-Origin": "*",
+    })
+    .send(zip);
 });
 
 const ENTITY_TYPES_EXCLUDE = "('related', 'concept', 'scene', 'classification_regime')";
