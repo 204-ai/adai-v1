@@ -23,6 +23,7 @@ import {
   insertIntake,
   ensureContributorRow,
   bumpApprovedCount,
+  existingNodeBySlug,
   materialiseCreateNode,
   materialisePatchNode,
   materialiseAttachImage,
@@ -1195,7 +1196,16 @@ export async function confirmDraft(
       refToId.set(`cid:${c.cid}`, c.resolves_to);
       linked.push(c.resolves_to);
     } else {
-      refToId.set(`cid:${c.cid}`, `${c.node.type}:${slugify(c.node.name)}`);
+      // Server-side dedupe on (type, slug): a live node at the same address
+      // under another id (a legacy spaced id) is that node — link, not create.
+      const createId = `${c.node.type}:${slugify(c.node.name)}`;
+      const sameSlug = db.prepare("SELECT 1 FROM nodes WHERE id = ?").get(createId) ? null : existingNodeBySlug(db, c.node.type, slugify(c.node.name));
+      if (sameSlug) {
+        refToId.set(`cid:${c.cid}`, sameSlug);
+        linked.push(sameSlug);
+        continue;
+      }
+      refToId.set(`cid:${c.cid}`, createId);
       createOps.push({ cid: c.cid, c });
     }
   }
