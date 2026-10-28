@@ -48,8 +48,10 @@ Expected:
 version live on the server; the copy you're running declares its own in the
 `version:` field at the very top of this file. **If the two don't match,
 you're on an outdated copy** — stop, and tell the practitioner to re-download
-it from https://digitalartsinstitute.io/skill.md (right-click → "save as…" →
-keep the name `skill.md`), re-add it, and start a fresh task. Endpoints and
+it as https://digitalartsinstitute.io/adai-contribute.zip (a zip holding
+`adai-contribute/SKILL.md` — upload it to Claude as is, no unzipping; the
+plain text stays at https://digitalartsinstitute.io/skill.md), re-add it, and
+start a fresh task. Endpoints and
 conventions change between versions; don't contribute on a stale skill.
 
 If `trust_tier` is `auto` or `reviewed`, your writes go live immediately.

@@ -279,6 +279,9 @@ empty — it requires evidence of artist intent, not thematic similarity.
   contributor holds an admin token; `POST /api/review/:id/*` likewise)
 - `GET /claim/:type/:slug` · `GET /me` · `GET /@:handle` — claims (below)
 - `GET /skill.md` — the contributor contract (verbatim `SKILL.md`)
+- `GET /adai-contribute.zip` (alias `/skill.zip`) — the same file as Claude's
+  skill uploader takes it: a zip holding `adai-contribute/SKILL.md`, built per
+  request from `SKILL.md` (`src/utils/zip.ts`, no dependency)
 - `GET /whitepaper` — the current whitepaper; `/whitepaper/v1.7` pins a release
   (see *Whitepaper* below)
 - `GET /offline` — the commons on your own machine (issue #82): download the
