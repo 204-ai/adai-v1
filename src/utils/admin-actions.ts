@@ -531,6 +531,9 @@ export interface MergeNodesResult {
   aliases_moved: Array<{ source: string; external_id: string }>;
   /** Pending review items that name the duplicate (left as they are; a curator sees them). */
   pending_mentions: number;
+  /** Local links to the duplicate repointed to the kept node: tokens' byline node, invites' self node. */
+  tokens_repointed: number;
+  emails_repointed: number;
   admin_signal_id: string | null;
 }
 
@@ -602,6 +605,8 @@ export function mergeNodes(
     keys_kept: keysKept,
     aliases_moved: aliases.map((a) => ({ source: a.source, external_id: a.external_id })),
     pending_mentions: Number(pending?.n ?? 0),
+    tokens_repointed: Number((db.prepare("SELECT COUNT(*) AS n FROM contributor_tokens WHERE node_id = ?").get(fromId) as any)?.n ?? 0),
+    emails_repointed: Number((db.prepare("SELECT COUNT(*) AS n FROM contributor_emails WHERE self_node_id = ?").get(fromId) as any)?.n ?? 0),
     admin_signal_id: null,
   };
   if (opts.dryRun) {
@@ -645,6 +650,10 @@ export function mergeNodes(
       db.prepare("UPDATE nodes SET metadata = ?, updated_by = ? WHERE id = ?").run(JSON.stringify(mergeMetadata(intoMeta, patch)), `api-${opts.by}`, intoId);
     }
     db.prepare("UPDATE node_aliases SET node_id = ? WHERE node_id = ?").run(intoId, fromId);
+    // Local tables (never synced): a token's byline node and an invite's
+    // self node follow the page, or the link would point at a retired husk.
+    db.prepare("UPDATE contributor_tokens SET node_id = ? WHERE node_id = ?").run(intoId, fromId);
+    db.prepare("UPDATE contributor_emails SET self_node_id = ? WHERE self_node_id = ?").run(intoId, fromId);
     const retire = { retired: true, retired_at: isoNow(), retired_by: opts.by, retired_reason: opts.reason, merged_into: intoId };
     recordPrior(db, anchor, { op: "retire_node", node_id: fromId, updated_by: from.updated_by ?? null, before: priorValues(fromMeta, Object.keys(retire)) });
     db.prepare("UPDATE nodes SET metadata = ?, updated_by = ? WHERE id = ?").run(JSON.stringify(mergeMetadata(fromMeta, retire)), `api-${opts.by}`, fromId);

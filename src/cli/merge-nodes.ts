@@ -43,6 +43,7 @@ function main(): void {
   console.error(
     `[merge] ${from} → ${into}: ${r.edges_moved.length} relation(s) moved, ${r.edges_ended.length} ended, ` +
     `${r.keys_copied.length} key(s) copied, ${r.keys_kept.length} kept as they were, ${r.aliases_moved.length} alias(es) moved` +
+    `, ${r.tokens_repointed} token link(s) and ${r.emails_repointed} invite self-node(s) repointed` +
     (r.pending_mentions ? `, ${r.pending_mentions} pending review item(s) name the duplicate` : "") +
     (dryRun ? " (dry run, nothing written)" : ` — admin signal ${r.admin_signal_id}`)
   );

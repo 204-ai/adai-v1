@@ -437,7 +437,10 @@ caller contract is `SKILL.md` (served at `GET /skill.md`).
 
 - `GET /api/v1/whoami` — identity + trust tier + r2 status + token scope
 - `POST /api/v1/signals` — text contribution about an existing node
-- `POST /api/v1/nodes` — create practitioner / artwork / concept / …
+- `POST /api/v1/nodes` — create practitioner / artwork / concept / …; dedupes
+  on (type, slug) against live nodes (`existingNodeBySlug`, also in
+  `materialiseCreateNode` and URL-intake Confirm): a legacy spaced id with the
+  same slug is returned with `created: false` + a warning, never duplicated
 - `PATCH /api/v1/nodes/:id` — JSON-merge-patch on `metadata` (null deletes a key)
 - `POST /api/v1/edges` — add an edge; bi-temporal supersession via
   `supersedes_edge_id`
@@ -478,7 +481,8 @@ document the workflow.
 <id> --into <id> --reason "…" [--dry-run]` (`mergeNodes`) re-makes the
 duplicate's live relations on the kept node (same source, contributor, event
 time; the old ones superseded), copies metadata the kept node lacks, moves its
-`node_aliases`, and retires it with `metadata.merged_into`; refuses a claimed
+`node_aliases`, repoints `contributor_tokens.node_id` and
+`contributor_emails.self_node_id`, and retires it with `metadata.merged_into`; refuses a claimed
 duplicate. `npm run slugs:migrate -- [--dry-run]` (`migrateSlugs`) rewrites
 slugs that predate the current slugifier (source suffix kept, ids unchanged).
 Either way the old address **301s** to the current one on every page that

@@ -119,6 +119,7 @@ export function approveIntakeItem(
   if (item.kind === "human_signal") {
     const createdBy = `curator-from-${item.submitted_by ?? "api"}`;
     const touchedNodes = new Set<string>();
+    const dedupedTo = new Map<string, string>(); // create id → existing node id
     if (item.proposed_nodes) {
       let ops: any[] = [];
       try { ops = JSON.parse(item.proposed_nodes); } catch { ops = []; }
@@ -128,10 +129,15 @@ export function approveIntakeItem(
           // Use the materialised id so a slug normalisation upstream doesn't
           // desync the embed call from the actual row written.
           if (result.node_id) touchedNodes.add(result.node_id);
+          // Deduped onto an existing node at the same (type, slug): what the
+          // queued item says about the create id is about that node.
+          if (result.deduped_from) dedupedTo.set(result.deduped_from, result.node_id);
         } else if (op?.op === "patch_node") {
+          if (op.node_id && dedupedTo.has(op.node_id)) op.node_id = dedupedTo.get(op.node_id);
           materialisePatchNode(db, op, { createdBy, signalId: op.signal_id ?? item.signal_id });
           if (op.node_id) touchedNodes.add(op.node_id);
         } else if (op?.op === "attach_image") {
+          if (op.node_id && dedupedTo.has(op.node_id)) op.node_id = dedupedTo.get(op.node_id);
           materialiseAttachImage(db, op, { createdBy, signalId: op.signal_id ?? item.signal_id });
           if (op.node_id) touchedNodes.add(op.node_id);
         } else if (op?.op === "end_edge" && op.edge_id) {
@@ -145,7 +151,8 @@ export function approveIntakeItem(
       for (const e of edges) {
         // URL-intake batches carry an individual evidence signal for each edge.
         const signalId = e.signal_id ?? item.signal_id;
-        materialiseEdge(db, { ...e, signal_id: signalId }, { signalId, createdBy });
+        const ends = { source_id: dedupedTo.get(e.source_id) ?? e.source_id, target_id: dedupedTo.get(e.target_id) ?? e.target_id };
+        materialiseEdge(db, { ...e, ...ends, signal_id: signalId }, { signalId, createdBy });
       }
     }
     // Embed any nodes just materialised. Same fire-and-forget contract as

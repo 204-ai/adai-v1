@@ -1,7 +1,7 @@
 ---
 name: adai-contribute
 description: Contribute to the A(DAI) Digital Arts Knowledge Commons graph (https://digitalartsinstitute.io) on behalf of a practitioner using their bearer token in ADAI_TOKEN. Use when the user wants to add a text signal about an existing node, create a node (practitioner, artwork, concept, scene, institution, collective, platform, etc.), add or supersede an edge (CREATED_BY, EMBODIES, PRACTICES, EXHIBITED_AT, CLASSIFIED_BY, BELONGS_TO, COLLABORATES_WITH, USES_TECHNIQUE, INFLUENCES, RESPONDS_TO, PARTICIPATED_IN, PRESENTED_BY, CURATED_BY, REPRESENTS, HELD_BY, DOCUMENTS), upload an image and attach it to a node, tag a session of writes with a batch_id, review their contribution history, claim the practitioner's own page and speak for it (contest or add context to relations about them, invite the people at the other end), or — with an admin-scope token — mint/list/revoke tokens, work the curator review queue (approve/reject/bulk), revoke a signal, retire a node, or roll back a contribution batch (provenance-preserving). Talks to /api/v1/* via curl. Respects trust tiers (auto/reviewed go live, probationary queue at /review). Never infer INFLUENCES or RESPONDS_TO from style or visual similarity; both require attested artist intent.
-version: 2026-10-24
+version: 2026-10-28
 ---
 
 # A(DAI) contributor skill — for Claude (and any other AI assistant) writing to the knowledge commons
@@ -220,8 +220,19 @@ curl -s -X POST "$ADAI_BASE/api/v1/nodes" \
 ```
 
 Returns `{ node_id, created, status, signal_id, intake_id, warnings }`.
-`created: false` means a node with that id already existed — your
-metadata is **not** merged in that case; use PATCH (§1.3) instead.
+`created: false` means the node already existed — your metadata is **not**
+merged in that case; use PATCH (§1.3) on the returned `node_id` instead.
+
+**The server dedupes on `(type, slug)`.** Before choosing an id it looks for
+a live (non-retired) node of the same type whose `slug` equals the computed
+one — including when you pass `slug` explicitly. Legacy nodes keep spaced ids
+(`practitioner:patrick tresset`) while their slug is the hyphen form
+(`patrick-tresset`), so a create of "Patrick Tresset" returns that node:
+`node_id: "practitioner:patrick tresset"`, `created: false`, and a `warnings`
+line naming it — never a second `practitioner:patrick-tresset`. Always use the
+`node_id` the response gives you. The same rule holds when a queued create is
+approved at `/review` and when a URL-intake draft is confirmed (the card links
+to the existing node).
 
 After a successful create, hand the practitioner the share links: the
 profile page `$ADAI_BASE/<type>/<slug>` and the field view zoomed straight
@@ -673,7 +684,9 @@ from the "+ reading" link on any relation row of a page.
   `practitioner:casey reas`, `classification_regime:a(dai) seed canon v1 (april 2026)`.
   **Both forms resolve** for write endpoints — the server matches on the
   full id. When you find a node via `/api/graph` (§1.0), echo back
-  whichever id form the API returned; don't translate.
+  whichever id form the API returned; don't translate. Their `slug` is the
+  hyphen form, and a create whose slug matches one returns the legacy node
+  (`created: false`, §1.2), so a spaced id never gets a hyphenated twin.
 - **URL-encode for path params, leave alone in JSON bodies.** PATCH puts
   the id in the URL path, so spaces become `%20`. POST bodies (`source_id`,
   `target_id`, `target_node`) take the id verbatim — JSON handles it.
@@ -737,9 +750,13 @@ curl -s -X POST "$ADAI_BASE/api/v1/tokens" \
     "contributor_name": "Casey Reas",
     "label": "claude-laptop",
     "create_if_missing": true,
-    "tier": "reviewed"
+    "tier": "reviewed",
+    "node": "institution:the-outlier-collection"
   }'
 ```
+
+`node` is optional: the node this token's contributor stands for, a byline
+link only (§4.3b). Leave it out unless the admin has decided the link.
 
 Response includes `raw_token` — show it to the practitioner ONCE, in a
 channel they trust (their chat with their own Claude works). The server
@@ -789,7 +806,16 @@ curl -s -X PATCH "$ADAI_BASE/api/v1/tokens/adai_abc12345" \
 Or at mint: `"node": "<node id>"` in §4.1's body. The node must exist and
 not be retired. A revoked token keeps its link (rotating a credential does
 not change whose contributions they were); the newest token that names a
-node wins.
+node wins. When two nodes are merged, links to the duplicate move to the
+kept node.
+
+**`node` is a display / byline link, not self-attestation.** It does not tie
+the key to the page as its subject: it gives no claim, no `✓ claimed` badge,
+no right to contest, and the token's edits about that node are ordinary
+contributions (same trust tier, same review), not "the subject speaking".
+Self-attestation is a **claim**: an invite naming the page (§4.6b `node`) or
+`POST /api/claims` (§1.9), settled per §4.6c. Linking a token to a node is the
+admin's decision — don't set it on your own initiative.
 
 ### 4.4 Work the review queue
 

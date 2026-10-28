@@ -24,6 +24,7 @@ import {
   ensureContributorRow,
   bumpApprovedCount,
   mergeMetadata,
+  existingNodeBySlug,
   materialiseCreateNode,
   materialisePatchNode,
   materialiseAttachImage,
@@ -371,7 +372,18 @@ router.post("/api/v1/nodes", requireToken, (req, res) => {
     res.status(400).set(JSON_HEADERS).json({ error: "invalid_slug", message: "the name (or slug) has no letters or digits to make an address from" });
     return;
   }
-  const computedId = `${type}:${slug}`;
+  // Server-side dedupe on (type, slug): a legacy node keeps its spaced id
+  // (`practitioner:patrick tresset`) with the hyphen form in its slug column,
+  // so the exact-id check above misses it — and an explicit slug skips it.
+  // The create then resolves to that node (created:false), never a duplicate.
+  let computedId = `${type}:${slug}`;
+  if (!db.prepare("SELECT 1 FROM nodes WHERE id = ?").get(computedId)) {
+    const sameSlug = existingNodeBySlug(db, type, slug);
+    if (sameSlug) {
+      warnings.push(`a ${type} with slug "${slug}" already exists as ${sameSlug} — no new node was created; use that id`);
+      computedId = sameSlug;
+    }
+  }
 
   // Signal anchors every contribution. Stash the full payload so the curator
   // can review verbatim.

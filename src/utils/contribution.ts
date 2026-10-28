@@ -190,17 +190,35 @@ export function mergeMetadata(base: any, patch: any): any {
 // Helpers shared with the curator approve path. The materialise* functions
 // execute the heavy lifting once a queued contribution becomes live.
 
+/**
+ * The live (non-retired) node that already has this (type, slug), if any.
+ * Legacy ids keep their spaced form (`practitioner:patrick tresset`) while
+ * their slug column holds the hyphen form, so an exact-id check alone lets a
+ * create of the same name make `practitioner:patrick-tresset` beside it.
+ * The oldest such node wins when several share the address.
+ */
+export function existingNodeBySlug(db: DatabaseSync, type: string, slug: string): string | null {
+  if (!type || !slug) return null;
+  const row = db.prepare(
+    "SELECT id FROM nodes WHERE type = ? AND slug = ? AND json_extract(metadata,'$.retired') IS NOT 1 ORDER BY created_at, id LIMIT 1"
+  ).get(type, slug) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
 export function materialiseCreateNode(
   db: DatabaseSync,
   op: Extract<ProposedNodeOp, { op: "create_node" }>,
   context: { signalId: string | null; createdBy: string }
-): { node_id: string; created: boolean } {
+): { node_id: string; created: boolean; deduped_from?: string } {
   const nodeId = `${op.type}:${op.slug}`;
   const existing = db.prepare("SELECT id FROM nodes WHERE id = ?").get(nodeId) as any;
   if (existing) {
     // First-write-wins. Don't clobber.
     return { node_id: nodeId, created: false };
   }
+  // Same address, different id (a legacy spaced id): that node, not a duplicate.
+  const sameSlug = existingNodeBySlug(db, op.type, op.slug);
+  if (sameSlug) return { node_id: sameSlug, created: false, deduped_from: nodeId };
   refuseStructural(db, context.signalId);
   context = { ...context, createdBy: writerLabelFor(db, context.signalId, context.createdBy) };
   const metadataStr = op.metadata ? JSON.stringify(op.metadata) : null;
