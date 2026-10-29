@@ -327,6 +327,11 @@ spaces as-is.
 
 ### 1.4 `POST /api/v1/edges` — connect two existing nodes
 
+> **Probationary tokens:** a node you just created is only *queued* until a
+> curator approves it, so an edge to it returns 400. Create nodes, wait for
+> approval, then send edges (same `batch_id`, node ids as returned by
+> `POST /api/v1/nodes`). See §3.
+
 The graph is mostly edges. Use the curated edge types:
 
 | Edge | Direction | Meaning |
@@ -714,6 +719,14 @@ If the practitioner's trust is `probationary`, expect every write to
 queue. Don't try to escalate. Don't try to "merge" by writing multiple
 times. One signal/node/edge/image per intent.
 
+**Probationary and edges to new nodes.** `POST /api/v1/nodes` under
+`probationary` only queues an intake row: the node does not exist yet, so
+`POST /api/v1/edges` to or from it returns **400** until a curator approves
+it. For a batch of new nodes plus their relations: create the nodes first,
+tell the practitioner a curator must approve them, wait for approval, then
+send the edges (same `batch_id`), using the node ids the API returned. Do not
+retry edges in a loop. A batch endpoint may come later; do not rely on it.
+
 Note: for image uploads under `probationary`, the R2 upload happens
 immediately (the bytes are content-addressed and immutable, so there's
 nothing to undo), but the metadata patch that attaches the URL is queued.
@@ -825,9 +838,14 @@ The JSON twin of the `/review` web page — same materialisation logic on
 the server, so approving here is identical to a curator clicking Approve.
 
 ```bash
-# What's pending? (filters: ?status= ?contributor= ?batch= ?kind= ?limit=)
+# What's pending? (filters: ?status= ?contributor= ?batch= ?kind= ?limit= ?before=)
 curl -s -H "Authorization: Bearer $ADAI_TOKEN" \
   "$ADAI_BASE/api/v1/review?status=pending" | jq
+
+# Newest first, max 500 per page. When the response has "has_more": true, pass
+# its "next_before" as ?before= to read the next, older page (large batches):
+curl -s -H "Authorization: Bearer $ADAI_TOKEN" \
+  "$ADAI_BASE/api/v1/review?batch=my-batch&limit=500&before=<next_before>" | jq
 
 # Approve / reject one item
 curl -s -X POST "$ADAI_BASE/api/v1/review/<intake_id>/approve" \

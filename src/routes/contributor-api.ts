@@ -1041,7 +1041,11 @@ function deriveAction(sourceType: string | null, proposedNodes: string | null): 
   return action;
 }
 
-// GET /api/v1/review?status=pending&contributor=<name>&batch=<id>&kind=<kind>&limit=N
+// GET /api/v1/review?status=pending&contributor=<name>&batch=<id>&kind=<kind>&limit=N&before=<cursor>
+// Newest first, ordered by (created_at DESC, id DESC) — created_at has 1 s
+// resolution, so id is the deterministic tie-break. `next_before` (present when
+// `has_more`) is an opaque cursor "<created_at>|<intake id>": pass it as
+// ?before= to get the next, older page.
 router.get("/api/v1/review", requireAdmin, (req, res) => {
   const db = getDb();
   const status = typeof req.query.status === "string" && req.query.status ? req.query.status : "pending";
@@ -1053,12 +1057,22 @@ router.get("/api/v1/review", requireAdmin, (req, res) => {
 
   const where: string[] = [];
   const params: string[] = [];
+  const beforeRaw = typeof req.query.before === "string" && req.query.before ? req.query.before : null;
+  if (beforeRaw) {
+    const sep = beforeRaw.indexOf("|");
+    if (sep <= 0 || sep === beforeRaw.length - 1) {
+      res.status(400).set(JSON_HEADERS).json({ error: "invalid_before", message: "before must be the next_before value of a previous page" });
+      return;
+    }
+    where.push("(q.created_at < ? OR (q.created_at = ? AND q.id < ?))");
+    params.push(beforeRaw.slice(0, sep), beforeRaw.slice(0, sep), beforeRaw.slice(sep + 1));
+  }
   if (status !== "_all") { where.push("q.status = ?"); params.push(status); }
   if (contributor) { where.push("q.submitted_by = ?"); params.push(contributor); }
   if (batch) { where.push("s.batch_id = ?"); params.push(batch); }
   if (kind) { where.push("q.kind = ?"); params.push(kind); }
 
-  const rows = db
+  const fetched = db
     .prepare(
       `SELECT q.id AS intake_id, q.signal_id, q.target_node, q.submitted_by, q.trust_tier,
               q.status, q.kind, q.created_at, q.reviewed_at, q.rejection_reason,
@@ -1067,13 +1081,18 @@ router.get("/api/v1/review", requireAdmin, (req, res) => {
          FROM intake_queue q
          LEFT JOIN signals_full s ON s.id = q.signal_id
         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-        ORDER BY q.created_at DESC
+        ORDER BY q.created_at DESC, q.id DESC
         LIMIT ?`
     )
-    .all(...params, limit) as any[];
+    .all(...params, limit + 1) as any[];
+  const hasMore = fetched.length > limit;
+  const rows = hasMore ? fetched.slice(0, limit) : fetched;
+  const last = rows[rows.length - 1];
 
   res.set(JSON_HEADERS).json({
     returned: rows.length,
+    has_more: hasMore,
+    ...(hasMore && last ? { next_before: `${last.created_at}|${last.intake_id}` } : {}),
     items: rows.map((r) => ({
       intake_id: r.intake_id,
       action: deriveAction(r.source_type, r.proposed_nodes),
