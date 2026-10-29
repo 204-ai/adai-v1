@@ -38,3 +38,21 @@ describe("assistant setup guide", () => {
     assert.match(html, /href="\/skill\.md"/);
   });
 });
+
+describe("draft drawer scroll (#101)", () => {
+  const html = draftPage("drf_0123456789abcdef");
+  it("only follows the conversation when the reader is near the bottom", () => {
+    assert.match(html, /scrollHeight - oldLog\.scrollTop - oldLog\.clientHeight < 40/);
+    assert.match(html, /log\.scrollTop = oldTop/);
+  });
+  it("skips the rebuild when nothing changed", () => {
+    assert.match(html, /if \(sig === railSig && rail\.querySelector\('\.log'\)\) return;/);
+  });
+  it("keeps summary and survey in details, and offers a new-messages button", () => {
+    assert.match(html, /<details data-r="survey"/);
+    assert.match(html, /id="newmsg"/);
+  });
+  it("no longer forces the log to the bottom on every render", () => {
+    assert.doesNotMatch(html, /const log = rail\.querySelector\('\.log'\); if \(log\) log\.scrollTop = log\.scrollHeight;/);
+  });
+});

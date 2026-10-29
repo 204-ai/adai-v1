@@ -79,8 +79,12 @@ const CSS = `
 #intake .rail .m .who { color: #666; font-size: 10.5px; }
 #intake .rail form { margin-top: 8px; display: flex; gap: 6px; max-width: none; flex: 0 0 auto; }
 #intake .rail form textarea { min-height: 56px; font-family: inherit; font-size: 12px; flex: 1; }
-#intake .rail .summary { color: #9a9a9c; border-bottom: 1px solid #1e1e20; padding-bottom: 8px; margin-bottom: 8px; white-space: pre-wrap; flex: 0 1 auto; max-height: 30vh; overflow: auto; }
-#intake .rail .survey { color: #9a9a9c; border-bottom: 1px solid #1e1e20; padding-bottom: 8px; margin-bottom: 8px; flex: 0 1 auto; max-height: 22vh; overflow: auto; }
+#intake .rail details { flex: 0 0 auto; border-bottom: 1px solid #1e1e20; margin-bottom: 8px; }
+#intake .rail details > summary { cursor: pointer; color: #9a9a9c; font-size: 10.5px; padding-bottom: 6px; }
+#intake .rail #newmsg { align-self: center; margin-top: 6px; flex: 0 0 auto; }
+#intake .rail #newmsg[hidden] { display: none; }
+#intake .rail .summary { color: #9a9a9c; border-bottom: 1px solid #1e1e20; padding-bottom: 8px; margin-bottom: 8px; white-space: pre-wrap; flex: 0 1 auto; max-height: 30vh; overflow: auto; border-bottom: 0; margin-bottom: 0; padding-bottom: 4px; }
+#intake .rail .survey { color: #9a9a9c; border-bottom: 1px solid #1e1e20; padding-bottom: 8px; margin-bottom: 8px; flex: 0 1 auto; max-height: 22vh; overflow: auto; border-bottom: 0; margin-bottom: 0; padding-bottom: 4px; }
 #intake .rail .survey .who { color: #666; font-size: 10.5px; }
 /* steps (issue #76): one kind of card at a time */
 #intake .stepper { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: #0a0a0a; border-bottom: 1px solid #1e1e20; padding: 6px 0; margin-bottom: 16px; }
@@ -576,9 +580,11 @@ function renderHead() {
   const mb = $('#morehead'); if (mb) mb.onclick = moreModal;
   const ab = $('#abandonhead'); if (ab) ab.onclick = abandonModal;
 }
+const railFolded = {};
 function drawer(open) {
   $('#rail').classList.toggle('open', open); $('#rail').setAttribute('aria-hidden', String(!open));
   $('#scrim').classList.toggle('open', open);
+  if (!open) document.querySelectorAll('#rail details[data-r]').forEach(d => { if (d.open && !railFolded[d.dataset.r]) { d.open = false; } railFolded[d.dataset.r] = true; railOpen[d.dataset.r] = d.open; });
   if (open) { const log = $('#rail .log'); if (log) log.scrollTop = log.scrollHeight; const t = $('#rail textarea'); if (t) t.focus(); }
 }
 $('#scrim').onclick = () => drawer(false);
@@ -609,22 +615,54 @@ function moreModal() {
 function surveyBlock() {
   const S = D.survey; if (!S) return '';
   const inv = (S.inventory || []).map(i => esc(i.label) + (i.count != null ? ' · ' + i.count : '')).join('<br>');
-  return '<div class="survey"><div class="who">what the site holds (' + esc(S.site_kind) + ')</div>' + inv +
+  return '<details data-r="survey"' + (railOpen.survey === undefined || railOpen.survey ? ' open' : '') + '><summary>what the site holds (' + esc(S.site_kind) + ')</summary><div class="rbody survey">' + inv +
     (S.covered ? '<div class="who" style="margin-top:8px">covered</div>' + esc(S.covered) : '') +
-    (S.remaining ? '<div class="who" style="margin-top:8px">not covered yet</div>' + esc(S.remaining) : '') + '</div>';
+    (S.remaining ? '<div class="who" style="margin-top:8px">not covered yet</div>' + esc(S.remaining) : '') + '</div></details>';
 }
+let railSig = null, railOpen = {}, railUnseen = false;
 function renderRail() {
   const rail = $('#rail');
   const msgs = D.messages || [];
-  const kept = rail.querySelector('textarea') ? rail.querySelector('textarea').value : '';
-  rail.innerHTML = '<h3>Ask the agent <button class="btn" id="closeagent" type="button">Close</button></h3>' + (D.summary ? '<div class="summary">' + esc(D.summary) + '</div>' : '') + surveyBlock() +
+  // Nothing changed since the last render: leave the drawer alone, so a poll
+  // never touches the reader's scroll position, selection or typing.
+  const sig = JSON.stringify([D.summary || '', D.survey || null, msgs, !!D.job_pending, D.status]);
+  if (sig === railSig && rail.querySelector('.log')) return;
+  const oldLog = rail.querySelector('.log');
+  const wasNearBottom = !oldLog || (oldLog.scrollHeight - oldLog.scrollTop - oldLog.clientHeight < 40);
+  const oldTop = oldLog ? oldLog.scrollTop : 0;
+  const oldCount = oldLog ? oldLog.querySelectorAll('.m').length : 0;
+  const regionTop = {}; const hadRegion = {};
+  rail.querySelectorAll('details[data-r]').forEach(d => { railOpen[d.dataset.r] = d.open; regionTop[d.dataset.r] = d.querySelector('.rbody') ? d.querySelector('.rbody').scrollTop : 0; hadRegion[d.dataset.r] = true; });
+  const tae = rail.querySelector('textarea');
+  const kept = tae ? tae.value : '';
+  const hadFocus = !!tae && document.activeElement === tae;
+  const selS = tae ? tae.selectionStart : 0, selE = tae ? tae.selectionEnd : 0;
+  const det = (key, label, inner) => '<details data-r="' + key + '"' + (railOpen[key] === undefined || railOpen[key] ? ' open' : '') + '><summary>' + label + '</summary><div class="rbody ' + key + '">' + inner + '</div></details>';
+  rail.innerHTML = '<h3>Ask the agent <button class="btn" id="closeagent" type="button">Close</button></h3>' + (D.summary ? det('summary', 'summary', esc(D.summary)) : '') + surveyBlock() +
     '<div class="log">' + msgs.map(m => '<div class="m ' + esc(m.role) + '"><div class="who">' + (m.role === 'user' ? 'you' : 'agent') + '</div>' + esc(m.text) + '</div>').join('') + (D.job_pending ? '<div class="m assistant"><div class="who">agent</div>thinking…</div>' : '') + '</div>' +
+    '<button class="btn" id="newmsg" type="button" hidden>new messages ↓</button>' +
     (D.status === 'ready' || D.status === 'failed' ? '<form id="chat"><textarea name="message" placeholder="e.g. the 2021 show was at a different gallery; or: add my collaborator X"></textarea><button class="btn" type="submit">Send</button></form>' : '');
-  const f = $('#chat'); if (f) f.onsubmit = async (e) => { e.preventDefault(); const t = f.message.value.trim(); if (!t) return; f.querySelector('button').disabled = true; const r = await api('POST', '/api/intake/drafts/' + ID + '/chat', { message: t }); if (!r.ok) { alert(r.json && r.json.message || 'error'); f.querySelector('button').disabled = false; return; } await load(); };
-  const ta = rail.querySelector('textarea'); if (ta && kept) ta.value = kept;
+  // Summary and survey start open; closing the drawer once folds them away (see drawer()), leaving the log the room.
+  rail.querySelectorAll('details[data-r]').forEach(d => { const k = d.dataset.r; if (true) {} d.addEventListener('toggle', () => { railOpen[k] = d.open; }); });
+  rail.querySelectorAll('details[data-r]').forEach(d => { const rb = d.querySelector('.rbody'); if (rb && regionTop[d.dataset.r]) rb.scrollTop = regionTop[d.dataset.r]; });
+  const f = $('#chat'); if (f) f.onsubmit = async (e) => { e.preventDefault(); const t = f.message.value.trim(); if (!t) return; f.querySelector('button').disabled = true; const r = await api('POST', '/api/intake/drafts/' + ID + '/chat', { message: t }); if (!r.ok) { alert(r.json && r.json.message || 'error'); f.querySelector('button').disabled = false; return; } f.message.value = ''; railSend = true; await load(); };
+  const ta = rail.querySelector('textarea'); if (ta) { if (kept) ta.value = kept; if (hadFocus) { ta.focus(); try { ta.setSelectionRange(selS, selE); } catch (e) {} } }
   $('#closeagent').onclick = () => drawer(false);
-  const log = rail.querySelector('.log'); if (log) log.scrollTop = log.scrollHeight;
+  const log = rail.querySelector('.log');
+  const nb = $('#newmsg');
+  const grew = log && log.querySelectorAll('.m').length > oldCount;
+  if (log) {
+    // Follow the conversation only if the reader was already at the bottom (or just sent something).
+    if (wasNearBottom || railSend) { log.scrollTop = log.scrollHeight; railUnseen = false; }
+    else { log.scrollTop = oldTop; if (grew) railUnseen = true; }
+    railSend = false;
+    log.addEventListener('scroll', () => { if (log.scrollHeight - log.scrollTop - log.clientHeight < 40) { railUnseen = false; nb.hidden = true; } });
+    nb.hidden = !railUnseen;
+    nb.onclick = () => { log.scrollTop = log.scrollHeight; railUnseen = false; nb.hidden = true; };
+  }
+  railSig = sig;
 }
+let railSend = false;
 function renderAll() { renderHead(); renderCards(); renderRail(); }
 // The review step is the confirmation: Confirm there submits.
 async function confirmDraftNow() {
