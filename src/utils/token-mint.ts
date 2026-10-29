@@ -127,6 +127,29 @@ export function setTokenNode(db: DatabaseSync, prefix: string, nodeId: string | 
   return { token_prefix: row.token_prefix, contributor_id: row.contributor_id, contributor_name: row.contributor_name, node_id: next, previous: row.node_id ?? null };
 }
 
+/**
+ * Change the trust tier of the contributor a token belongs to (the tier is the
+ * contributor's, so every token of theirs follows). Admin-only at the HTTP
+ * layer; replaces an SSH session to the volume. Public-form rows and the
+ * anonymous sentinel have no tier to give.
+ */
+export function setContributorTier(db: DatabaseSync, prefix: string, tier: string): { token_prefix: string; contributor_id: string; contributor_name: string; trust_tier: TrustTier; previous: string } {
+  if (!VALID_TIERS.has(tier as TrustTier)) throw new MintError("invalid_tier", `tier must be one of ${[...VALID_TIERS].join(", ")}`);
+  const row = db
+    .prepare(
+      `SELECT t.token_prefix, c.id AS contributor_id, c.name AS contributor_name, c.trust_tier, c.type
+         FROM contributor_tokens t JOIN contributors c ON t.contributor_id = c.id
+        WHERE t.token_prefix = ?`
+    )
+    .get(prefix) as any;
+  if (!row) throw new MintError("no_such_token", `No token with prefix "${prefix}".`, 404);
+  if (row.type === "form" || row.contributor_id === "contributor:anonymous") {
+    throw new MintError("tier_not_settable", "this contributor row has no trust tier to change", 409);
+  }
+  if (row.trust_tier !== tier) db.prepare("UPDATE contributors SET trust_tier = ? WHERE id = ?").run(tier, row.contributor_id);
+  return { token_prefix: row.token_prefix, contributor_id: row.contributor_id, contributor_name: row.contributor_name, trust_tier: tier as TrustTier, previous: row.trust_tier ?? "probationary" };
+}
+
 // --- Restore -----------------------------------------------------------
 //
 // `restoreToken` is the sister of `mintToken` for the disaster-recovery

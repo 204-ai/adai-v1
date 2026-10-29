@@ -1,6 +1,6 @@
 ---
 name: adai-contribute
-description: Contribute to the A(DAI) Digital Arts Knowledge Commons (https://digitalartsinstitute.io) on behalf of a practitioner, using their bearer token in ADAI_TOKEN. Use to add a text signal about an existing entry, create entries (practitioner, artwork, concept, project, institution, collective, platform, etc.), add or supersede relations, upload and attach an image, tag a session with a batch_id, review contribution history, claim the practitioner's own page and speak for it (contest, add context, invite), add a reading of a relation, or, with an admin token, mint/list/revoke/link tokens, invite people, work the review queue, revoke a signal, retire an entry, or roll back a batch. Talks to /api/v1/* via curl. Respects trust tiers. Never infer INFLUENCES or RESPONDS_TO from style or visual similarity; both require attested artist intent.
+description: Contribute to the A(DAI) Digital Arts Knowledge Commons (https://digitalartsinstitute.io) on behalf of a practitioner, using their bearer token in ADAI_TOKEN. Use to add a text signal about an existing entry, create entries (practitioner, artwork, concept, project, institution, collective, platform, etc.), add or supersede relations, upload and attach an image, tag a session with a batch_id, review contribution history, claim the practitioner's own page and speak for it (contest, add context, invite), add a reading of a relation, or, with an admin token, mint/list/revoke/link tokens, invite people, work the review queue, revoke a signal, retire an entry, or retire a batch. Talks to /api/v1/* via curl. Respects trust tiers. Never infer INFLUENCES or RESPONDS_TO from style or visual similarity; both require attested artist intent.
 version: 2026-10-28
 ---
 
@@ -327,10 +327,10 @@ spaces as-is.
 
 ### 1.4 `POST /api/v1/edges` — connect two existing nodes
 
-> **Probationary tokens:** a node you just created is only *queued* until a
-> curator approves it, so an edge to it returns 400. Create nodes, wait for
-> approval, then send edges (same `batch_id`, node ids as returned by
-> `POST /api/v1/nodes`). See §3.
+> **Edges to nodes you are creating:** `POST /edges` needs both ends to be
+> live. A probationary token's `POST /nodes` only *queues*, so an edge to that
+> node returns 400. Send new nodes and their edges together as a **package**
+> (§1.4b) instead.
 
 The graph is mostly edges. Use the curated edge types:
 
@@ -425,6 +425,58 @@ as the facts change.
   "supersedes_edge_id": "practitioner:foo--BELONGS_TO--collective:bar--api-casey-reas"
 }
 ```
+
+### 1.4b `POST /api/v1/packages` — new nodes and their edges in one write
+
+`POST /edges` needs both ends to be **live** nodes. For a `probationary`
+contributor `POST /nodes` only *queues*, so an edge to a node you just created
+cannot be sent until a curator approves it. Use a **package** instead: the new
+nodes and the edges between them (or to existing nodes) travel together.
+
+```bash
+curl -s -X POST "$ADAI_BASE/api/v1/packages" \
+  -H "Authorization: Bearer $ADAI_TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "batch_id": "residency-2026-06-08",
+    "nodes": [
+      {"ref": "show", "type": "project", "name": "Residency Show"},
+      {"ref": "w1", "type": "artwork", "name": "Work One", "metadata": {"year": 2026}}
+    ],
+    "edges": [
+      {"source_id": "w1", "target_id": "practitioner:patrick-tresset", "edge_type": "CREATED_BY"},
+      {"source_id": "practitioner:patrick-tresset", "target_id": "show", "edge_type": "PARTICIPATED_IN"}
+    ]
+  }'
+```
+
+- **Nodes** take the same fields as §1.2 (`type`, `name`, `slug?`, `metadata?`,
+  `aliases?`) plus an optional `ref`, a local handle.
+- **Edge ends** (`source_id`, `target_id`; `source` / `target` also work) are
+  either a live node id or a reference to a node of the same package: its `ref`,
+  its `type:slug` id, or its `name` when that is unique in the package. Edge
+  fields are those of §1.4 (`confidence?`, `event_time?`, `supersedes_edge_id?`).
+- A node whose (type, slug) already exists — a legacy spaced id included — is
+  **not created again**: edges attach to the existing node and the response
+  lists it in `existing_nodes`.
+- Everything is checked first. Any problem → `400 invalid_package` with a
+  `problems` list (`{item, index, error}` for every bad node/edge) and **nothing
+  is written**. Limits: 100 nodes and 300 edges per package
+  (`400 package_too_large`); split bigger uploads into several packages with the
+  same `batch_id`. Retired nodes are refused, as an edge end and as a node to
+  reuse.
+- Resolution order for an edge end: a package `ref`, then a package node's
+  id, then a unique package name, then a live node id. A `ref` spelled like a
+  live id therefore points at the package node: pick refs that don't look like
+  ids (`w1`, `show`).
+- **probationary**: ONE review item holds the nodes and edges; approving creates
+  the nodes then the edges, all or nothing (a failure writes none of it and the
+  item stays pending), **rejecting drops all of it**. There is no partial
+  approval: keep a package to what belongs together. Response:
+  `status: "pending"`, `intake_id`, `signal_id`, `node_ids` (ref → the id the
+  node has or will have). **auto / reviewed**: applied at once in one
+  transaction, `status: "approved"`, `created_nodes`.
+- Warnings (unknown types, direction, INFLUENCES/RESPONDS_TO attestation) come
+  back in `warnings`, as for the single endpoints.
 
 ### 1.5 `POST /api/v1/images` — upload an image and attach it
 
@@ -524,7 +576,7 @@ doing more than a couple of related writes** (a show's worth of artworks,
 a gallery archive, any §6 bulk intake). For one-off contributions it's
 fine to omit.
 
-- `POST /signals`, `POST /nodes`, `POST /edges`: pass `"batch_id": "..."`
+- `POST /signals`, `POST /nodes`, `POST /edges`, `POST /packages`: pass `"batch_id": "..."`
   in the JSON body.
 - `POST /images`: pass `batch_id` as a multipart field (or JSON key).
 - `PATCH /nodes/:id`: the body IS the metadata merge-patch, so the handle
@@ -722,10 +774,11 @@ times. One signal/node/edge/image per intent.
 **Probationary and edges to new nodes.** `POST /api/v1/nodes` under
 `probationary` only queues an intake row: the node does not exist yet, so
 `POST /api/v1/edges` to or from it returns **400** until a curator approves
-it. For a batch of new nodes plus their relations: create the nodes first,
-tell the practitioner a curator must approve them, wait for approval, then
-send the edges (same `batch_id`), using the node ids the API returned. Do not
-retry edges in a loop. A batch endpoint may come later; do not rely on it.
+it. For new nodes plus their relations use **`POST /api/v1/packages`**
+(§1.4b): nodes and edges go into one review item, approved or rejected
+together. More than 100 nodes → several packages with the same `batch_id`.
+Edges between nodes that already exist can be a package too (`nodes: []`),
+one review item instead of many. Do not retry edges in a loop.
 
 Note: for image uploads under `probationary`, the R2 upload happens
 immediately (the bytes are content-addressed and immutable, so there's
@@ -818,7 +871,13 @@ curl -s -X PATCH "$ADAI_BASE/api/v1/tokens/adai_abc12345" \
   -d '{"node": "institution:the-outlier-collection"}'      # null clears it
 ```
 
-Or at mint: `"node": "<node id>"` in §4.1's body. The node must exist and
+Or at mint: `"node": "<node id>"` in §4.1's body.
+
+**Change a contributor's trust tier** with the same call:
+`-d '{"tier": "reviewed"}'` (`auto` | `reviewed` | `probationary`; `node` and
+`tier` may go together, both or neither apply). The tier is the contributor's,
+so all their tokens follow, from their next request; the response gives
+`previous_tier`. Promote deliberately, after a batch or two reviewed clean. The node must exist and
 not be retired. A revoked token keeps its link (rotating a credential does
 not change whose contributions they were); the newest token that names a
 node wins. When two nodes are merged, links to the duplicate move to the
@@ -959,7 +1018,11 @@ makes that page theirs at once. An uninvited person who asks to claim a page
 from its profile shows up on `/review?kind=claim` under "not yet invited";
 approving there invites them and approves the claim in one step.
 
-### 4.7 Batch rollback — "delete and start again"
+### 4.7 Retire a batch — "take it out and start again"
+
+Not a rollback: it takes what the batch added out of the live graph (with
+the record kept), but it does **not** put earlier values back on nodes the
+batch changed. Those come back as `patches_to_review` for a person to restore.
 
 The big one. When an upload session went wrong (wrong CSV, wrong artist
 mapping, a gallery wants a clean restart), retire the **whole batch** in
@@ -997,7 +1060,7 @@ batch. What it deliberately does NOT do:
   `/history`, not in the anchoring admin signal. Restore by hand with PATCH (§1.3);
 - R2 image bytes stay (content-addressed, immutable, harmless orphans).
 
-After the rollback the gallery starts again with a **new** batch_id.
+After the retirement the gallery starts again with a **new** batch_id.
 The retired batch stays queryable forever (`/api/v1/batches`,
 `?batch=` on contributions) — that's the audit trail, not a mess to
 clean up.
@@ -1022,7 +1085,7 @@ clean up.
 - **Don't delete data.** There is no DELETE endpoint by design — for
   anyone. The correction primitives exist instead: supersede an edge
   (§1.4), and an **admin** can revoke a signal (§4.5), retire a node
-  (§4.6), or roll back a batch (§4.7) — all provenance-preserving. If
+  (§4.6), or retire a batch (§4.7) — all provenance-preserving. If
   you're write-scope and something needs retracting, ask the curator.
 
 If your token is admin-scope (§4), additional rules apply:
@@ -1038,10 +1101,10 @@ If your token is admin-scope (§4), additional rules apply:
 - **Always dry-run before any retire/bulk action** (§4.4, §4.6, §4.7) and
   read the plan back to whoever asked for the correction. The plan is
   cheap; an unnecessary retirement is annoying to reverse.
-- **Prefer queue rejection over post-hoc rollback.** If a bulk upload is
+- **Prefer queue rejection over retiring live writes.** If a bulk upload is
   coming from a new contributor, keep them `probationary` for the first
   batch — then "start again" is just a bulk reject of pending items and
-  nothing ever touched the graph. Rollback of *live* writes is the
+  nothing ever touched the graph. Retiring *live* writes is the
   fallback, not the plan.
 - **Don't "clean up" history.** A retired batch, a revoked signal, a
   superseded edge are records, not clutter. Never try to make them
@@ -1070,7 +1133,7 @@ run is a non-event:
    the batch is wrong.
 6. **If it went wrong after going live** (the contributor was
    `reviewed`/`auto`, or the queue was approved too fast): admin
-   batch rollback, §4.7. Dry-run, read the plan together, execute,
+   batch retirement, §4.7. Dry-run, read the plan together, execute,
    start again with a new batch_id.
 7. **Graduate the tier** (operator decision) once a batch or two have
    landed clean — then future sessions go live immediately.

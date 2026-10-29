@@ -403,3 +403,22 @@ export function embedNodeAsync(db: DatabaseSync, nodeId: string): void {
       console.error(`[embed] ${nodeId} threw:`, err);
     });
 }
+
+// The same contract for many nodes at once (an approved package): one
+// provider call at a time instead of a burst of hundreds, so a big approval
+// does not trip the provider's rate limit. Still fire-and-forget.
+export function embedNodesAsync(db: DatabaseSync, nodeIds: Iterable<string>): void {
+  const ids = [...new Set(nodeIds)];
+  if (ids.length <= 1) { for (const id of ids) embedNodeAsync(db, id); return; }
+  if (isStaging() && !embedKey()) return;
+  void (async () => {
+    for (const nodeId of ids) {
+      try {
+        const r = await embedNodeNow(db, nodeId);
+        if (r.status === "error") console.error(`[embed] ${nodeId}: ${r.detail}`);
+      } catch (err) {
+        console.error(`[embed] ${nodeId} threw:`, err);
+      }
+    }
+  })();
+}

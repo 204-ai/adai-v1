@@ -24,7 +24,7 @@ import {
   materialiseEndEdge,
   materialiseEdge,
 } from "./contribution.js";
-import { embedNodeAsync } from "../embed/server.js";
+import { embedNodesAsync } from "../embed/server.js";
 import { ClaimError, approveClaim, claimByQueueId, rejectClaim } from "../claim/store.js";
 import { isFormShaped, recordFormSignal, signalOwner } from "./authorship.js";
 import { ensureAnonymousContributor, isAnonymousSignal, nameHeldBack, publishQueued, rejectedSignals, withholdSignal } from "./signal-private.js";
@@ -86,6 +86,28 @@ export function approveIntakeItem(
   }
   if (CLAIM_KINDS.includes(item.kind)) return reviewClaimKind(db, item, "approve", reviewedBy, null);
 
+  // All or nothing: one item may be a whole package (up to a hundred nodes and
+  // their edges). A failure part-way rolls every write back and the item stays
+  // pending, instead of leaving half of it live. A savepoint, so a caller that
+  // already holds a transaction nests. Embeds run only after it is kept.
+  const toEmbed = new Set<string>();
+  db.exec("SAVEPOINT approve_item");
+  let outcome: ReviewOutcome;
+  try {
+    outcome = approvePending(db, id, item, reviewedBy, toEmbed);
+    db.exec("RELEASE approve_item");
+  } catch (e) {
+    try { db.exec("ROLLBACK TO approve_item"); db.exec("RELEASE approve_item"); } catch { /* already gone */ }
+    throw e;
+  }
+  // Same fire-and-forget contract as the auto-merge path in contributor-api.ts
+  // (one at a time); failures fall through to the daily backfill.
+  embedNodesAsync(db, toEmbed);
+  contributionWritten(); // what was in review is live now (issue #81)
+  return outcome;
+}
+
+function approvePending(db: DatabaseSync, id: string, item: any, reviewedBy: string, touchedNodes: Set<string>): ReviewOutcome {
   // For AI-suggestion items, materialise the proposed edge into the live
   // graph. The `proposed_edges` column carries a JSON array of edge specs
   // produced by the embedding derive pass.
@@ -118,7 +140,6 @@ export function approveIntakeItem(
   // supersedes_edge_id for bi-temporal supersession).
   if (item.kind === "human_signal") {
     const createdBy = `curator-from-${item.submitted_by ?? "api"}`;
-    const touchedNodes = new Set<string>();
     const dedupedTo = new Map<string, string>(); // create id → existing node id
     if (item.proposed_nodes) {
       let ops: any[] = [];
@@ -155,10 +176,6 @@ export function approveIntakeItem(
         materialiseEdge(db, { ...e, ...ends, signal_id: signalId }, { signalId, createdBy });
       }
     }
-    // Embed any nodes just materialised. Same fire-and-forget contract as
-    // the auto-merge path in contributor-api.ts — failures fall through to
-    // the daily backfill.
-    for (const nodeId of touchedNodes) embedNodeAsync(db, nodeId);
   }
 
   db.prepare(
@@ -191,7 +208,6 @@ export function approveIntakeItem(
     if (owner) db.prepare("UPDATE contributors SET approved_count = approved_count + 1 WHERE id = ?").run(owner.id);
   }
   settleObjections(db, id, "approved", reviewedBy);
-  contributionWritten(); // what was in review is live now (issue #81)
 
   return { ok: true, intake_id: id };
 }

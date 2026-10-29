@@ -451,13 +451,22 @@ caller contract is `SKILL.md` (served at `GET /skill.md`).
   `image_url` (server-side fetch through the SSRF guard, magic-byte sniffed);
   uploads to R2 (content-addressed `images/<sha[:2]>/<sha>.<ext>`), attaches
   `cdn_image_url`
+- `POST /api/v1/packages` — new nodes AND their edges in one write (edge ends: a
+  live id or a node of the package by `ref` / id / unique name; ≤100 nodes,
+  ≤300 edges; any problem → 400 listing all, nothing written; retired nodes
+  refused). Probationary: ONE review item (`source_type='api_package'`,
+  `target_node` = its first new node), approved or rejected whole; else applied
+  in one transaction. `approveIntakeItem` runs in a savepoint for every item:
+  a failure part-way writes nothing and the item stays pending; embeds run
+  after, one at a time (`embedNodesAsync`)
 - `GET /api/v1/contributions` — the contributor's own history
 - `POST /api/v1/readings` (+ `/:signal_id/withdraw`) — a labelled reading of
   one live relation (see *Readings* above; SKILL.md §1.10)
 
 Every write accepts an optional **`batch_id`** (stamped onto the anchoring
 signal) making a whole upload session inspectable (`GET /api/v1/batches`) and
-rollback-able. Format `[A-Za-z0-9][A-Za-z0-9._:-]{0,119}`.
+retirable as a unit (retire, not rollback: earlier values on nodes it changed
+are listed for review, not restored). Format `[A-Za-z0-9][A-Za-z0-9._:-]{0,119}`.
 
 Admin endpoints (require `scope='admin'`, enforced by `requireAdmin`):
 - `GET/POST /api/v1/tokens`, `POST /api/v1/tokens/:prefix/revoke` — token mgmt
@@ -466,12 +475,14 @@ Admin endpoints (require `scope='admin'`, enforced by `requireAdmin`):
   contributor stands for (`contributor_tokens.node_id`, issue #70; also
   `token:issue --node`): "contributed by X" links to it, its page says
   "contributes to the commons as X", `/<type>/<slug>/contributions` lists them
-  (`src/utils/contributor-node.ts`)
+  (`src/utils/contributor-node.ts`); `{"tier": "auto"|"reviewed"|"probationary"}`
+  on the same call sets the token's contributor's trust tier (all their
+  tokens, from the next request; no SSH needed)
 - `GET /api/v1/review`, `POST /api/v1/review/:id/approve|reject`,
   `POST /api/v1/review/bulk` — JSON twin of the curator queue
 - `POST /api/v1/signals/:id/revoke` — status→revoked + supersede anchored edges
 - `POST /api/v1/nodes/:id/retire` — supersede live edges + set `metadata.retired`
-- `GET /api/v1/batches`, `POST /api/v1/batches/:batch_id/retire` — batch rollback
+- `GET /api/v1/batches`, `POST /api/v1/batches/:batch_id/retire` — batch retirement
 
 **Admin correction model (`src/utils/admin-actions.ts`): nothing is ever
 deleted.** Signals flip `status='revoked'`; edges supersede bi-temporally; nodes
