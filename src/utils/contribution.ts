@@ -13,6 +13,9 @@
 //   { op: 'create_node',  type, name, slug, metadata, aliases? }
 //   { op: 'patch_node',   node_id, metadata }            // metadata is a merge-patch
 //   { op: 'attach_image', node_id, image_url, cdn_image_url, sha256 }
+//     (a queued package image has only image_url until approval mirrors it —
+//      src/utils/package-images.ts; a failure becomes { op: 'image_failed', node_id, image_url,
+//      image_error }, which approval ignores)
 //   { op: 'end_edge',     edge_id, signal_id? }          // valid_until = now; never a delete
 //
 // Edges queue exactly like AI suggestions do today (see src/embed/derive.ts):
@@ -30,7 +33,7 @@ import { ANONYMOUS, appendPrior, creditedContributor, insertSignalRow, writerLab
 export type ProposedNodeOp =
   | { op: "create_node"; type: string; name: string; slug: string; metadata?: any; aliases?: Array<{ source: string; external_id: string }> }
   | { op: "patch_node"; node_id: string; metadata: any; signal_id?: string | null }
-  | { op: "attach_image"; node_id: string; image_url: string; cdn_image_url: string; sha256: string; signal_id?: string | null }
+  | { op: "attach_image"; node_id: string; image_url: string; cdn_image_url?: string; sha256?: string; signal_id?: string | null }
   | { op: "end_edge"; edge_id: string; signal_id?: string | null };
 
 export interface ProposedEdge {
@@ -300,6 +303,8 @@ export function materialiseAttachImage(
   op: Extract<ProposedNodeOp, { op: "attach_image" }>,
   context: { createdBy: string; signalId?: string | null }
 ): void {
+  // A queued package image whose mirror failed (or never ran) has no copy to attach.
+  if (!op.cdn_image_url || !op.sha256) return;
   const row = db.prepare("SELECT metadata, updated_by FROM nodes WHERE id = ?").get(op.node_id) as any;
   if (!row) return;
   refuseStructural(db, context.signalId);

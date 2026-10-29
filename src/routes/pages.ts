@@ -1080,7 +1080,13 @@ router.get("/review", (req, res) => {
               const keys = Object.keys(op.metadata || {}).join(", ");
               body += `<li>patch metadata of <code>${htmlEscape(String(op.node_id))}</code> — keys: ${htmlEscape(keys)}</li>`;
             } else if (op?.op === "attach_image") {
-              body += `<li>attach image to <code>${htmlEscape(String(op.node_id))}</code> — <a href='${htmlEscape(String(op.cdn_image_url))}' target='_blank'>preview</a> (sha256: <code>${htmlEscape(String(op.sha256).slice(0, 12))}…</code>)</li>`;
+              if (op.cdn_image_url) {
+                body += `<li>attach image to <code>${htmlEscape(String(op.node_id))}</code> — <a href='${htmlEscape(String(op.cdn_image_url))}' target='_blank'>preview</a> (sha256: <code>${htmlEscape(String(op.sha256 ?? "").slice(0, 12))}…</code>)</li>`;
+              } else {
+                body += `<li>image for <code>${htmlEscape(String(op.node_id))}</code> from ${htmlEscape(String(op.image_url ?? ""))} — fetched and mirrored when you approve; if that fails the node is still created without it</li>`;
+              }
+            } else if (op?.op === "image_failed") {
+              body += `<li>image for <code>${htmlEscape(String(op.node_id))}</code> — <strong>will not be attached</strong>: ${htmlEscape(String(op.image_error ?? ""))} (source: ${htmlEscape(String(op.image_url ?? ""))}). The node itself is unaffected.</li>`;
             } else if (op?.op === "end_edge") {
               body += `<li>end relation <code>${htmlEscape(String(op.edge_id))}</code> — the source no longer shows it (nothing is deleted; the edge becomes historical)</li>`;
             } else {

@@ -2,8 +2,9 @@ import { Router } from "express";
 import crypto from "node:crypto";
 import { createGzip } from "node:zlib";
 import { getDb } from "../db.js";
-import { HTML_HEADERS, JSON_HEADERS } from "../templates.js";
+import { HTML_HEADERS, JSON_HEADERS, htmlEscape } from "../templates.js";
 import { approveIntakeItem, rejectIntakeItem } from "../utils/review.js";
+import { mirrorQueuedImages, queuedImageFailures } from "../utils/package-images.js";
 import { buildEmbeddingSections } from "../embed/sections.js";
 import { YEAR_SQL_FRAGMENT, formatArtworkYear } from "../utils/year.js";
 import { NODE_NOT_RETIRED } from "../utils/visibility.js";
@@ -581,14 +582,16 @@ router.post("/api/contribute", (req, res) => {
 // POST /api/review/:id/approve — thin HTML wrapper over the shared
 // approve logic in src/utils/review.ts (also used by the admin JSON
 // endpoints in contributor-api.ts).
-router.post("/api/review/:id/approve", requireCurator, (req, res) => {
+router.post("/api/review/:id/approve", requireCurator, async (req, res) => {
   const db = getDb();
+  await mirrorQueuedImages(db, String(req.params.id)); // queued package images; failures are recorded, never fatal
   const outcome = approveIntakeItem(db, String(req.params.id), req.contributor?.name || "curator");
   if (!outcome.ok) {
     res.status(outcome.status).set(JSON_HEADERS).json({ error: outcome.error });
     return;
   }
-  res.set(HTML_HEADERS).send("<div class='msg msg-ok'>Approved and is now live.</div>");
+  const imageNotes = queuedImageFailures(db, String(req.params.id));
+  res.set(HTML_HEADERS).send(`<div class='msg msg-ok'>Approved and is now live.${imageNotes.length ? ` Not attached: ${imageNotes.map((n) => htmlEscape(n)).join("; ")}` : ""}</div>`);
   void notifyAfterReview(db, String(req.params.id), true, null);
 });
 

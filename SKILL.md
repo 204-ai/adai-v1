@@ -1,7 +1,7 @@
 ---
 name: adai-contribute
 description: Contribute to the A(DAI) Digital Arts Knowledge Commons (https://digitalartsinstitute.io) on behalf of a practitioner, using their bearer token in ADAI_TOKEN. Use to add a text signal about an existing entry, create entries (practitioner, artwork, concept, project, institution, collective, platform, etc.), add or supersede relations, upload and attach an image, tag a session with a batch_id, review contribution history, claim the practitioner's own page and speak for it (contest, add context, invite), add a reading of a relation, or, with an admin token, mint/list/revoke/link tokens, invite people, work the review queue, revoke a signal, retire an entry, or retire a batch. Talks to /api/v1/* via curl. Respects trust tiers. Never infer INFLUENCES or RESPONDS_TO from style or visual similarity; both require attested artist intent.
-version: 2026-10-28
+version: 2026-10-29
 ---
 
 # A(DAI) contributor skill — for Claude (and any other AI assistant) writing to the knowledge commons
@@ -477,6 +477,17 @@ curl -s -X POST "$ADAI_BASE/api/v1/packages" \
   transaction, `status: "approved"`, `created_nodes`.
 - Warnings (unknown types, direction, INFLUENCES/RESPONDS_TO attestation) come
   back in `warnings`, as for the single endpoints.
+- **Images**: a node may carry `image_url` (https, a public image: JPEG, PNG,
+  GIF, WebP or AVIF, up to 20 MiB; fetched and mirrored by the server exactly as
+  in §1.5). `reviewed` / `auto`: fetched right after the nodes are created;
+  the response lists `images_attached` and `images_failed`. `probationary`:
+  the URL waits in the review item and is fetched when a curator approves it
+  (nothing is fetched for a rejected package); the card shows it, and a failure
+  at approval is recorded on the item. **An image never fails a package**: a bad
+  URL (not https, credentials, not a URL) or a failed fetch is a `warning` and
+  the node is created without an image (attach one later with §1.5). `image_url`
+  on a node that already exists is ignored with a warning: a package does not
+  change an existing page.
 
 ### 1.5 `POST /api/v1/images` — upload an image and attach it
 

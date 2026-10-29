@@ -34,6 +34,7 @@ import {
 } from "../utils/contribution.js";
 import { uploadImage, isR2Configured } from "../r2.js";
 import { mirrorImageFromUrl, ImageFetchError } from "../utils/images.js";
+import { checkPackageImageUrl, mirrorPackageImages, mirrorQueuedImages, queuedImageFailures } from "../utils/package-images.js";
 import { sniffImageMime } from "../utils/ssrf.js";
 import { getSkillVersion } from "../utils/skill-version.js";
 import { embedNodeAsync, embedNodesAsync } from "../embed/server.js";
@@ -648,6 +649,11 @@ router.post("/api/v1/edges", requireToken, (req, res) => {
 // approveIntakeItem creates nodes first, then edges, with dedupe remapping);
 // auto / reviewed → applied now through the same materialise* functions, in one
 // transaction, plus an approved audit row.
+//
+// A node may carry `image_url` (src/utils/package-images.ts): reviewed/auto are
+// mirrored right after validation; probationary ones queue an attach_image op
+// with only the URL, mirrored at approval. An image problem is a warning /
+// recorded failure, never a failed package.
 
 // A probationary package is approved or rejected whole, so it must stay small
 // enough for a curator to judge at once; bigger uploads are several packages
@@ -657,7 +663,7 @@ const MAX_PACKAGE_EDGES = 300;
 
 type PackageProblem = { item: string; index: number; error: string };
 
-router.post("/api/v1/packages", requireToken, (req, res) => {
+router.post("/api/v1/packages", requireToken, async (req, res) => {
   const db = getDb();
   const body = req.body ?? {};
   const batch = parseBatchId(body.batch_id);
@@ -695,6 +701,9 @@ router.post("/api/v1/packages", requireToken, (req, res) => {
   // ---- nodes: same validation and slug rules as POST /api/v1/nodes ----------
   type Prepared = { ref: string | null; op: Extract<ProposedNodeOp, { op: "create_node" }>; id: string; existing: string | null };
   const prepared: Prepared[] = [];
+  // image_url per node: a problem here is a warning, never a 400 (see below).
+  const imageWanted: Array<{ node_id: string; image_url: string }> = []; // valid, for a node this package creates
+  const imageRejected: Array<{ node_id: string; image_url: string; error: string }> = [];
   const keyToIndex = new Map<string, number>(); // reference string → prepared index
   const claimed = new Map<string, number>(); // final-ish id → first index (duplicate check)
   rawNodes.forEach((n: any, i: number) => {
@@ -740,6 +749,17 @@ router.post("/api/v1/packages", requireToken, (req, res) => {
     if (dupe !== undefined) return bad("node", i, `duplicates nodes[${dupe}] (same type and slug ${id})`);
     claimed.set(`${type}:${slug}`, i);
     prepared.push({ ref: ref === undefined ? null : ref.trim(), op: { op: "create_node", type, name, slug, metadata: meta, aliases: aliasItems }, id, existing });
+    if (n.image_url !== undefined && n.image_url !== null) {
+      const chk = checkPackageImageUrl(n.image_url);
+      if (existing) {
+        warnings.push(`nodes[${i}]: image_url ignored — ${existing} already exists and its page is not changed by a package; use POST /api/v1/images for it`);
+      } else if (!chk.ok) {
+        warnings.push(`nodes[${i}]: image_url not used — ${chk.error}; the node is created without an image`);
+        imageRejected.push({ node_id: id, image_url: String(n.image_url).slice(0, 300), error: chk.error });
+      } else {
+        imageWanted.push({ node_id: id, image_url: chk.url });
+      }
+    }
     const here = prepared.length - 1;
     // `ref`s and ids must be unambiguous; a name works only while it is unique.
     if (ref !== undefined) {
@@ -823,13 +843,39 @@ router.post("/api/v1/packages", requireToken, (req, res) => {
   // notifications read target_node).
   const targetNode = prepared.find((p) => !p.existing)?.id ?? prepared[0]?.existing ?? proposedEdges[0]!.target_id;
 
+  // Reviewed / auto: fetch and mirror the images now, before the write
+  // transaction (network stays outside it). Failures are warnings; the nodes go in.
+  const attachOps: ProposedNodeOp[] = [];
+  const imagesAttached: string[] = [];
+  const imageFailures: Array<{ node_id: string; image_url: string; error: string }> = [...imageRejected];
+  if (auto && imageWanted.length) {
+    if (!isR2Configured()) {
+      for (const j of imageWanted) imageFailures.push({ ...j, error: "r2_not_configured: image mirroring is not configured on this server" });
+    } else {
+      for (const r of await mirrorPackageImages(imageWanted)) {
+        if (r.ok) {
+          attachOps.push({ op: "attach_image", node_id: r.node_id, image_url: r.image_url, cdn_image_url: r.mirrored.upload.url, sha256: r.mirrored.upload.sha256 });
+          imagesAttached.push(r.node_id);
+        } else imageFailures.push({ node_id: r.node_id, image_url: r.image_url, error: r.error });
+      }
+    }
+  }
+  if (auto) for (const f of imageFailures) if (!imageRejected.includes(f)) warnings.push(`image for ${f.node_id} not attached: ${f.error}`);
+  // Probationary: the op waits in the item with only its image_url (mirrored on
+  // approval); a rejected URL is kept as an image_failed op so the card says so.
+  if (!auto && imageWanted.length && !isR2Configured()) warnings.push("image mirroring is not configured on this server right now: the images will be attempted when the package is approved");
+  const queuedImageOps: any[] = auto ? [] : [
+    ...imageWanted.map((j) => ({ op: "attach_image", ...j })),
+    ...imageRejected.map((j) => ({ op: "image_failed", node_id: j.node_id, image_url: j.image_url, image_error: j.error })),
+  ];
+
   db.exec("BEGIN IMMEDIATE");
   let result: any;
   try {
     const signalId = insertSignal(db, {
       contributor,
       title: `Package: ${createOps.length} node(s), ${proposedEdges.length} edge(s)`,
-      content: JSON.stringify({ nodes: createOps, edges: proposedEdges }),
+      content: JSON.stringify({ nodes: createOps, edges: proposedEdges, ...(imageWanted.length || imageRejected.length ? { images: [...imageWanted, ...imageRejected.map(({ node_id, image_url }) => ({ node_id, image_url }))] } : {}) }),
       source_type: "api_package",
       batch_id: batch.value,
       pending: !auto,
@@ -840,6 +886,7 @@ router.post("/api/v1/packages", requireToken, (req, res) => {
         const r = materialiseCreateNode(db, op, { signalId, createdBy: createdByLabel });
         if (r.created) created.push(r.node_id);
       }
+      for (const op of attachOps) materialiseAttachImage(db, op as Extract<ProposedNodeOp, { op: "attach_image" }>, { createdBy: createdByLabel, signalId });
       let edgesWritten = 0;
       for (const e of proposedEdges) {
         materialiseEdge(db, { ...e, signal_id: signalId }, { signalId, createdBy: createdByLabel });
@@ -849,22 +896,22 @@ router.post("/api/v1/packages", requireToken, (req, res) => {
         contributor,
         signal_id: signalId,
         target_node: targetNode,
-        proposed_nodes: createOps,
+        proposed_nodes: [...createOps, ...attachOps],
         proposed_edges: proposedEdges,
       });
       ensureContributorRow(db, contributor, signalId);
       bumpApprovedCount(db, contributor.id, signalId);
-      result = { status: "approved", signal_id: signalId, intake_id, created_nodes: created, edges: edgesWritten };
+      result = { status: "approved", signal_id: signalId, intake_id, created_nodes: created, edges: edgesWritten, ...(imageWanted.length || imageRejected.length ? { images_attached: imagesAttached, images_failed: imageFailures } : {}) };
     } else {
       const { intake_id, status } = insertIntake(db, {
         contributor,
         signal_id: signalId,
         target_node: targetNode,
-        proposed_nodes: createOps,
+        proposed_nodes: [...createOps, ...queuedImageOps],
         proposed_edges: proposedEdges,
       });
       ensureContributorRow(db, contributor, signalId);
-      result = { status, signal_id: signalId, intake_id, queued_nodes: createOps.length, edges: proposedEdges.length };
+      result = { status, signal_id: signalId, intake_id, queued_nodes: createOps.length, edges: proposedEdges.length, ...(imageWanted.length ? { images_queued: imageWanted.length } : {}) };
     }
     db.exec("COMMIT");
   } catch (e) {
@@ -1408,7 +1455,7 @@ function readBoolFlag(res: any, value: unknown, name: string, fallback: boolean)
 // Sweeps PENDING items matched by ids ∧ batch ∧ contributor (at least one
 // selector required — no blind approve-everything). Caps at 500 per call;
 // `remaining` in the response tells the caller to loop.
-router.post("/api/v1/review/bulk", requireAdmin, (req, res) => {
+router.post("/api/v1/review/bulk", requireAdmin, async (req, res) => {
   const db = getDb();
   const { action, reason, ids, batch_id, contributor, dry_run } = req.body ?? {};
 
@@ -1455,7 +1502,9 @@ router.post("/api/v1/review/bulk", requireAdmin, (req, res) => {
   const reviewedBy = `api-${req.contributor!.name}`;
   const failed: Array<{ intake_id: string; error: string }> = [];
   let processed = 0;
+  const imageWarnings: string[] = [];
   for (const r of rows) {
+    if (action === "approve") imageWarnings.push(...(await mirrorQueuedImages(db, r.id)));
     const outcome = action === "approve"
       ? approveIntakeItem(db, r.id, reviewedBy)
       : rejectIntakeItem(db, r.id, String(reason), reviewedBy);
@@ -1474,19 +1523,24 @@ router.post("/api/v1/review/bulk", requireAdmin, (req, res) => {
     matched: Number(matched),
     processed,
     failed,
+    ...(imageWarnings.length ? { warnings: imageWarnings } : {}),
     remaining: Math.max(0, Number(matched) - processed),
   });
 });
 
 // POST /api/v1/review/:id/approve — JSON twin of the web curator approve.
-router.post("/api/v1/review/:id/approve", requireAdmin, (req, res) => {
+router.post("/api/v1/review/:id/approve", requireAdmin, async (req, res) => {
   const db = getDb();
+  // Queued package images are fetched now (approval itself is synchronous); a
+  // failure is recorded on the item and never fails the approval.
+  await mirrorQueuedImages(db, String(req.params.id));
   const outcome = approveIntakeItem(db, String(req.params.id), `api-${req.contributor!.name}`);
   if (!outcome.ok) {
     res.status(outcome.status).set(JSON_HEADERS).json({ error: outcome.error });
     return;
   }
-  res.set(JSON_HEADERS).json({ intake_id: outcome.intake_id, status: "approved" });
+  const warnings = queuedImageFailures(db, outcome.intake_id);
+  res.set(JSON_HEADERS).json({ intake_id: outcome.intake_id, status: "approved", ...(warnings.length ? { warnings } : {}) });
   void notifyAfterReview(db, outcome.intake_id, true, null);
 });
 
