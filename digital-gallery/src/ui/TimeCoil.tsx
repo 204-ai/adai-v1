@@ -30,11 +30,18 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
   const a = useRef<HTMLImageElement>(null)
   const b = useRef<HTMLImageElement>(null)
   const stepper = useRef<Stepper | null>(null)
-  const order = useRef<CoilOrder | null>(null)
+  // Resolve the start before the first render: the field keeps its initial address, even while the image decodes.
+  const order = useMemo(() => {
+    const o = new CoilOrder(manifest.works, { seed: settings.seed, fuzz: settings.fuzz })
+    const work = settings.work ? manifest.works.find((w) => w.slug === settings.work)?.id : null
+    const artist = settings.artist ? manifest.artists.find((x) => x.slug === settings.artist)?.id : null
+    o.startAt({ work, artist }, (id) => works.get(id)?.artist)
+    return o
+  }, [manifest, settings, works])
   const reduced = useMemo(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches, [])
   const touch = useMemo(() => window.matchMedia('(pointer: coarse)').matches, [])
   const paused0 = startPaused(settings.paused, reduced)
-  const [state, setState] = useState<CoilState>({ current: null, turn: 0, pos: 0, paused: paused0 })
+  const [state, setState] = useState<CoilState>(() => ({ current: works.get(order.current()) ?? null, turn: order.turn, pos: order.pos, paused: paused0 }))
   const [credit, setCredit] = useState(false)
   const [touched, setTouched] = useState(false)
   const [hover, setHover] = useState<string | null>(null)
@@ -58,13 +65,11 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
   const L = useMemo(() => layout(view.W, view.H), [view])
   const act = useRef<(a: Action) => void>(() => undefined)
   const stroke = useRef<{ x: number; y: number; t: number } | null>(null)
+  const suppressClick = useRef(false)
 
   useEffect(() => {
     const ia = a.current!, ib = b.current!
-    const o = new CoilOrder(manifest.works, { seed: settings.seed, fuzz: settings.fuzz })
-    const work = settings.work ? manifest.works.find((w) => w.slug === settings.work)?.id : null
-    const artist = settings.artist ? manifest.artists.find((x) => x.slug === settings.artist)?.id : null
-    o.startAt({ work, artist }, (id) => works.get(id)?.artist)
+    const o = order
     const s = new Stepper(
       [ia, ib],
       (id) => works.get(id)!.img,
@@ -87,9 +92,8 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
     if (browsingNow.current) s.setHeld(true)
     s.start()
     stepper.current = s
-    order.current = o
     return () => s.dispose()
-  }, [manifest, settings, works, paused0])
+  }, [order, settings, works, paused0])
 
   // keys and the window losing focus
   act.current = (action: Action) => {
@@ -102,7 +106,7 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
     else if (action === 'fullscreen') void (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => undefined)
     else if (action === 'mode') (s.setHeld(false), setOpen(null), setDiving(false), setMode(nextMode))
     else if (action === 'credit') setCredit((c) => !c)
-    else if (action === 'close') (setCredit(false), s.setHeld(false), setOpen(null))
+    else if (action === 'close') (setCredit(false), s.setHeld(browsingNow.current || diving), setOpen(null))
     else if (action === 'warp' && mode === 'vortex' && turnOrder.length > 1) {
       const to = turnOrder[wormholeExit(state.pos, turnOrder.length, Math.random())]!
       // the run holds while the viewer is down the wormhole, so the work they arrive at is still on stage when they are back
@@ -170,7 +174,7 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
     s.setHeld(b)
     setState((st) => ({ ...st, paused: s.paused }))
   }, [])
-  const turnOrder = useMemo(() => order.current?.orderOf(state.turn) ?? [], [state.turn, state.current])
+  const turnOrder = useMemo(() => order.orderOf(state.turn), [order, state.turn])
   const stageVars = { '--stage-x': `${L.stage.x}px`, '--stage-y': `${L.stage.y}px`, '--stage-w': `${L.stage.w}px`, '--stage-h': `${L.stage.h}px`, '--hold': `${settings.hold}s` } as CSSProperties
   return (
     <main
@@ -179,14 +183,26 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
       data-paused={state.paused || undefined}
       style={stageVars}
       onPointerDown={(e) => {
-        // buttons (pause, mode, credit), the 3D views, the panel and the strip handle their own clicks
-        stroke.current = (e.target as Element).closest('button, a, .credit, .timeline, .gallery, .work-panel') ? null : { x: e.clientX, y: e.clientY, t: performance.now() }
+        suppressClick.current = false
+        // The canvases pick works on a tap; touch swipes still step through the run.
+        const target = e.target as Element
+        const excluded = target.closest('button, a, .credit, .timeline, .work-panel') || (e.pointerType !== 'touch' && target.closest('.gallery'))
+        stroke.current = excluded || !e.isPrimary ? null : { x: e.clientX, y: e.clientY, t: performance.now() }
       }}
       onPointerUp={(e) => {
         const s = stroke.current
         stroke.current = null
         const g = s && gesture(e.clientX - s.x, e.clientY - s.y, performance.now() - s.t)
-        if (g) act.current(g)
+        if (!g || (g === 'pause' && (e.target as Element).closest('.gallery'))) return
+        suppressClick.current = true
+        act.current(g)
+      }}
+      onPointerCancel={() => { stroke.current = null }}
+      onClickCapture={(e) => {
+        if (!suppressClick.current) return
+        suppressClick.current = false
+        e.preventDefault()
+        e.stopPropagation()
       }}
     >
       {mode === 'field' ? (
@@ -207,10 +223,11 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
               onStep={(dir) => {
                 for (let k = 0; k < Math.abs(dir); k++) act.current(dir > 0 ? 'next' : 'prev')
               }}
+              onPause={() => act.current('pause')}
               onHover={setHover}
             />
           ) : mode === 'city' ? (
-            <City manifest={manifest} works={works} current={state.current} paused={state.paused} hold={settings.hold} onPick={pick} onHover={setHover} />
+            <City manifest={manifest} works={works} current={state.current} paused={state.paused} hold={settings.hold} onPick={pick} onPause={() => act.current('pause')} onHover={setHover} />
           ) : (
             <Vortex
               works={works}
@@ -230,6 +247,7 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
                 setState((st) => ({ ...st, paused: stepper.current?.paused ?? st.paused }))
               }}
               onArrive={(id) => (id ? pick(id) : warp.to && stepper.current?.jump(warp.to))}
+              onPause={() => act.current('pause')}
               onHover={setHover}
             />
           )}

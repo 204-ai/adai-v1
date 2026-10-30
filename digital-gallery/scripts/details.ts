@@ -88,6 +88,7 @@ export function writeDetails(db: DatabaseSync, works: ManifestWork[], dir: strin
 
     const artists: DetailArtist[] = []
     for (const e of edges.filter((e) => e.edge === 'CREATED_BY')) {
+      if (artists.some((a) => a.id === e.id)) continue
       const m = JSON.parse(e.metadata) as Record<string, unknown>
       const known = Array.isArray(m.known_for) ? m.known_for.filter((x) => typeof x === 'string').join(', ') : m.known_for
       artists.push({ id: e.id, name: e.name, slug: e.slug, type: e.type, about: str(m.summary) ?? str(m.bio) ?? str(known) ?? str(m.role), website: http(m.homepage, 300) ?? http(meta.artist_website, 300) })

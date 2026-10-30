@@ -44,15 +44,16 @@ export function Vortex(props: {
   onArrive: (id: string | null) => void
   /** back up and standing again after a dive */
   onLanded: () => void
+  onPause: () => void
   onHover: (id: string | null) => void
 }) {
-  const { works, order, pos, paused, hold, warp, onPortal, onArrive, onLanded, onHover } = props
+  const { works, order, pos, paused, hold, warp, onPortal, onArrive, onLanded, onPause, onHover } = props
   const canvas = useRef<HTMLCanvasElement>(null)
   const vortex = useRef<VortexScene | null>(null)
   // the flow reads these every frame; React only writes them
   const live = useRef({ pos, paused, shownAt: performance.now(), heldFor: 0, order, warp })
-  const cb = useRef({ onPortal, onArrive, onLanded, onHover })
-  cb.current = { onPortal, onArrive, onLanded, onHover }
+  const cb = useRef({ onPortal, onArrive, onLanded, onPause, onHover })
+  cb.current = { onPortal, onArrive, onLanded, onPause, onHover }
 
   useEffect(() => {
     const cv = canvas.current!
@@ -156,8 +157,9 @@ export function Vortex(props: {
       cv.style.cursor = id ? 'pointer' : ''
     }
     const onClick = (e: MouseEvent) => {
-      const id = dive.phase === 'idle' ? v.pick(ndc(e)) : null
-      if (!id) return
+      if (dive.phase !== 'idle') return
+      const id = v.pick(ndc(e))
+      if (!id) return cb.current.onPause()
       // open it as a wormhole and dive in
       Object.assign(dive, { phase: 'in', into: id })
       cb.current.onHover(null)

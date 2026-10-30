@@ -83,6 +83,14 @@ export function dateOf(id: string, meta: Meta, artblocks: ArtBlocksDates = {}): 
     const r = readDateText(raw)
     if (r) return { year: r.year + inYear, label: r.label, basis: `"${raw}" on the A(DAI) record`, firm: r.firm }
   }
+  // MoMA/Wikidata and older contributions use `year`, sometimes as an ISO date.
+  const year = str('year') ?? (num('year') !== null ? String(num('year')) : null)
+  if (year) {
+    const iso = /^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(year) ? yearOfIso(year) : null
+    if (iso !== null && plausible(iso)) return { year: iso, label: dayLabel(year), basis: 'date on the A(DAI) record', firm: true }
+    const r = readDateText(year)
+    if (r) return { year: r.year + inYear, label: r.label, basis: 'year on the A(DAI) record', firm: r.firm }
+  }
   const mint = str('mint_opens_at')
   if (mint && yearOfIso(mint) !== null) return { year: yearOfIso(mint)!, label: dayLabel(mint), basis: 'fxhash mint opened', firm: true }
   const created = str('created_at')

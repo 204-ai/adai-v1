@@ -32,15 +32,16 @@ export function Gallery(props: {
   onOpen: (id: string) => void
   onClose: () => void
   onStep: (dir: number) => void
+  onPause: () => void
   onHover: (id: string | null) => void
 }) {
-  const { manifest, works, order, pos, paused, hold, open, onOpen, onClose, onStep, onHover } = props
+  const { manifest, works, order, pos, paused, hold, open, onOpen, onClose, onStep, onPause, onHover } = props
   const canvas = useRef<HTMLCanvasElement>(null)
   const hall = useRef<Hall | null>(null)
   // the walk reads these every frame; React only writes them
   const live = useRef({ pos, paused, shownAt: performance.now(), heldFor: 0, order, open, lead: 0, wheelAt: 0 })
-  const cb = useRef({ onOpen, onClose, onStep, onHover })
-  cb.current = { onOpen, onClose, onStep, onHover }
+  const cb = useRef({ onOpen, onClose, onStep, onPause, onHover })
+  cb.current = { onOpen, onClose, onStep, onPause, onHover }
 
   const artists = useMemo(() => {
     const out = new Map<string, ArtistCard>()
@@ -123,6 +124,7 @@ export function Gallery(props: {
       const id = h.pick(ndc(e))
       if (id) cb.current.onOpen(id)
       else if (live.current.open) cb.current.onClose()
+      else cb.current.onPause()
     }
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()

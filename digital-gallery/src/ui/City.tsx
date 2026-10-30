@@ -20,15 +20,15 @@ const CLIMB = 0.32
  * panel, climbing over the roofs if it is far. All sprung. The wheel draws back toward an aerial view and in again;
  * the mouse looks around; click a panel to bring its work on stage, hover names it.
  */
-export function City(props: { manifest: Manifest; works: Map<string, ManifestWork>; current: ManifestWork | null; paused: boolean; hold: number; onPick: (id: string) => void; onHover: (id: string | null) => void }) {
-  const { manifest, works, current, paused, hold, onPick, onHover } = props
+export function City(props: { manifest: Manifest; works: Map<string, ManifestWork>; current: ManifestWork | null; paused: boolean; hold: number; onPick: (id: string) => void; onPause: () => void; onHover: (id: string | null) => void }) {
+  const { manifest, works, current, paused, hold, onPick, onPause, onHover } = props
   const canvas = useRef<HTMLCanvasElement>(null)
   const city = useMemo(() => cityOf(manifest), [manifest])
   const scene = useRef<CityScene | null>(null)
   // the camera reads these every frame; React only writes them
   const live = useRef({ current, paused, shownAt: performance.now(), heldFor: 0 })
-  const cb = useRef({ onPick, onHover })
-  cb.current = { onPick, onHover }
+  const cb = useRef({ onPick, onPause, onHover })
+  cb.current = { onPick, onPause, onHover }
 
   useEffect(() => {
     const cv = canvas.current!
@@ -102,6 +102,7 @@ export function City(props: { manifest: Manifest; works: Map<string, ManifestWor
     const onClick = (e: MouseEvent) => {
       const id = s?.pick(ndc(e))
       if (id) cb.current.onPick(id)
+      else cb.current.onPause()
     }
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()

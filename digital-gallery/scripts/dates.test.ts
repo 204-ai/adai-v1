@@ -35,6 +35,17 @@ describe('dateOf', () => {
     expect(d.label).toBe('6 Nov 2021')
     expect(d.year).toBeCloseTo(yearOfIso('2021-11-06T17:52:58.000Z')!)
   })
+  it('reads legacy year fields without losing works dated by MoMA or Wikidata', () => {
+    for (const year of ['2018', 2018]) {
+      const d = dateOf('artwork:legacy', { year })!
+      expect(Math.floor(d.year)).toBe(2018)
+      expect(d).toMatchObject({ label: '2018', firm: true })
+    }
+    expect(dateOf('artwork:legacy', { year: '2019-01-01' })).toMatchObject({ year: 2019, label: '1 Jan 2019', firm: true })
+    expect(dateOf('artwork:legacy', { year: '1967–1970' })).toMatchObject({ label: '1967–1970', firm: false })
+    expect(dateOf('artwork:legacy', { year_start: 2021, year: '2018' })?.label).toBe('2021')
+    expect(dateOf('artwork:legacy', { year: 'undated' })).toBeNull()
+  })
   it('looks Art Blocks projects up by contract and id', () => {
     const meta = { artblocks_contract: '0x059EDD72cd353df5106d2b9cc5ab83a52287ac3a', artblocks_project_id: '0' }
     expect(dateOf('artwork:c', meta)).toBeNull()

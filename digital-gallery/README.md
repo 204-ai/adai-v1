@@ -48,6 +48,7 @@ npm run dev         # http://localhost:5250
 `npm run manifest -- --db <path>` reads another database; `--site <url>` changes where the credit links (default the live site).
 
 Keys: `space` pause · `←` `→` previous/next · `m` mode · `i` credit · `f` fullscreen · `j` wormhole (vortex) · `esc` close.
+In the 3D views, tap the background to pause or resume and swipe left/right to step; tapping a work keeps its view's action (open, dive or select).
 URL: `?work=<artwork slug>` `?artist=<slug>` `?seed=` `?fuzz=0..1` `?hold=<seconds>` `?paused=1` `?mode=field|gallery|vortex|city` `?field=<A(DAI) url>`.
 
 Checks: `npm test` (vitest) and `npm run build` (types, then the bundle); `npm run lint` is the type check alone.
