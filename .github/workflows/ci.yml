@@ -1,6 +1,6 @@
 name: ci
 
-# Run on every push and pull-request. Server and worker checks run in parallel:
+# Run on every push and pull-request. Server, worker and digital-gallery checks run in parallel:
 #   - typecheck: catches TS errors before they land on main (the deploy
 #     would only flag them at Docker build time, which is too late).
 #   - test: tsx --test runs the suite under tests/. Currently a small
@@ -61,3 +61,20 @@ jobs:
       - run: npm test
       - run: npx --no-install playwright install --with-deps chromium
       - run: npm run test:browser
+
+  digital-gallery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: digital-gallery
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: digital-gallery/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build # type-checks first (tsc --noEmit), then bundles

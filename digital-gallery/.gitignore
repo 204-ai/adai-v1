@@ -1,0 +1,10 @@
+# dependencies and builds
+node_modules/
+dist/
+
+# generated from a local A(DAI) database by `npm run manifest`
+public/data/
+
+# misc
+.DS_Store
+*.log

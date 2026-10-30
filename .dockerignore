@@ -22,6 +22,8 @@ worker/dist/
 worker/tests/
 worker/src/ssrf.ts
 worker/src/editorial-context.ts
+# the digital gallery is a separate front end; the server image never ships it
+digital-gallery/
 .env
 .env.*
 .tokens*.json

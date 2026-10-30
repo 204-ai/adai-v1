@@ -66,6 +66,11 @@ src/
 worker/                   — the intake worker (own package + Playwright image,
                             Fly app adai-intake-worker; never opens the DB —
                             talks HTTP to /internal/intake/* only)
+digital-gallery/          — A(DAI) Digital Gallery: a separate Vite + three.js front end
+                            (own package, own CI job; never in the server image). The
+                            commons' artworks as a stream in A(DAI)'s own /field (framed)
+                            and three 3D views; reads public data only, through
+                            `npm run manifest` over a local fork:pull DB
 db.sql                    — CR-SQLite schema (CRR tables + local tables)
 seed/_build/              — the LIVE R2 janitors only (genesis pipeline retired):
     cull_orphans.py       — delete R2 images no live node references
@@ -258,7 +263,8 @@ empty — it requires evidence of artist intent, not thematic similarity.
 - `GET /graph` — D3 force-directed graph
 - `GET /field` — the 30k canvas field view (press `e` for embeddings mode);
   `GET /field/<type>/:slug` opens it focused on a node (the legacy
-  `/field?node=<id>` 301s there)
+  `/field?node=<id>` 301s there); framed by another page (the digital gallery), it hands that page back the
+  keys it asks for (`js-interface/embed.js`, a postMessage handshake; only its own framer, only the origin that asked)
 - `GET /<type>/:slug` (practitioner, artwork, concept, …) — the **entity view**,
   server-rendered by `src/entity/view.ts` (+ `page.ts`): hero work, the node's
   own words, works, graph-derived relations, embedding neighbours (filled
