@@ -1,20 +1,8 @@
 import { useEffect, useState } from 'react'
 import { OPEN } from '../lib/commons.ts'
-import { KEY_HINT, PAUSE_LABEL, TOUCH_HINT, creditLines } from '../lib/copy.ts'
+import { KEY_HINT, TOUCH_HINT, creditLines } from '../lib/copy.ts'
 import type { Mode } from '../lib/layout.ts'
 import type { ManifestWork } from '../lib/manifest.ts'
-
-/** mind.lol's pause glyph, magenta; click resumes. */
-export function PauseGlyph({ onClick }: { onClick: () => void }) {
-  return (
-    <button className="pause" onClick={onClick} aria-label="Resume">
-      <svg viewBox="0 0 28.825 28.824" aria-hidden="true">
-        <path d="M12.213,3v22.824c0,1.656-1.343,3-3,3H3.889c-1.658,0-3-1.344-3-3V3c0-1.656,1.342-3,3-3h5.324C10.87,0,12.213,1.344,12.213,3z M24.935,0h-5.323c-1.658,0-3,1.344-3,3v22.824c0,1.656,1.342,3,3,3h5.323c1.658,0,3-1.344,3-3V3C27.935,1.344,26.594,0,24.935,0z" />
-      </svg>
-      <span>{PAUSE_LABEL}</span>
-    </button>
-  )
-}
 
 /** The hint: keys on desktop, touch on a phone; 3.5 s after load, gone at the first input. */
 export function Hint({ gone, touch }: { gone: boolean; touch: boolean }) {

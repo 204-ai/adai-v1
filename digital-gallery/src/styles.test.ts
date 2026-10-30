@@ -11,7 +11,7 @@ const zOf = (selector: string) => {
 
 describe('overlays stack above the stage', () => {
   const stage = zOf('.screen')
-  for (const sel of ['.pause', '.hint', '.credit', '.mode-button', '.timeline'])
+  for (const sel of ['.hint', '.credit', '.mode-button', '.timeline'])
     it(`${sel} is above .screen`, () => {
       expect(stage).toBeGreaterThan(0)
       expect(zOf(sel)).toBeGreaterThan(stage)

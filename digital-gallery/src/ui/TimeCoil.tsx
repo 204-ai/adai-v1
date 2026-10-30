@@ -9,7 +9,7 @@ import type { Settings } from '../lib/params.ts'
 import { Stepper } from '../lib/stepper.ts'
 import { Gallery } from './Gallery.tsx'
 import { Field } from './Field.tsx'
-import { Credit, Hint, ModeButton, PauseGlyph } from './Overlays.tsx'
+import { Credit, Hint, ModeButton } from './Overlays.tsx'
 import { Timeline } from './Timeline.tsx'
 import { Vortex } from './Vortex.tsx'
 import { City } from './City.tsx'
@@ -56,10 +56,9 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
   const [warp, setWarp] = useState<{ n: number; to: string | null }>({ n: 0, to: null })
   // the line shown on the way down a wormhole
   const [note, setNote] = useState<{ n: number; text: string }>({ n: 0, text: '' })
-  // down a wormhole: the run holds, but that is not a pause to show
+  // down a wormhole: the run holds
   const [diving, setDiving] = useState(false)
   // the A(DAI) field is open: the run holds
-  const [browsing, setBrowsing] = useState(false)
   const browsingNow = useRef(false)
   const indexOf = useMemo(() => new Map(manifest.works.map((w, i) => [w.id, i])), [manifest])
   const L = useMemo(() => layout(view.W, view.H), [view])
@@ -168,7 +167,6 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
   const closeWork = () => act.current('close')
   const browse = useCallback((b: boolean) => {
     const s = stepper.current
-    setBrowsing(b)
     browsingNow.current = b
     if (!s) return
     s.setHeld(b)
@@ -276,7 +274,6 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
         <img ref={a} className="on" crossOrigin="anonymous" alt={title} draggable={false} />
         <img ref={b} crossOrigin="anonymous" alt={title} draggable={false} />
       </div>
-      {state.paused && !open && !diving && !browsing && <PauseGlyph onClick={() => act.current('pause')} />}
       <Hint gone={touched} touch={touch} />
       {touch && <ModeButton mode={mode} onClick={() => act.current('mode')} />}
       {mode === 'field' && (

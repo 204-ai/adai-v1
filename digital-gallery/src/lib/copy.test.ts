@@ -20,7 +20,7 @@ describe('credit', () => {
 })
 
 describe('stage copy', () => {
-  it('is the hint, the pause label, the credit pieces and the notice — nothing else', () => {
-    expect(Object.keys(STAGE_COPY).sort()).toEqual(['COMMONS', 'KEY_HINT', 'NOTICE', 'PAUSE_LABEL', 'RIGHTS_NOTE', 'TOUCH_HINT'])
+  it('is the hint, the credit pieces and the notice — nothing else', () => {
+    expect(Object.keys(STAGE_COPY).sort()).toEqual(['COMMONS', 'KEY_HINT', 'NOTICE', 'RIGHTS_NOTE', 'TOUCH_HINT'])
   })
 })

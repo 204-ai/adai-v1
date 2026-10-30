@@ -1,4 +1,4 @@
-/* Time Coil — tokens. mind.lol's void and accents (magenta pause, cyan ahead, yellow now), house type. */
+/* Time Coil — tokens. mind.lol's void and accents (magenta behind, cyan ahead, yellow now), house type. */
 @font-face {
   font-family: 'Archivo';
   src: url('/fonts/archivo-latin.woff2') format('woff2');
@@ -130,49 +130,6 @@ body,
   }
   to {
     scale: 1.035;
-  }
-}
-
-/* ── pause (mind.lol: magenta glyph, fades to a ghost, hover brings it back) ── */
-.pause {
-  position: fixed;
-  left: calc(var(--stage-x, 21vw) + var(--stage-w, 62vw) / 2);
-  top: calc(var(--stage-y, 13vh) + var(--stage-h, 74vh) / 2);
-  translate: -50% -50%;
-  z-index: 400;
-  display: grid;
-  justify-items: center;
-  gap: 10px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--magenta);
-  cursor: pointer;
-  opacity: 0.1;
-  animation: fade 3s var(--ease) 1;
-  transition: opacity var(--t-short) var(--ease);
-}
-.pause:hover,
-.pause:focus-visible {
-  opacity: 0.5;
-  outline: none;
-}
-.pause svg {
-  width: 140px;
-  height: 140px;
-  fill: var(--magenta);
-}
-.pause span {
-  font: 600 13px/1 var(--ui);
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-@keyframes fade {
-  from {
-    opacity: 0.6;
-  }
-  to {
-    opacity: 0.1;
   }
 }
 

@@ -4,14 +4,13 @@ import type { ManifestWork } from './manifest.ts'
 
 export const KEY_HINT = 'space pause · ← → step · m mode · i credit · f fullscreen'
 export const TOUCH_HINT = 'tap background to pause · swipe to step'
-export const PAUSE_LABEL = 'resume'
 export const COMMONS = 'A(DAI) Digital Arts Commons'
 export const RIGHTS_NOTE = 'Image rights stay with the artist and other rights holders.'
 export const NOTICE = 'No manifest yet. Run npm run manifest.'
 /** the page's name, before a work is on stage */
 export const TITLE = 'A(DAI) Digital Gallery'
 
-export const STAGE_COPY = { KEY_HINT, TOUCH_HINT, PAUSE_LABEL, COMMONS, RIGHTS_NOTE, NOTICE }
+export const STAGE_COPY = { KEY_HINT, TOUCH_HINT, COMMONS, RIGHTS_NOTE, NOTICE }
 
 export interface CreditLines {
   title: string
