@@ -18,6 +18,8 @@ seed/
 # Both Dockerfiles can use the repository root. Keep package installations,
 # generated worker inputs and local credentials out of either build context.
 worker/node_modules/
+# the digital gallery is a separate front end; the server image never ships it
+digital-gallery/
 worker/dist/
 worker/tests/
 worker/src/ssrf.ts

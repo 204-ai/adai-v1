@@ -1,0 +1,808 @@
+/* Time Coil — tokens. mind.lol's void and accents (magenta pause, cyan ahead, yellow now), house type. */
+@font-face {
+  font-family: 'Archivo';
+  src: url('/fonts/archivo-latin.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Newsreader';
+  src: url('/fonts/newsreader-italic-latin.woff2') format('woff2');
+  font-style: italic;
+  font-weight: 200 800;
+  font-display: swap;
+}
+
+:root {
+  --void: #000;
+  --ink: #ece6da;
+  --muted: #8a8478;
+  --faint: #3a3732;
+  --magenta: #ff00ff;
+  /* accents: the work on stage, its graph */
+  --cream: #e8e1d3;
+  --orange: #e2683c;
+  --cyan: #00ffff;
+  --yellow: #ffff00;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --t-fast: 120ms;
+  --t-short: 240ms;
+  --t-mid: 450ms;
+  --t-slow: 900ms;
+  --ui: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+  --title: 'Newsreader', Georgia, serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--void);
+  color: var(--ink);
+  font-family: var(--ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+.stage {
+  position: fixed;
+  inset: 0;
+  background: var(--void);
+}
+
+.notice {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+
+.notice code {
+  color: var(--cyan);
+  font-family: ui-monospace, Menlo, monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* ── stage ───────────────────────────────────────────── */
+.coil {
+  position: fixed;
+  inset: 0;
+  background: var(--void);
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.screen {
+  /* switching modes glides the stage to the other layout */
+  transition:
+    left var(--t-mid) var(--ease),
+    top var(--t-mid) var(--ease),
+    width var(--t-mid) var(--ease),
+    height var(--t-mid) var(--ease);
+  position: absolute;
+  left: var(--stage-x, 21vw);
+  top: var(--stage-y, 13vh);
+  width: var(--stage-w, 62vw);
+  height: var(--stage-h, 74vh);
+  z-index: 200;
+}
+
+.screen img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: transparent;
+  opacity: 0;
+  user-select: none;
+}
+
+/* a still holds the stage for --hold seconds, pushing in slowly; a pause holds the push too */
+.screen img.on {
+  opacity: 1;
+  animation: push var(--hold, 4s) linear 1 both;
+}
+.coil[data-paused] .screen img.on {
+  animation-play-state: paused;
+}
+@keyframes push {
+  from {
+    scale: 1;
+  }
+  to {
+    scale: 1.035;
+  }
+}
+
+/* ── pause (mind.lol: magenta glyph, fades to a ghost, hover brings it back) ── */
+.pause {
+  position: fixed;
+  left: calc(var(--stage-x, 21vw) + var(--stage-w, 62vw) / 2);
+  top: calc(var(--stage-y, 13vh) + var(--stage-h, 74vh) / 2);
+  translate: -50% -50%;
+  z-index: 400;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--magenta);
+  cursor: pointer;
+  opacity: 0.1;
+  animation: fade 3s var(--ease) 1;
+  transition: opacity var(--t-short) var(--ease);
+}
+.pause:hover,
+.pause:focus-visible {
+  opacity: 0.5;
+  outline: none;
+}
+.pause svg {
+  width: 140px;
+  height: 140px;
+  fill: var(--magenta);
+}
+.pause span {
+  font: 600 13px/1 var(--ui);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+@keyframes fade {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 0.1;
+  }
+}
+
+/* ── key hint ── */
+.hint {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  translate: -50% 0;
+  margin: 0;
+  z-index: 400;
+  color: var(--muted);
+  font: 500 12px/1 var(--ui);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: opacity var(--t-slow) var(--ease);
+}
+.hint[data-gone] {
+  opacity: 0;
+}
+
+
+/* ── credit ── */
+.credit {
+  position: fixed;
+  left: 28px;
+  bottom: 28px;
+  z-index: 450;
+  width: min(440px, calc(100vw - 56px));
+  padding: 18px 20px 16px;
+  background: rgb(10 9 8 / 0.86);
+  border: 1px solid var(--faint);
+  backdrop-filter: blur(6px);
+  font: 400 13px/1.45 var(--ui);
+  color: var(--muted);
+}
+.credit h1 {
+  margin: 0 0 6px;
+  font: italic 400 26px/1.15 var(--title);
+  color: var(--ink);
+}
+.credit p {
+  margin: 0 0 6px;
+}
+.credit .collab {
+  color: var(--ink);
+  letter-spacing: 0.04em;
+}
+.credit a {
+  color: var(--cyan);
+  text-decoration: none;
+  pointer-events: auto;
+}
+.credit a:hover {
+  text-decoration: underline;
+}
+.credit .era strong {
+  color: var(--yellow);
+  font-weight: 600;
+}
+.credit .where,
+.credit .note {
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+}
+.credit .note {
+  margin: 10px 0 0;
+  color: var(--magenta);
+}
+.credit-close {
+  position: absolute;
+  right: 10px;
+  top: 6px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: 400 20px/1 var(--ui);
+  cursor: pointer;
+}
+
+/* ── the time strip: mind.lol's tabs as a time axis ── */
+.timeline {
+  position: fixed;
+  left: 4vw;
+  right: 4vw;
+  top: 0;
+  height: 30px;
+  z-index: 300;
+  cursor: pointer;
+  outline: none;
+}
+.timeline .rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 14px;
+  height: 1px;
+  background: var(--faint);
+}
+.timeline .decade {
+  position: absolute;
+  top: 10px;
+  width: 1px;
+  height: 9px;
+  background: var(--faint);
+}
+.timeline .tick {
+  position: absolute;
+  top: 11px;
+  width: 1px;
+  height: 7px;
+  translate: -0.5px 0;
+  opacity: 0.55;
+  transition:
+    height var(--t-short) var(--ease),
+    top var(--t-short) var(--ease);
+}
+.timeline .tick.behind {
+  background: var(--magenta);
+}
+.timeline .tick.ahead {
+  background: var(--cyan);
+  opacity: 0.35;
+}
+.timeline .tick.now {
+  background: var(--yellow);
+  width: 3px;
+  height: 13px;
+  top: 8px;
+  translate: -1.5px 0;
+  opacity: 1;
+}
+.timeline:hover .tick,
+.timeline:focus-visible .tick {
+  top: 7px;
+  height: 15px;
+}
+.timeline:hover .tick.now,
+.timeline:focus-visible .tick.now {
+  top: 4px;
+  height: 21px;
+}
+.timeline .label {
+  position: absolute;
+  top: 30px;
+  translate: -50% 0;
+  white-space: nowrap;
+  color: var(--ink);
+  font: 500 11.5px/1 var(--ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+@media (pointer: coarse) {
+  .hint {
+    bottom: max(24px, env(safe-area-inset-bottom));
+  }
+}
+
+/* ── touch: switch the view (no `m` key) ── */
+.mode-button {
+  position: fixed;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 300;
+  width: 44px;
+  height: 44px;
+  padding: 11px;
+  border: 1px solid var(--faint);
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0.5);
+  color: var(--ink);
+}
+.mode-button svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* ── gallery mode: the suspended gallery fills the screen; the stage images only preload ── */
+.gallery {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 100;
+  display: block;
+}
+.coil[data-mode='field'] .screen,
+.coil[data-mode='gallery'] .screen,
+.coil[data-mode='vortex'] .screen,
+.coil[data-mode='city'] .screen {
+  visibility: hidden;
+}
+.gallery-label {
+  position: fixed;
+  left: max(18px, env(safe-area-inset-left));
+  bottom: max(48px, env(safe-area-inset-bottom));
+  z-index: 300;
+  max-width: min(520px, calc(100vw - 36px));
+  padding: 4px 8px 5px;
+  border: 1px solid var(--orange);
+  background: rgb(0 0 0 / 0.72);
+  color: var(--orange);
+  font: 500 11px/1.25 ui-monospace, Menlo, monospace;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+.gallery-label[data-hovered] {
+  color: var(--cream);
+  border-color: var(--cream);
+}
+
+/* ── the open work: a glass panel beside it (under it on a tall screen), its neighbourhood as a constellation ── */
+.work-panel {
+  position: fixed;
+  z-index: 400;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 22px 28px 26px;
+  background: rgb(8 8 8 / 0.78);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  color: var(--ink);
+  font: 400 14px/1.55 var(--ui);
+  scrollbar-width: thin;
+  scrollbar-color: var(--faint) transparent;
+}
+.work-panel[data-side='right'] {
+  top: 34px;
+  right: 0;
+  bottom: 0;
+  width: var(--panel-size);
+  border-left: 1px solid rgb(232 225 211 / 0.1);
+  animation: panel-in-right var(--t-slow) var(--ease) both;
+}
+.work-panel[data-side='bottom'] {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--panel-size);
+  border-top: 1px solid rgb(232 225 211 / 0.1);
+  border-radius: 14px 14px 0 0;
+  animation: panel-in-bottom var(--t-slow) var(--ease) both;
+}
+@keyframes panel-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(32px);
+  }
+}
+@keyframes panel-in-bottom {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+}
+.work-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.work-panel .eyebrow {
+  margin: 0;
+  color: var(--orange);
+  font: 500 11px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.work-panel-close {
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgb(232 225 211 / 0.18);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--cream);
+  font: 300 18px/1 var(--ui);
+  cursor: pointer;
+  transition: background var(--t-short) var(--ease), border-color var(--t-short) var(--ease);
+}
+.work-panel-close:hover {
+  background: rgb(232 225 211 / 0.1);
+  border-color: rgb(232 225 211 / 0.4);
+}
+.work-panel h1 {
+  margin: 14px 0 6px;
+  font: italic 400 clamp(26px, 2.6vw, 36px) / 1.08 var(--title);
+  color: var(--cream);
+  text-wrap: balance;
+}
+.work-panel h2 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font: 500 10.5px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.work-panel p {
+  margin: 0;
+}
+.work-panel a {
+  color: inherit;
+  text-decoration-color: rgb(232 225 211 / 0.3);
+  text-underline-offset: 3px;
+}
+.work-panel a:hover {
+  text-decoration-color: var(--orange);
+}
+.work-panel .by {
+  font-size: 16px;
+  color: var(--cream);
+}
+.work-panel .when {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.work-panel .when strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+.work-panel .text {
+  margin-top: 18px;
+  color: rgb(236 230 218 / 0.86);
+  font-size: 14.5px;
+  line-height: 1.62;
+}
+.work-panel .facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px 18px;
+  margin: 18px 0 0;
+  padding: 14px 0;
+  border-top: 1px solid rgb(232 225 211 / 0.08);
+  border-bottom: 1px solid rgb(232 225 211 / 0.08);
+}
+.work-panel dt {
+  color: var(--muted);
+  font: 500 10px/1.2 ui-monospace, Menlo, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.work-panel dd {
+  margin: 3px 0 0;
+  font-size: 13px;
+}
+.work-panel .neighbourhood,
+.work-panel .maker {
+  margin-top: 22px;
+}
+.work-panel .maker p {
+  color: rgb(236 230 218 / 0.8);
+  font-size: 13.5px;
+}
+.work-panel .legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.work-panel .legend span {
+  display: inline-block;
+  width: 18px;
+  border-top: 1px solid var(--cream);
+  opacity: 0.6;
+}
+.work-panel .legend .dashed {
+  margin-left: 10px;
+  border-top-style: dashed;
+}
+.work-panel .tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.work-panel .tags li {
+  padding: 3px 9px;
+  border: 1px solid rgb(232 225 211 / 0.16);
+  border-radius: 999px;
+  color: rgb(236 230 218 / 0.75);
+  font-size: 11.5px;
+}
+.work-panel footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 24px;
+  padding-top: 14px;
+  border-top: 1px solid rgb(232 225 211 / 0.08);
+  font: 500 12px/1.3 ui-monospace, Menlo, monospace;
+}
+.work-panel footer a {
+  color: var(--orange);
+  text-decoration: none;
+}
+.work-panel-wait {
+  display: grid;
+  gap: 10px;
+  margin-top: 22px;
+}
+.work-panel-wait span {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgb(232 225 211 / 0.05), rgb(232 225 211 / 0.12), rgb(232 225 211 / 0.05));
+  background-size: 200% 100%;
+  animation: wait-shimmer 1.4s linear infinite;
+}
+.work-panel-wait span:nth-child(2) {
+  width: 82%;
+}
+.work-panel-wait span:nth-child(3) {
+  width: 64%;
+}
+@keyframes wait-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.constellation {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 2px 0 6px;
+  overflow: visible;
+}
+.constellation .threads path {
+  fill: none;
+  stroke: rgb(232 225 211 / 0.28);
+  stroke-width: 1;
+  stroke-dasharray: 600;
+  stroke-dashoffset: 600;
+  animation: thread-in var(--t-slow) var(--ease) forwards;
+}
+.constellation .threads path[data-inferred] {
+  stroke: rgb(232 225 211 / 0.2);
+}
+.constellation .threads path[data-kind='concept'] {
+  stroke: rgb(226 104 60 / 0.4);
+}
+@keyframes thread-in {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+/* machine-derived threads settle into dashes once drawn */
+.constellation .threads path[data-inferred] {
+  animation: thread-in var(--t-slow) var(--ease) forwards, thread-dash 1ms linear var(--t-slow) forwards;
+}
+@keyframes thread-dash {
+  to {
+    stroke-dasharray: 3 4;
+  }
+}
+.constellation .centre .ring {
+  fill: none;
+  stroke: var(--orange);
+  stroke-width: 1.5;
+}
+.constellation .star {
+  opacity: 0;
+  animation: star-in var(--t-mid) var(--ease) forwards;
+  cursor: pointer;
+  transition: transform var(--t-short) var(--ease);
+}
+.constellation .star[data-hovered] {
+  transform: scale(1.18);
+}
+@keyframes star-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.constellation .star .ring {
+  fill: #0d0c0b;
+  stroke: rgb(232 225 211 / 0.4);
+  stroke-width: 1;
+}
+.constellation .star[data-kind='affine'] .ring {
+  stroke-dasharray: 2 3;
+}
+.constellation .star[data-hovered] .ring {
+  stroke: var(--cream);
+}
+.constellation .star .dot {
+  fill: var(--cream);
+}
+.constellation .star[data-kind='concept'] .dot {
+  fill: var(--orange);
+}
+.constellation .star[data-kind='regime'] .dot,
+.constellation .star[data-kind='venue'] .dot,
+.constellation .star[data-kind='holder'] .dot {
+  fill: #7fc8c8;
+}
+.constellation .star[data-kind='kin'] .dot {
+  fill: #d9c66f;
+}
+.constellation text {
+  fill: rgb(236 230 218 / 0.78);
+  font: 400 11px/1 var(--ui);
+}
+.constellation .star[data-kind='maker'] text {
+  fill: var(--cream);
+  font: italic 400 15px/1 var(--title);
+}
+.constellation .star[data-hovered] text {
+  fill: var(--cream);
+}
+.constellation .caption {
+  fill: var(--muted);
+  font: 500 10.5px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: 0.04em;
+}
+
+/* ── the vortex's wormhole: the button that jumps in, and where it lets out ── */
+.warp-button {
+  position: fixed;
+  right: max(18px, env(safe-area-inset-right));
+  top: 40px;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px 7px 14px;
+  border: 1px solid rgb(232 225 211 / 0.25);
+  border-radius: 999px;
+  background: rgb(0 0 0 / 0.55);
+  color: var(--cream);
+  font: 500 11px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color var(--t-short) var(--ease), background var(--t-short) var(--ease);
+}
+.warp-button:hover {
+  border-color: var(--cream);
+  background: rgb(232 225 211 / 0.08);
+}
+.warp-button kbd {
+  padding: 3px 6px;
+  border: 1px solid rgb(232 225 211 / 0.3);
+  border-radius: 4px;
+  font: inherit;
+}
+.warp-note {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 44%;
+  z-index: 300;
+  margin: 0;
+  color: var(--cream);
+  padding: 0 24px;
+  font: italic 400 clamp(28px, 4vw, 52px) / 1.1 var(--title);
+  text-align: center;
+  text-wrap: balance;
+  pointer-events: none;
+  opacity: 0;
+  animation: warp-note 5.6s var(--ease) forwards;
+}
+@keyframes warp-note {
+  20% {
+    opacity: 0;
+    letter-spacing: 0.3em;
+  }
+  45% {
+    opacity: 0.9;
+  }
+  70% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    letter-spacing: 0.02em;
+  }
+}
+
+/* ── the field: A(DAI)'s own view, framed whole ── */
+.field-frame {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #000;
+  opacity: 0;
+  transition: opacity var(--t-mid) var(--ease);
+}
+.field-frame[data-ready] {
+  opacity: 1;
+}
+/* "mode ›": the field has its own bar along the bottom and its own panel on the right, so it sits top middle, quiet */
+.field-next {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  z-index: 350;
+  padding: 3px 6px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: 500 10px/1 ui-monospace, Menlo, monospace;
+  letter-spacing: 0.05em;
+  opacity: 0.45;
+  transform: translateX(-50%);
+  cursor: pointer;
+  transition: opacity var(--t-short) var(--ease);
+}
+.field-next:hover,
+.field-next:focus-visible {
+  color: var(--cream);
+  opacity: 1;
+}
+.field-keeper {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  outline: none;
+}
