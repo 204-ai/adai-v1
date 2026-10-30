@@ -2,17 +2,10 @@
 // fading, so whatever moves leaves a trail (the wheeling cloud streaks like wind). Brighter of the two wins, so what
 // holds still stays crisp.
 import * as THREE from 'three'
+import { screenVertex, toSRGB } from '../three/dither.ts'
 
 /** how fast a trail fades (per second) */
 const DECAY = 12
-
-const vertex = /* glsl */ `
-varying vec2 vUv;
-void main() {
-  vUv = uv;
-  gl_Position = vec4(position.xy, 0.0, 1.0);
-}
-`
 
 const warpFragment = /* glsl */ `
 uniform sampler2D tScene;
@@ -21,11 +14,7 @@ uniform vec2 uAspect;
 uniform float uKeep;
 uniform float uTrail;
 varying vec2 vUv;
-
-vec3 toSRGB(vec3 c) {
-  c = clamp(c, 0.0, 1.0);
-  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
-}
+${toSRGB}
 
 vec2 back(vec2 d) { return d / uAspect + 0.5; }
 
@@ -72,14 +61,14 @@ export class WarpPass {
     this.history = [layer(), layer()]
     const aspect = { value: new THREE.Vector2(1, 1) }
     this.warp = new THREE.ShaderMaterial({
-      vertexShader: vertex,
+      vertexShader: screenVertex,
       fragmentShader: warpFragment,
       depthTest: false,
       depthWrite: false,
       uniforms: { tScene: { value: this.target.texture }, tPrev: { value: null }, uAspect: aspect, uKeep: { value: 0 }, uTrail: { value: 0.5 } },
     })
     this.show = new THREE.ShaderMaterial({
-      vertexShader: vertex,
+      vertexShader: screenVertex,
       fragmentShader: showFragment,
       depthTest: false,
       depthWrite: false,

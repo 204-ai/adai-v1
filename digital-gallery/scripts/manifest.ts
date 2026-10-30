@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import type { Manifest, ManifestArtist, ManifestWork } from '../src/lib/manifest.ts'
 import { dateOf, type ArtBlocksDates } from './dates.ts'
-import { writeDetails } from './details.ts'
+import { NOT_RETIRED, writeDetails } from './details.ts'
 import { arg, DEFAULT_DB, root } from './lib.ts'
 
 const dbPath = arg('--db') ?? DEFAULT_DB
@@ -22,13 +22,13 @@ const db = new DatabaseSync(dbPath, { readOnly: true })
 const arts = db
   .prepare(
     `SELECT id, name, slug, metadata FROM nodes
-     WHERE type = 'artwork' AND json_extract(metadata, '$.cdn_image_url') IS NOT NULL AND json_extract(metadata, '$.retired') IS NULL`,
+     WHERE type = 'artwork' AND json_extract(metadata, '$.cdn_image_url') IS NOT NULL AND ${NOT_RETIRED('metadata')}`,
   )
   .all() as Array<{ id: string; name: string; slug: string; metadata: string }>
 const makers = db
   .prepare(
     `SELECT e.source_id AS work, n.id, n.name, n.type, n.slug FROM edges e JOIN nodes n ON n.id = e.target_id
-     WHERE e.edge_type = 'CREATED_BY' AND e.valid_until IS NULL AND json_extract(n.metadata, '$.retired') IS NULL`,
+     WHERE e.edge_type = 'CREATED_BY' AND e.valid_until IS NULL AND ${NOT_RETIRED('n.metadata')}`,
   )
   .all() as Array<{ work: string; id: string; name: string; type: string; slug: string }>
 
@@ -93,7 +93,7 @@ const kin = new Set<string>()
 for (const e of db
   .prepare(
     `SELECT e.source_id AS a, e.target_id AS b FROM edges e JOIN nodes s ON s.id = e.source_id JOIN nodes t ON t.id = e.target_id
-     WHERE e.edge_type = 'STYLE_KIN' AND e.valid_until IS NULL AND json_extract(s.metadata, '$.retired') IS NULL AND json_extract(t.metadata, '$.retired') IS NULL`,
+     WHERE e.edge_type = 'STYLE_KIN' AND e.valid_until IS NULL AND ${NOT_RETIRED('s.metadata')} AND ${NOT_RETIRED('t.metadata')}`,
   )
   .all() as unknown as Array<{ a: string; b: string }>)
   if (here.has(e.a) && here.has(e.b) && e.a !== e.b) kin.add(JSON.stringify([e.a, e.b].sort()))

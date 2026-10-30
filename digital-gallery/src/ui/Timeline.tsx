@@ -12,7 +12,9 @@ export function Timeline(props: { order: string[]; pos: number; works: Map<strin
   const a = useMemo(() => axisOf([...works.values()].map((w) => w.year)), [works])
   const ref = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<{ f: number; id: string } | null>(null)
-  const nearest = (f: number) => {
+  // the turn's work nearest a point on the axis; none before the first work has taken the stage (the order is empty)
+  const nearest = (f: number): string | null => {
+    if (!order.length) return null
     const t = timeAt(f, a)
     let best = order[0]!, d = Infinity
     for (const id of order) {
@@ -33,15 +35,18 @@ export function Timeline(props: { order: string[]; pos: number; works: Map<strin
       tabIndex={0}
       aria-label="Time"
       aria-valuemin={0}
-      aria-valuemax={order.length - 1}
+      aria-valuemax={Math.max(0, order.length - 1)}
       aria-valuenow={pos}
       aria-valuetext={current ? workLabel(current) : undefined}
       onPointerMove={(e) => {
-        const f = fAt(e.clientX)
-        setHover({ f, id: nearest(f) })
+        const f = fAt(e.clientX), id = nearest(f)
+        setHover(id ? { f, id } : null)
       }}
       onPointerLeave={() => setHover(null)}
-      onClick={(e) => onPick(nearest(fAt(e.clientX)))}
+      onClick={(e) => {
+        const id = nearest(fAt(e.clientX))
+        if (id) onPick(id)
+      }}
     >
       <div className="rail" />
       {decades(a).map((y) => (

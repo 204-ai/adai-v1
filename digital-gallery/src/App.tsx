@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { dataUrl } from './lib/collection.ts'
-import { notice } from './lib/copy.ts'
+import { dataUrl } from './lib/commons.ts'
+import { NOTICE } from './lib/copy.ts'
 import type { Manifest } from './lib/manifest.ts'
 import { parseParams } from './lib/params.ts'
 import { TimeCoil } from './ui/TimeCoil.tsx'
@@ -24,7 +24,7 @@ export function App() {
   if (load.state === 'missing')
     return (
       <main className="notice">
-        <p>{notice()}</p>
+        <p>{NOTICE}</p>
       </main>
     )
   if (load.state === 'loading') return <main className="coil" aria-busy="true" />

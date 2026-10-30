@@ -7,7 +7,9 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import type { Detail, DetailArtist, Related } from '../src/lib/detail.ts'
 import type { ManifestWork } from '../src/lib/manifest.ts'
 
-const LIVE = `e.valid_until IS NULL AND json_extract(n.metadata, '$.retired') IS NULL`
+/** the commons' own rule for a retired node (src/utils/visibility.ts): the same clause, so the two never disagree */
+export const NOT_RETIRED = (metadata: string) => `json_extract(${metadata},'$.retired') IS NOT 1`
+const LIVE = `e.valid_until IS NULL AND ${NOT_RETIRED('n.metadata')}`
 const DERIVED = 'embedding-multimodal-v1'
 
 /** how many of each kind the panel shows at most */
@@ -18,6 +20,12 @@ const str = (v: unknown, max = 600): string | null => {
   const s = v.replace(/\s+/g, ' ').trim()
   if (!s) return null
   return s.length > max ? s.slice(0, max - 1).replace(/\s+\S*$/, '') + '…' : s
+}
+
+/** a link worth following: an absolute http(s) URL, as A(DAI)'s own pages require; anything else never becomes an href */
+const http = (v: unknown, max: number): string | null => {
+  const s = str(v, max)
+  return s && /^https?:\/\/\S+$/i.test(s) ? s : null
 }
 
 /** a fact worth a row: a short string or a number */
@@ -82,7 +90,7 @@ export function writeDetails(db: DatabaseSync, works: ManifestWork[], dir: strin
     for (const e of edges.filter((e) => e.edge === 'CREATED_BY')) {
       const m = JSON.parse(e.metadata) as Record<string, unknown>
       const known = Array.isArray(m.known_for) ? m.known_for.filter((x) => typeof x === 'string').join(', ') : m.known_for
-      artists.push({ id: e.id, name: e.name, slug: e.slug, type: e.type, about: str(m.summary) ?? str(m.bio) ?? str(known) ?? str(m.role), website: str(m.homepage, 300) ?? str(meta.artist_website, 300) })
+      artists.push({ id: e.id, name: e.name, slug: e.slug, type: e.type, about: str(m.summary) ?? str(m.bio) ?? str(known) ?? str(m.role), website: http(m.homepage, 300) ?? http(meta.artist_website, 300) })
     }
     // the same maker's other works here, nearest in time first
     const first = artists[0]
@@ -113,7 +121,7 @@ export function writeDetails(db: DatabaseSync, works: ManifestWork[], dir: strin
       text: str(meta.description, 900) ?? str(meta.summary, 900),
       facts,
       tags: Array.isArray(meta.tags) ? meta.tags.filter((t): t is string => typeof t === 'string').slice(0, 12) : [],
-      source: str(meta.source_url, 400),
+      source: http(meta.source_url, 400),
       artists,
       related,
     }

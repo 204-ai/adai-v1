@@ -3,7 +3,10 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "A(DAI) Digital Gallery: the Digital Arts Commons' artworks as one endless stream, in A(DAI)'s own field and three 3D views (gallery, vortex, city). A fork of A(DAI) Coil without the AWO gallery, the spiral, the tunnel and the coil.",
+  "description": "A(DAI) Digital Gallery: the Digital Arts Commons' artworks as one endless stream, in A(DAI)'s own field and three 3D views (gallery, vortex, city).",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",

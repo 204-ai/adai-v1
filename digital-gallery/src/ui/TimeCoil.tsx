@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { gesture, startPaused } from '../lib/gesture.ts'
-import { workLabel } from '../lib/copy.ts'
-import { collection } from '../lib/collection.ts'
+import { TITLE, workLabel } from '../lib/copy.ts'
 import { keyAction, type Action } from '../lib/keys.ts'
 import { layout, nextMode, type Mode } from '../lib/layout.ts'
 import type { Manifest, ManifestWork } from '../lib/manifest.ts'
@@ -56,7 +55,7 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
   const [browsing, setBrowsing] = useState(false)
   const browsingNow = useRef(false)
   const indexOf = useMemo(() => new Map(manifest.works.map((w, i) => [w.id, i])), [manifest])
-  const L = useMemo(() => layout(view.W, view.H, mode), [view, mode])
+  const L = useMemo(() => layout(view.W, view.H), [view])
   const act = useRef<(a: Action) => void>(() => undefined)
   const stroke = useRef<{ x: number; y: number; t: number } | null>(null)
 
@@ -129,8 +128,11 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
       stepper.current?.setBlurred(b)
       setState((st) => ({ ...st, paused: stepper.current?.paused ?? st.paused }))
     }
-    const onBlur = blur(true), onFocus = blur(false)
-    const onVisible = () => (document.hidden ? onBlur() : onFocus())
+    const lost = blur(true), onFocus = blur(false)
+    // focus moving into the framed field is still this page, not another window: the run is not blurred by it (and
+    // when the field closes, no focus event comes back to clear it)
+    const onBlur = () => setTimeout(() => (document.activeElement instanceof HTMLIFrameElement ? undefined : lost()), 0)
+    const onVisible = () => (document.hidden ? lost() : onFocus())
     const onResize = () => setView({ W: window.innerWidth, H: window.innerHeight })
     window.addEventListener('resize', onResize)
     window.addEventListener('keydown', onKey)
@@ -146,7 +148,7 @@ export function TimeCoil({ manifest, settings }: { manifest: Manifest; settings:
     }
   }, [])
 
-  const title = state.current ? `${state.current.title}, ${state.current.by.join(', ')}` : `${collection().name} Digital Gallery`
+  const title = state.current ? `${state.current.title}, ${state.current.by.join(', ')}` : TITLE
   const run = { seed: settings.seed, turn: state.turn }
   const pick = (id: string) => (setTouched(true), stepper.current?.jump(id))
   // open a work: bring it on stage and hold the run while it is open

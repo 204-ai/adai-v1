@@ -1,7 +1,7 @@
 // A work's detail file (public/data/works/<index>.json, written by `npm run manifest` beside the manifest): what the panel
 // shows when a work is opened. Its words, a few facts, its tags, its makers, and its neighbours in the commons' graph.
 // Read only when a work is opened, so the manifest stays small.
-import { dataUrl } from './collection.ts'
+import { dataUrl } from './commons.ts'
 
 export type RelKind =
   /** a concept the work embodies; `inferred` when the commons' embeddings proposed it, not a person */
@@ -53,5 +53,5 @@ export interface Detail {
   related: Related[]
 }
 
-/** where a work's detail file is, by its place in the manifest (in the current gallery's data folder) */
+/** where a work's detail file is, by its place in the manifest */
 export const detailUrl = (index: number) => dataUrl(`works/${index}.json`)

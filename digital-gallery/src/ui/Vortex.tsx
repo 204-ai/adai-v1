@@ -5,6 +5,7 @@ import type { ManifestWork } from '../lib/manifest.ts'
 import { EYE, diveHeading, divePoint } from '../lib/vortex.ts'
 import { VortexScene } from './vortex/vortex3d.ts'
 import { WarpPass } from './vortex/warpPass.ts'
+import { fitWindow, ndc } from './three/screen.ts'
 
 /** a jump farther than this many works fades through black instead of streaming everything between past the viewer */
 const FAR_WORKS = 8
@@ -61,14 +62,9 @@ export function Vortex(props: {
     v.setOrder(live.current.order)
     vortex.current = v
     const resize = () => {
-      const dpr = Math.min(1.5, window.devicePixelRatio || 1)
-      const W = window.innerWidth, H = window.innerHeight
-      renderer.setPixelRatio(dpr)
-      renderer.setSize(W, H, false)
+      const { W, H, dpr } = fitWindow(renderer, v.camera)
       pass.setSize(W, H, dpr)
       v.setDpr(dpr)
-      v.camera.aspect = W / H
-      v.camera.updateProjectionMatrix()
     }
     resize()
     window.addEventListener('resize', resize)
@@ -153,7 +149,6 @@ export function Vortex(props: {
     }
     raf = requestAnimationFrame(frame)
 
-    const ndc = (e: PointerEvent | MouseEvent) => new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1)
     let hovered: string | null = null
     const onMove = (e: PointerEvent) => {
       const id = dive.phase === 'idle' ? v.pick(ndc(e)) : null

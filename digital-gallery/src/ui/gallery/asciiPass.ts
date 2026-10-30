@@ -7,6 +7,7 @@
 // Up to the focus and a little past it, the true render shows through.
 import * as THREE from 'three'
 import { FOCUS, SHARP, SOFT } from '../../lib/hall.ts'
+import { screenVertex, toSRGB } from '../three/dither.ts'
 
 /** one glyph cell on screen, in CSS px */
 export const CELL = { w: 5, h: 9 }
@@ -38,14 +39,6 @@ function glyphAtlas(): THREE.CanvasTexture {
   return t
 }
 
-const vertex = /* glsl */ `
-varying vec2 vUv;
-void main() {
-  vUv = uv;
-  gl_Position = vec4(position.xy, 0.0, 1.0);
-}
-`
-
 /** shared by both passes: depth → how real a pixel is */
 const common = /* glsl */ `
 uniform sampler2D tColor;
@@ -56,11 +49,7 @@ uniform float uFocus;
 uniform float uSharp;
 uniform float uSoft;
 varying vec2 vUv;
-
-vec3 toSRGB(vec3 c) {
-  c = clamp(c, 0.0, 1.0);
-  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
-}
+${toSRGB}
 
 float sharpness(vec2 uv) {
   float d = texture2D(tDepth, uv).x;
@@ -195,7 +184,7 @@ export class AsciiPass {
       uSoft: { value: SOFT },
     }
     this.ascii = new THREE.ShaderMaterial({
-      vertexShader: vertex,
+      vertexShader: screenVertex,
       fragmentShader: asciiFragment,
       depthTest: false,
       depthWrite: false,
@@ -216,7 +205,7 @@ export class AsciiPass {
       },
     })
     this.compose = new THREE.ShaderMaterial({
-      vertexShader: vertex,
+      vertexShader: screenVertex,
       fragmentShader: composeFragment,
       depthTest: false,
       depthWrite: false,

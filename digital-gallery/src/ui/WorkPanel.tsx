@@ -1,13 +1,10 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { BOX, CENTRE, bow, constellation, type Star } from '../lib/constellation.ts'
-import { collection } from '../lib/collection.ts'
+import { KIND_LABEL, LEGEND, NEIGHBOURHOOD, OPEN, entityUrl, workUrl } from '../lib/commons.ts'
 import { detailUrl, type Detail } from '../lib/detail.ts'
 import type { ManifestWork } from '../lib/manifest.ts'
 import type { PanelFrame } from '../lib/panel.ts'
 
-/** each kind of neighbour, as the current gallery names it */
-const kindLabel = (k: Star['kind']) => collection().kinds[k]
-const entityUrl = (site: string, type: string, slug: string) => collection().entityUrl(site, type, slug)
 const short = (s: string, n = 24) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
 
 /**
@@ -49,13 +46,9 @@ export function WorkPanel(props: { work: ManifestWork; index: number; site: stri
           ? detail!.artists.map((a, i) => (
               <span key={a.id}>
                 {i > 0 && ', '}
-                {entityUrl(site, a.type, a.slug) ? (
-                  <a href={entityUrl(site, a.type, a.slug)!} target="_blank" rel="noreferrer">
-                    {a.name}
-                  </a>
-                ) : (
-                  a.name
-                )}
+                <a href={entityUrl(site, a.type, a.slug)} target="_blank" rel="noreferrer">
+                  {a.name}
+                </a>
               </span>
             ))
           : work.by.join(', ')}
@@ -84,10 +77,10 @@ export function WorkPanel(props: { work: ManifestWork; index: number; site: stri
             </dl>
           )}
           <section className="neighbourhood">
-            <h2>{collection().whole}</h2>
+            <h2>{NEIGHBOURHOOD}</h2>
             <Constellation work={work} detail={detail} site={site} onOpen={onOpen} />
             <p className="legend">
-              <span className="solid" /> {collection().legend[0]} <span className="dashed" /> {collection().legend[1]}
+              <span className="solid" /> {LEGEND[0]} <span className="dashed" /> {LEGEND[1]}
             </p>
           </section>
           {detail.artists
@@ -108,8 +101,8 @@ export function WorkPanel(props: { work: ManifestWork; index: number; site: stri
         </>
       )}
       <footer>
-        <a href={collection().workUrl(work, site)} target="_blank" rel="noreferrer">
-          {collection().open}
+        <a href={workUrl(work, site)} target="_blank" rel="noreferrer">
+          {OPEN}
         </a>
         {detail?.source && (
           <a href={detail.source} target="_blank" rel="noreferrer">
@@ -156,7 +149,7 @@ function Constellation({ work, detail, site, onOpen }: { work: ManifestWork; det
             onPointerEnter={() => setHover(s)}
             onPointerLeave={() => setHover((h) => (h?.id === s.id ? null : h))}
           >
-            <title>{`${s.name} — ${kindLabel(s.kind)}${s.inferred ? ` (${collection().legend[1]})` : ''}`}</title>
+            <title>{`${s.name} — ${KIND_LABEL[s.kind]}${s.inferred ? ` (${LEGEND[1]})` : ''}`}</title>
             {s.img ? (
               <>
                 <circle cx={s.x} cy={s.y} r={19} className="ring" />
@@ -172,22 +165,19 @@ function Constellation({ work, detail, site, onOpen }: { work: ManifestWork; det
             )}
           </g>
         )
-        const page = entityUrl(site, s.type, s.slug)
         return open ? (
           <a key={s.id} href="#" onClick={(e) => (e.preventDefault(), onOpen(s.id))} aria-label={`Open ${s.name}`}>
             {body}
           </a>
-        ) : page ? (
-          <a key={s.id} href={page} target="_blank" rel="noreferrer" aria-label={`${s.name} in ${collection().name}`}>
+        ) : (
+          <a key={s.id} href={entityUrl(site, s.type, s.slug)} target="_blank" rel="noreferrer" aria-label={`${s.name} in A(DAI)`}>
             {body}
           </a>
-        ) : (
-          <g key={s.id}>{body}</g>
         )
       })}
       {hover && (
         <text className="caption" x={BOX.w / 2} y={BOX.h - 6} textAnchor="middle">
-          {`${kindLabel(hover.kind)} · ${short(hover.name, 48)}${hover.year ? ` · ${Math.floor(hover.year)}` : ''}`}
+          {`${KIND_LABEL[hover.kind]} · ${short(hover.name, 48)}${hover.year ? ` · ${Math.floor(hover.year)}` : ''}`}
         </text>
       )}
     </svg>

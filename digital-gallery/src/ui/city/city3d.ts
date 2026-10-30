@@ -140,7 +140,7 @@ export class CityScene {
       }
       const mid = (d.a0 + d.a1) / 2
       // the district's name on the plaza, before its wedge, with the decade its first building began
-      const name = textSprite(`${d.name}${d.decades[0] ? ` · from the ${d.decades[0].decade}s` : ''}`, 56, 0.5, "italic 400 Newsreader, Georgia, serif")
+      const name = textSprite(`${d.name}${d.decades[0] ? ` · from the ${d.decades[0].decade}s` : ''}`, 56, 0.5, 'Newsreader, Georgia, serif', 'italic 400')
       name.scale.set(0.8 * name.userData.aspect, 0.8, 1)
       name.position.set(Math.cos(mid) * (PLAZA - 5), 0.7, Math.sin(mid) * (PLAZA - 5))
       this.scene.add(name)
@@ -209,7 +209,7 @@ export class CityScene {
     for (const other of this.kinOf.get(b.artist) ?? []) bridge(l, b, this.city.buildingOf.get(other)!, TONE.currentKin)
     const lines = new THREE.LineSegments(l.geometry(), lineMaterial(this.dpr))
     lines.frustumCulled = false
-    const label = textSprite(name, 56, 0.85, "italic 400 Newsreader, Georgia, serif")
+    const label = textSprite(name, 56, 0.85, 'Newsreader, Georgia, serif', 'italic 400')
     label.scale.set(0.9 * label.userData.aspect, 0.9, 1)
     label.position.set(b.x, b.height + 1.1, b.z)
     this.scene.add(lines, label)

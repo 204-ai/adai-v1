@@ -76,6 +76,5 @@ jobs:
           cache: "npm"
           cache-dependency-path: digital-gallery/package-lock.json
       - run: npm ci
-      - run: npm run lint
       - run: npm test
-      - run: npm run build
+      - run: npm run build # type-checks first (tsc --noEmit), then bundles

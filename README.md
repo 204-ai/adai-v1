@@ -87,7 +87,7 @@ just intake-dev
 
 ### Architecture at a glance
 
-The main TypeScript/Express application serves the website and APIs and manages a SQLite database with CR-SQLite extensions. A separate worker reads websites and prepares drafts. It never opens the graph database or publishes directly to it.
+The main TypeScript/Express application serves the website and APIs and manages a SQLite database with CR-SQLite extensions. A separate worker reads websites and prepares drafts. It never opens the graph database or publishes directly to it. A separate front end, the [digital gallery](digital-gallery/README.md), shows the commons' artworks as an endless stream in A(DAI)'s own field and three 3D views; it reads public data only and is never part of the server image.
 
 ```mermaid
 flowchart TD

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { collection } from '../lib/collection.ts'
+import { OPEN } from '../lib/commons.ts'
 import { KEY_HINT, PAUSE_LABEL, TOUCH_HINT, creditLines } from '../lib/copy.ts'
 import type { Mode } from '../lib/layout.ts'
 import type { ManifestWork } from '../lib/manifest.ts'
@@ -45,7 +45,7 @@ export function Credit({ work, site, run, onClose }: { work: ManifestWork; site:
       </p>
       <p className="collab">
         <a href={c.link} target="_blank" rel="noreferrer">
-          {collection().open}
+          {OPEN}
         </a>
       </p>
       <p className="where">{c.where}</p>

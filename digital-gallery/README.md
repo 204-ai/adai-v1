@@ -9,11 +9,10 @@ the coil, the tunnel, the spiral, a second (non-commons) gallery and recording. 
 repository, beside the server, like `worker/`.
 
 - **field** (default): A(DAI)'s own view of the commons, its `/field` page (the Shape of Time field), shown as it is from
-  the A(DAI) site and opened on the work that was on stage; from there A(DAI) drives (`?field=http://localhost:8080`
-  points it at a local A(DAI)). The run holds while it is open; `m` or `mode ›` moves on, even after clicking into the
-  field: the field hands `m` back (A(DAI)'s `js-interface/embed.js`, a postMessage handshake). An A(DAI) without it
-  (the live site until it is deployed) gets the keyboard taken back whenever it takes it, so `m` still works but
-  nothing can be typed into the field.
+  the A(DAI) site and opened on the work that was on stage; from there A(DAI) drives. `?field=http://localhost:8080`
+  points it at a local A(DAI) (a local origin only: nothing else is framed here). The run holds while it is open; `m`
+  or `mode ›` moves on, even after clicking into the field: the field hands `m` back (A(DAI)'s
+  `public/field/js-interface/embed.js`, a postMessage handshake, in this repository).
 - **gallery**: the works suspended on cables in the dark on either side of a slow walk; real up to the work
   on stage, fine ASCII in the distance. The view follows the mouse, sprung; the wheel walks forward (up) and back
   (down); a far jump fades through black. Click a work to open it: the camera comes up to it and a panel beside it
@@ -35,8 +34,9 @@ Each artist's works keep their own order; artists braid together in chunks of 2�
 
 ## Run
 
-Needs a local A(DAI) database: at the repository root run
-`npm run fork:pull -- --from https://digitalartsinstitute.io --db ./adai.db` (public data only).
+Needs Node 22.18 or later (the scripts are TypeScript run by Node itself, with `node:sqlite`) and a local A(DAI)
+database: at the repository root run `npm run fork:pull -- --from https://digitalartsinstitute.io --db ./adai.db`
+(public data only).
 
 ```bash
 npm install
@@ -50,7 +50,7 @@ npm run dev         # http://localhost:5250
 Keys: `space` pause · `←` `→` previous/next · `m` mode · `i` credit · `f` fullscreen · `j` wormhole (vortex) · `esc` close.
 URL: `?work=<artwork slug>` `?artist=<slug>` `?seed=` `?fuzz=0..1` `?hold=<seconds>` `?paused=1` `?mode=field|gallery|vortex|city` `?field=<A(DAI) url>`.
 
-Checks: `npm run lint` (types), `npm test` (vitest).
+Checks: `npm test` (vitest) and `npm run build` (types, then the bundle); `npm run lint` is the type check alone.
 
 ## Dates
 

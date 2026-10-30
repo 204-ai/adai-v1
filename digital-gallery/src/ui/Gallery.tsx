@@ -6,6 +6,7 @@ import type { Manifest, ManifestWork } from '../lib/manifest.ts'
 import { panelFrame, settle, wheelWorks } from '../lib/panel.ts'
 import { AsciiPass } from './gallery/asciiPass.ts'
 import { Hall, type ArtistCard, type Pose } from './gallery/hall3d.ts'
+import { fitWindow, ndc } from './three/screen.ts'
 
 /** a jump farther than this many bays fades through black instead of a walk past everything on the way */
 const FAR_BAYS = 6
@@ -61,13 +62,8 @@ export function Gallery(props: {
     h.setOrder(live.current.order)
     hall.current = h
     const resize = () => {
-      const dpr = Math.min(1.5, window.devicePixelRatio || 1)
-      const W = window.innerWidth, H = window.innerHeight
-      renderer.setPixelRatio(dpr)
-      renderer.setSize(W, H, false)
+      const { W, H, dpr } = fitWindow(renderer, h.camera)
       pass.setSize(W, H, dpr)
-      h.camera.aspect = W / H
-      h.camera.updateProjectionMatrix()
     }
     resize()
     window.addEventListener('resize', resize)
@@ -112,7 +108,6 @@ export function Gallery(props: {
     }
     raf = requestAnimationFrame(frame)
 
-    const ndc = (e: PointerEvent | MouseEvent) => new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1)
     // the look follows the mouse anywhere on the page (a finger on a touch screen steers nothing); not while a work is open
     const onPoint = (e: PointerEvent) => e.pointerType === 'mouse' && look.point(live.current.open ? null : ndc(e))
     const onLeave = (e: PointerEvent) => !e.relatedTarget && look.point(null)

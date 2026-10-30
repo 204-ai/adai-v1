@@ -799,10 +799,3 @@ body,
   color: var(--cream);
   opacity: 1;
 }
-.field-keeper {
-  position: fixed;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  outline: none;
-}

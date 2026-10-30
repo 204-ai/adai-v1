@@ -1,5 +1,5 @@
 // Every word the stage can show. Nothing else renders text over the void.
-import { collection } from './collection.ts'
+import { workUrl } from './commons.ts'
 import type { ManifestWork } from './manifest.ts'
 
 export const KEY_HINT = 'space pause · ← → step · m mode · i credit · f fullscreen'
@@ -8,7 +8,8 @@ export const PAUSE_LABEL = 'press space'
 export const COMMONS = 'A(DAI) Digital Arts Commons'
 export const RIGHTS_NOTE = 'Image rights stay with the artist and other rights holders.'
 export const NOTICE = 'No manifest yet. Run npm run manifest.'
-export const notice = () => `No ${collection().name} manifest yet. Run ${collection().build}.`
+/** the page's name, before a work is on stage */
+export const TITLE = 'A(DAI) Digital Gallery'
 
 export const STAGE_COPY = { KEY_HINT, TOUCH_HINT, PAUSE_LABEL, COMMONS, RIGHTS_NOTE, NOTICE }
 
@@ -29,8 +30,8 @@ export function creditLines(work: ManifestWork, site: string, run: { seed: numbe
     by: work.by.join(', '),
     date: work.date,
     basis: work.basis,
-    where: `${collection().long} · via ${work.source} · seed ${run.seed} · turn ${run.turn + 1}`,
-    link: collection().workUrl(work, site),
+    where: `${COMMONS} · via ${work.source} · seed ${run.seed} · turn ${run.turn + 1}`,
+    link: workUrl(work, site),
     note: RIGHTS_NOTE,
   }
 }

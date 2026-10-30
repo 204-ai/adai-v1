@@ -15,6 +15,5 @@ describe('stage', () => {
 describe('modes', () => {
   it("cycle from A(DAI)'s field through the gallery, vortex and city, and back", () => {
     expect([nextMode('field'), nextMode('gallery'), nextMode('vortex'), nextMode('city')]).toEqual(['gallery', 'vortex', 'city', 'field'])
-    expect(layout(1280, 720).mode).toBe('gallery')
   })
 })

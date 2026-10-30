@@ -1,6 +1,6 @@
-// Drawing structure the quiet way, as the city does it: thin lines, each vertex with a tone (how bright,
-// before dithering) and a colour, drawn 1-bit with ordered dithering on the CSS pixel grid and fading with distance;
-// and small text sprites.
+// What the 3D views share: the ordered dither the vortex's grid and the city's structure are drawn with, thin lines
+// drawn 1-bit with it (each vertex with a tone, how bright before dithering, and a colour, fading with distance), the
+// pieces of a full-screen pass, and small text sprites.
 import * as THREE from 'three'
 
 /** a 4×4 ordered-dither threshold for a pixel */
@@ -10,6 +10,23 @@ float bayer(vec2 p) {
   int k = i.x + i.y * 4;
   float m[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
   return (m[k] + 0.5) / 16.0;
+}
+`
+
+/** the vertex shader of a full-screen pass: the quad as it is */
+export const screenVertex = /* glsl */ `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = vec4(position.xy, 0.0, 1.0);
+}
+`
+
+/** linear → sRGB, for a pass that puts a rendered frame on the screen itself */
+export const toSRGB = /* glsl */ `
+vec3 toSRGB(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
 }
 `
 
@@ -88,13 +105,15 @@ export const rgb = (hex: string): [number, number, number] => {
   return [c.r, c.g, c.b]
 }
 
-export function textSprite(text: string, px: number, alpha: number, font: string): THREE.Sprite {
+/** a line of text as a sprite: `family` is the font-family list, `style` what goes before the size ("italic 400") */
+export function textSprite(text: string, px: number, alpha: number, family: string, style = ''): THREE.Sprite {
   const c = document.createElement('canvas')
   const ctx = c.getContext('2d')!
-  ctx.font = `${px}px ${font}`
+  const font = `${style} ${px}px ${family}`.trim()
+  ctx.font = font
   c.width = Math.ceil(ctx.measureText(text).width) + 16
   c.height = Math.ceil(px * 1.4)
-  ctx.font = `${px}px ${font}`
+  ctx.font = font
   ctx.fillStyle = `rgba(233,227,214,${alpha})`
   ctx.textBaseline = 'middle'
   ctx.fillText(text, 8, c.height / 2)

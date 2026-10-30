@@ -263,7 +263,8 @@ empty — it requires evidence of artist intent, not thematic similarity.
 - `GET /graph` — D3 force-directed graph
 - `GET /field` — the 30k canvas field view (press `e` for embeddings mode);
   `GET /field/<type>/:slug` opens it focused on a node (the legacy
-  `/field?node=<id>` 301s there)
+  `/field?node=<id>` 301s there); framed by another page (the digital gallery), it hands that page back the
+  keys it asks for (`js-interface/embed.js`, a postMessage handshake; only its own framer, only the origin that asked)
 - `GET /<type>/:slug` (practitioner, artwork, concept, …) — the **entity view**,
   server-rendered by `src/entity/view.ts` (+ `page.ts`): hero work, the node's
   own words, works, graph-derived relations, embedding neighbours (filled

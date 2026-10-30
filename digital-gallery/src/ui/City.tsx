@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
-import { dataUrl } from '../lib/collection.ts'
+import { dataUrl } from '../lib/commons.ts'
 import { cityOf, viewOf } from '../lib/city.ts'
 import type { Manifest, ManifestWork } from '../lib/manifest.ts'
 import { Look, spring, type Spring } from '../lib/motion.ts'
 import { CityScene } from './city/city3d.ts'
+import { fitWindow, ndc } from './three/screen.ts'
 
 /** how near the eye comes to the work on stage, and how far back the wheel may draw it (an aerial view of the city) */
 const NEAR = 3.6
@@ -35,14 +36,8 @@ export function City(props: { manifest: Manifest; works: Map<string, ManifestWor
     let s: CityScene | null = null
     let alive = true
     const resize = () => {
-      const dpr = Math.min(1.5, window.devicePixelRatio || 1)
-      const W = window.innerWidth, H = window.innerHeight
-      renderer.setPixelRatio(dpr)
-      renderer.setSize(W, H, false)
-      if (!s) return
-      s.setDpr(dpr)
-      s.camera.aspect = W / H
-      s.camera.updateProjectionMatrix()
+      const { dpr } = fitWindow(renderer, s?.camera ?? null)
+      s?.setDpr(dpr)
     }
     window.addEventListener('resize', resize)
 
@@ -98,7 +93,6 @@ export function City(props: { manifest: Manifest; works: Map<string, ManifestWor
     resize()
     raf = requestAnimationFrame(frame)
 
-    const ndc = (e: PointerEvent | MouseEvent) => new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1)
     let hovered: string | null = null
     const onMove = (e: PointerEvent) => {
       const id = s?.pick(ndc(e)) ?? null
